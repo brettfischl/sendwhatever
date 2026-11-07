@@ -7,9 +7,9 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<'SQL'
 \getenv sw_data_password SW_DATA_DB_PASSWORD
 
 CREATE ROLE sw_app LOGIN PASSWORD :'sw_app_password';
--- CREATEROLE lets `provision` create a read-only login per store. Since Postgres 16 it gives
--- no power over roles sw_data didn't create, so sw_data can't reach sw_app through it.
-CREATE ROLE sw_data LOGIN CREATEROLE PASSWORD :'sw_data_password';
+-- `provision` creates a database and a read-only login per store. Since Postgres 16, CREATEROLE
+-- gives no power over roles sw_data didn't create, so sw_data can't reach sw_app through it.
+CREATE ROLE sw_data LOGIN CREATEROLE CREATEDB PASSWORD :'sw_data_password';
 
 CREATE DATABASE sw_app OWNER sw_app;
 CREATE DATABASE sw_data OWNER sw_data;

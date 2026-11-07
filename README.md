@@ -86,4 +86,4 @@ Any process that loads `isolated-vm` must run with `node --no-node-snapshot`, as
 
 Put unit tests next to the code as `src/**/*.test.ts`.
 
-Migrations run in filename order, so use the next number, such as `0002_app_schema.sql`, with `-- Up Migration` and `-- Down Migration` sections. `sw_data` has no migrations because stores create its schemas at runtime.
+Migrations run in filename order, so use the next number, such as `0002_app_schema.sql`, with `-- Up Migration` and `-- Down Migration` sections. `sw_data` has no migrations because `provision` creates a database for each store at runtime.
