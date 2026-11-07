@@ -22,9 +22,13 @@ export interface Config {
   /** Undefined until a key is set. Code that calls the LLM should fail with a clear error. */
   fireworksApiKey: string | undefined;
   fireworksModel: string;
+  /** Reasoning counts against max_tokens, and off is faster and cheaper with no visible loss (§12.1). */
+  fireworksReasoningEffort: string;
 }
 
 const DEFAULT_FIREWORKS_MODEL = 'accounts/fireworks/models/deepseek-v4p1-flash';
+
+const DEFAULT_FIREWORKS_REASONING_EFFORT = 'none';
 
 const ENV_FILE = fileURLToPath(new URL('../.env', import.meta.url));
 
@@ -54,6 +58,7 @@ export function loadConfig(): Config {
     workerAccountId: process.env.WORKER_ACCOUNT_ID || undefined,
     fireworksApiKey: process.env.FIREWORKS_API_KEY || undefined,
     fireworksModel: process.env.FIREWORKS_MODEL || DEFAULT_FIREWORKS_MODEL,
+    fireworksReasoningEffort: process.env.FIREWORKS_REASONING_EFFORT || DEFAULT_FIREWORKS_REASONING_EFFORT,
   };
 }
 

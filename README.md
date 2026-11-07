@@ -18,9 +18,10 @@ Set `FIREWORKS_API_KEY` in `.env` yourself. Nothing needs it yet. `FIREWORKS_MOD
 
 | Command | What it does |
 | --- | --- |
-| `npm run dev` | Runs the server and worker together (see below) |
+| `npm run dev` | Runs the server, worker, and generator together (see below) |
 | `npm start` | Runs just the server |
 | `npm run worker` | Runs just the worker |
+| `npm run generator` | Runs just the adapter generator, which needs `FIREWORKS_API_KEY` |
 | `npm run demo` | Runs the demo webinar site (see below) |
 | `npm run migrate` | Applies new migrations to `sw_app` |
 | `npm test` | Type-checks, then runs the tests (Postgres must be running) |
@@ -42,11 +43,13 @@ With Postgres up and migrations applied (`npm run setup` does both), run the ser
 npm run dev
 ```
 
-Ctrl-C stops both. If either one exits by itself, the other is stopped too and the command exits with an error. On shutdown the worker stops claiming jobs and lets running ones finish, for up to 30 seconds. A job cut off at that limit runs again once its lease expires. With `npm run worker` on its own, Ctrl-C also reaches any adapter running at that moment, so that job runs again after a short wait instead of finishing. SIGTERM doesn't have this problem.
+Ctrl-C stops all of them. If one exits by itself, the others are stopped too and the command exits with an error. Without `FIREWORKS_API_KEY`, this logs a warning and runs without the generator, so new shapes stay in quarantine. On shutdown the worker stops claiming jobs and lets running ones finish, for up to 30 seconds. A job cut off at that limit runs again once its lease expires. With `npm run worker` on its own, Ctrl-C also reaches any adapter running at that moment, so that job runs again after a short wait instead of finishing. SIGTERM doesn't have this problem.
 
 Stop this before running `npm test`. It uses the same queue as the tests, so it would take their jobs.
 
-`npm start`, `npm run worker` and `npm run dev` use `node --import tsx` rather than the `tsx` command. Under load, that wrapper kills a process with SIGKILL if it doesn't confirm a signal within about 60 ms, which would skip the clean shutdown.
+The generator works on one shape at a time per account, source, and op, so an adapter for the first can absorb variations that arrive together. As a result, an attempt that crashes blocks that source and op, not just its shape, until it times out after 30 minutes. A shape stops and waits for an operator after 5 failed attempts in a row. An LLM outage doesn't count toward that.
+
+`npm start`, `npm run worker`, `npm run generator` and `npm run dev` use `node --import tsx` rather than the `tsx` command. Under load, that wrapper kills a process with SIGKILL if it doesn't confirm a signal within about 60 ms, which would skip the clean shutdown.
 
 To try it, create an account, then send it a payload. The first response is the only time you see the API key, and it also holds the read-only database login:
 

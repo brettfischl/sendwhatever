@@ -243,8 +243,12 @@ async function replayRow(
     pass.released += 1;
     pass.failed += entries.length;
   } else if (entries.length > 0) {
-    // On a row naming a store, only an adapter error is the adapter's fault.
-    const storeOnly = row.storeId !== null && entries[0]!.reason !== 'adapter_error';
+    // On a row naming a store, only an adapter error is the adapter's fault. On a row for all stores, a
+    // schema conflict is too, since a new adapter can fix it, but a store refusing every write isn't.
+    const storeOnly =
+      row.storeId !== null
+        ? entries[0]!.reason !== 'adapter_error'
+        : entries.every(({ reason }) => reason === 'write_error');
     await failRow(context, row, adapterId, entries, storeOnly ? 'store_failed' : 'failed');
     pass.failed += 1;
   } else {
