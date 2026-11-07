@@ -15,7 +15,7 @@ import {
   type StoreWrites,
   type WorkerContext,
 } from './pipeline.js';
-import { enqueueReplay, pushRunAt, toDetail, type Job, type QuarantineEntry } from './queue.js';
+import { pushRunAt, toDetail, type Job, type QuarantineEntry } from './queue.js';
 
 interface OpenRow {
   id: string;
@@ -141,27 +141,37 @@ async function replayRow(
   job: Job,
   row: OpenRow,
   adapterId: string,
-  matches: Map<string, MatchedAdapter | null>,
+  notOurs: Set<string>,
   counts: ReplayCounts,
 ): Promise<string | undefined> {
-  // Equal full fingerprints collapse to equal shapes, so one lookup answers for every row with this one.
-  const known = matches.get(row.fingerprint);
-  if (known !== undefined && known?.id !== adapterId) return undefined;
+  // Equal full fingerprints collapse to equal shapes, so one lookup rules out every row with this one.
+  if (notOurs.has(row.fingerprint)) return undefined;
+
+  // A failure in these two says nothing about this row, which may not even be this adapter's. So they
+  // can't count against it at the maximum age, and handleReplay backs off instead.
+  const event = await loadEvent(context.db, job.accountId, row.eventId);
+  // Looked up for each row we write, so a superseded version stops at once rather than at the next page.
+  const adapter = await findAdapter(context.db, event);
+  if (adapter?.id !== adapterId) {
+    // Another adapter handles this event (§7.1), and that adapter's own replay or the sweep will reach it.
+    notOurs.add(row.fingerprint);
+    return undefined;
+  }
 
   const expired = job.ageMs >= context.settings.maxAgeMs;
   let writes: StoreWrites;
   try {
-    const event = await loadEvent(context.db, job.accountId, row.eventId);
-    const adapter = known ?? (await findAdapter(context.db, event));
-    matches.set(row.fingerprint, adapter);
-    // Another adapter handles this event (§7.1), and that adapter's own replay or the sweep will reach it.
-    if (adapter?.id !== adapterId) return undefined;
     writes = await writeRow(context, job, row, event, adapter);
   } catch (error) {
     writes = { permanent: [], transient: [{ storeId: row.storeId, detail: errorMessage(error) }] };
   }
 
   if (writes.transient.length > 0 && !expired) {
+    // Recorded now, like ingest, rather than hidden for as long as the other store is down.
+    if (writes.permanent.length > 0) {
+      await failRow(context, row, adapterId, writes.permanent);
+      counts.failed += 1;
+    }
     return writes.transient.map(({ detail }) => detail).join('; ');
   }
 
@@ -194,10 +204,10 @@ async function replayPages(context: WorkerContext, job: Job, adapterId: string):
     // The heartbeat keeps the lease while this job runs, but only this tells it that the lease has gone.
     if (!(await pushRunAt(context.db, job, context.settings.leaseMs))) return { kind: 'lease_lost' };
 
-    // Fresh for each page, so an adapter activated partway through takes over from the next one.
-    const matches = new Map<string, MatchedAdapter | null>();
+    // Fresh for each page, so a row isn't passed over for long if the adapters change.
+    const notOurs = new Set<string>();
     for (const row of page) {
-      const transient = await replayRow(context, job, row, adapterId, matches, counts);
+      const transient = await replayRow(context, job, row, adapterId, notOurs, counts);
       if (transient !== undefined) return { kind: 'backoff', detail: transient };
     }
     const last = page[page.length - 1]!;
@@ -219,9 +229,13 @@ export const handleReplay: JobHandler = async (context, job) => {
 };
 
 /**
- * Enqueues a replay for each active adapter with a matching `unknown_fingerprint` row, and returns those
- * adapters' IDs. A worker can look up an adapter just before activation and quarantine just after the
- * replay finishes (§5.2).
+ * Enqueues a replay for each active adapter with a matching `unknown_fingerprint` row and no replay
+ * queued, and returns the IDs of those it enqueued. A worker can look up an adapter just before
+ * activation and quarantine just after the replay finishes (§5.2).
+ *
+ * Unlike `enqueueReplay`, this leaves a queued replay alone. Rows it hasn't reached yet look just like
+ * stranded ones, so asking it to rerun would repeat every long replay. A row it did miss is still here
+ * at the next sweep, once the job has gone.
  *
  * Replaying a row either releases it or changes its reason, so a shape that keeps failing leaves this
  * query after one replay. Only one event per shape is checked, since equal full fingerprints collapse
@@ -252,6 +266,12 @@ export async function sweepStrandedRows(
     const adapter = await findAdapter(db, await loadEvent(db, accountId, eventId));
     if (adapter) adapterIds.add(adapter.id);
   }
-  for (const adapterId of adapterIds) await enqueueReplay(db, adapterId);
-  return [...adapterIds];
+  const enqueued = await db.query<{ adapter_id: string }>(
+    `INSERT INTO queue (account_id, kind, adapter_id)
+     SELECT account_id, 'replay', id FROM adapters WHERE id = ANY($1::uuid[]) AND active
+     ON CONFLICT (adapter_id) WHERE kind = 'replay' DO NOTHING
+     RETURNING adapter_id`,
+    [[...adapterIds]],
+  );
+  return enqueued.rows.map((row) => row.adapter_id);
 }

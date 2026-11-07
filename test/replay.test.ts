@@ -507,7 +507,8 @@ describe('matching', () => {
       await enqueueReplay(db, newId);
     };
 
-    expect((await processNextJob(context({ replayBatchSize: 1 }), { accountId }))?.job.adapterId).toBe(oldId);
+    // Both rows are on one page, and the old version still stops at the second.
+    expect((await processNextJob(context(), { accountId }))?.job.adapterId).toBe(oldId);
     expect(await row(first.rowId)).toMatchObject({ released_by_adapter_id: oldId });
     expect(await row(second.rowId)).toMatchObject({ released_at: null });
 
@@ -725,6 +726,52 @@ describe('transient failures', () => {
     expect(failed).toMatchObject({ released_at: null, reason: 'write_error' });
     expect(failed.detail).toContain('Still failing at the maximum age: down');
     expect((await row(second.rowId)).released_at).not.toBeNull();
+  });
+
+  it('records a permanent failure at once, even while another store is still retrying', async () => {
+    const accountId = await newAccount();
+    const active = await addStore(accountId);
+    await addStore(accountId, 'building');
+    const adapterId = await addAdapter(accountId);
+    const { rowId } = await addQuarantined(accountId, userBody('a'));
+    const jobId = await addJob(accountId, adapterId);
+    backend.beforeWrite = async (writeNumber) => {
+      if (writeNumber === 1) throw new StorageError('rejected', { retryable: false });
+      throw new StorageError('down', { retryable: true });
+    };
+
+    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('retry');
+
+    const open = await row(rowId);
+    expect(open).toMatchObject({ released_at: null, reason: 'write_error' });
+    expect(open.detail).toBe(`Store ${active.id}: rejected`);
+    expect(await logFor(rowId)).toMatchObject([{ status: 'failed' }]);
+    expect(await jobRow(jobId)).toBeDefined();
+  });
+
+  it('does not blame a row when the adapter lookup fails, even past the maximum age', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    const adapterId = await addAdapter(accountId);
+    const { rowId } = await addQuarantined(accountId, userBody('a'));
+    const jobId = await addJob(accountId, adapterId, 73);
+    const failing = new Proxy(db, {
+      get(target, property) {
+        if (property !== 'query') return Reflect.get(target, property);
+        return (text: unknown, values: unknown) => {
+          if (typeof text === 'string' && text.includes('AS "opaquePaths"')) {
+            return Promise.reject(new Error('query timeout'));
+          }
+          return target.query(text as string, values as unknown[]);
+        };
+      },
+    });
+
+    expect((await processNextJob({ ...context(), db: failing }, { accountId }))?.outcome).toBe('retry');
+
+    expect(await row(rowId)).toMatchObject({ released_at: null, reason: 'unknown_fingerprint', detail: 'original detail' });
+    expect(await logFor(rowId)).toEqual([]);
+    expect(await jobRow(jobId)).toBeDefined();
   });
 
   it('retries when the application database fails partway through', async () => {
@@ -1021,7 +1068,6 @@ describe('the sweep', () => {
 
     backend.beforeWrite = undefined;
     await makeReady(job!.job.id);
-    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('rerun');
     expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
     expect(await sweepStrandedRows(context(), { accountId })).toEqual([]);
     expect(await processNextJob(context(), { accountId })).toBeNull();
@@ -1061,18 +1107,27 @@ describe('the sweep', () => {
     expect(enqueued.sort()).toEqual([exactId, opaqueId].sort());
   });
 
-  it('asks a queued replay to run again rather than adding a second job', async () => {
+  it('leaves a queued replay alone, so a long one is not repeated, and catches a missed row afterwards', async () => {
     const accountId = await newAccount();
     await addStore(accountId);
     const adapterId = await addAdapter(accountId);
-    await addQuarantined(accountId, userBody('a'));
+    const { rowId } = await addQuarantined(accountId, userBody('a'));
     const jobId = await addJob(accountId, adapterId);
 
-    await sweepStrandedRows(context(), { accountId });
+    expect(await sweepStrandedRows(context(), { accountId })).toEqual([]);
 
-    expect(await jobRow(jobId)).toMatchObject({ rerun_requested: true });
+    expect(await jobRow(jobId)).toMatchObject({ rerun_requested: false });
     const jobs = await db.query('SELECT 1 FROM queue WHERE account_id = $1', [accountId]);
     expect(jobs.rowCount).toBe(1);
+
+    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+    expect((await row(rowId)).released_at).not.toBeNull();
+
+    // A row that landed behind that replay is picked up now that the job has gone.
+    const missed = await addQuarantined(accountId, userBody('b'));
+    expect(await sweepStrandedRows(context(), { accountId })).toEqual([adapterId]);
+    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+    expect((await row(missed.rowId)).released_at).not.toBeNull();
   });
 
   it('only sweeps the requested account', async () => {
