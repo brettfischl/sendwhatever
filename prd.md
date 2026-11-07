@@ -1198,16 +1198,22 @@ Two hostnames, both TLS through Caddy. This replaces the wildcard subdomains in 
 - **`app.<domain>`:** a default-deny allowlist of `/ingest*`, `/admin*`, and the read API and docs routes. `/accounts`, `/adapters`, and `/quarantine` are never forwarded, and everything else returns `404`.
 - **`demo.<domain>`:** the demo site behind Caddy basic auth, because anyone who reaches it can send events that spend LLM credits, and read payloads. Caddy rewrites the upstream `Host` to the loopback address, which satisfies the tables panel's loopback check without changing it. `DEMO_HOST` and `DEMO_APP_DATABASE_URL` stay on loopback.
 
-Caddy access logs stay off, because webhook URLs can carry `?key=`. The cloud firewall allows only ports 22, 80, and 443. Use DigitalOcean's cloud firewall rather than `ufw`, since Docker's published ports bypass `ufw`.
+Caddy access logs stay off, because webhook URLs can carry `?key=`. The cloud firewall allows only ports 22, 80, 443, and 5432 (§21.4). Use DigitalOcean's cloud firewall rather than `ufw`, since Docker's published ports bypass `ufw`.
 
 ### 21.3 Code Changes
 
-- **Public addresses.** Add `PUBLIC_BASE_URL`, `PUBLIC_DB_HOST`, and `PUBLIC_DB_PORT`. The Connect page, Credentials page, and account-created page use them for what they show customers, and fall back to today's localhost values when unset. A store's own `connection` stays on `localhost`, because that's how the services reach Postgres.
+- **Public addresses.** Add `PUBLIC_BASE_URL`, `PUBLIC_DB_HOST`, and `PUBLIC_DB_PORT`. The Connect page, Credentials page, and account-created page use them for what they show customers, and fall back to today's localhost values when unset. When `PUBLIC_DB_HOST` is set, the connection string also ends in `?sslmode=require`. A store's own `connection` stays on `localhost`, because that's how the services reach Postgres.
 - **CSRF behind TLS.** The admin's `csrf()` check compares `Origin` with the request URL, and behind Caddy the app is likely to see `http://` while the browser sends `https://`, which would reject the login form. When `PUBLIC_BASE_URL` is set, compare against it. Don't trust a client-supplied forwarded header for this. A test covers it, and the live login is checked after deploy.
 
 ### 21.4 Direct SQL
 
-Off at first: the read API serves customers over HTTPS, and the Credentials page says direct access isn't enabled when `PUBLIC_DB_HOST` is unset. Turning it on, as §14.1 describes, needs TLS on Postgres, `pg_hba` rules that require TLS from outside and reject `sw_app`, `sw_data`, and `postgres` from outside, a public port binding, and a firewall rule. Without those rules, publishing the port would expose `sw_app` to the internet.
+On at launch, as §14.1 describes, so customers connect to their store's database from the internet with the read-only login.
+
+- **Port.** Compose publishes port 5432 publicly, alongside the existing loopback port for the services, and the cloud firewall allows it.
+- **TLS.** Postgres runs with `ssl=on` and a self-signed certificate generated on the box. Connection strings shown to customers end in `?sslmode=require`, which encrypts the connection but doesn't verify the server's identity. That's acceptable for the demo; real certificates come later.
+- **`pg_hba` rules.** The services connect from Docker's bridge network. From anywhere else, `hostssl` is the only accepted connection type, and `sw_app`, `sw_data`, and `postgres` are rejected by name, as are the `sw_app`, `postgres`, and template databases. So a leaked platform password still can't be used from outside.
+
+Publishing the port without these rules would expose `sw_app` to the internet, so all three ship together. Verify from outside the VPS, because the source address Postgres sees depends on Docker's networking, and a rule that's wrong here could fail open.
 
 ### 21.5 Known Limits
 
@@ -1215,4 +1221,4 @@ No ingest rate limit and no login throttling, so the admin password must be long
 
 ### 21.6 Done When
 
-From outside the VPS: the admin login works over HTTPS and copy buttons work; the Connect page shows the public endpoint; `curl` with the page's example reaches `/ingest`; `/accounts` returns `404`; the Shopify flows produce tables in the console behind basic auth; the services come back after a reboot.
+From outside the VPS: the admin login works over HTTPS and copy buttons work; the Connect page shows the public endpoint; `curl` with the page's example reaches `/ingest`; `/accounts` returns `404`; the read-only login connects with `sslmode=require`, is refused without TLS, and can't reach another store; `sw_app`, `sw_data`, and `postgres` are refused from outside; the Shopify flows produce tables in the console behind basic auth; the services come back after a reboot.
