@@ -105,7 +105,16 @@ bd close bd-42 --reason "Completed" --json
 
 Beads does not sync automatically. Issues live in a Dolt database, pushed to the `refs/dolt/data` ref on this repo's GitHub remote. That ref is separate from every git branch, so `git push` and `git pull` do not sync issues, and syncing issues does not touch `develop` or `main`. The repo is public, so issue contents are public too.
 
-**First time on a machine:** after cloning, run `git config core.hooksPath .beads/hooks` and `bd bootstrap`.
+**First time on a machine:** you need `bd` 1.3.4 or later. After cloning, run `git config core.hooksPath .beads/hooks` and `bd bootstrap`.
+
+**Moving an existing clone from bd 0.60 to 1.x:** install the new `bd`, then move the old database aside and restore from the remote. Any issue changes you haven't pushed are lost, so note them first:
+
+```bash
+mv -f .beads ../beads-old
+git checkout -- .beads
+git pull
+bd bootstrap
+```
 
 **Claiming work:** a claim is only visible to others once pushed, so always do all three steps together:
 
@@ -117,28 +126,11 @@ bd dolt push
 
 Run `bd dolt push` after any other issue change too, such as closing an issue.
 
-**One syncing session per machine:** worktrees share one database through `.beads/redirect`, so sessions on one machine see each other's issue changes immediately. Only one session on a machine may run `bd dolt pull` or `bd dolt push`, because concurrent syncs on the shared database were followed by corruption. If a coordinating session is running, others just claim and update issues locally and ask it to sync.
+**If `bd dolt push` is rejected:** someone else pushed first. Run `bd dolt pull`, which merges changes to different issues, then push again. If you were both claiming the same issue, check who holds it with `bd show <id> --json`.
 
-**Sync straight after every change:** any two machines changing issues between syncs can conflict, even on different issues, because both write to the `events` table.
+**One syncing session per machine:** worktrees share one database, so sessions on one machine see each other's issue changes immediately. Only one session on a machine should run `bd dolt pull` or `bd dolt push`, because concurrent syncs on the old server setup were followed by corruption. If a coordinating session is running, others just claim and update issues locally and ask it to sync.
 
-**If `bd dolt pull` or `bd dolt push` fails:** do not retry the pull. A failed pull can leave an unresolved merge on a retry, and then every `bd` command fails. Note your local changes, take the remote state, check who holds the issue, and redo your changes:
-
-```bash
-bd sql "CALL DOLT_FETCH('origin')"
-bd sql "CALL DOLT_RESET('--hard','origin/main')"
-bd show <id> --json
-```
-
-**If `bd` can't open the database, or `dolt fsck` reports corruption:** stop any other sessions using it, then rebuild from the remote. Any unpushed issue changes are lost, so note them first. Move the old database aside rather than deleting it:
-
-```bash
-bd dolt stop
-mv -f .beads/dolt ../beads-dolt-damaged
-rm -f .beads/dolt-server.pid .beads/dolt-server.port .beads/dolt-server.lock
-bd bootstrap
-```
-
-**One beads project at a time:** starting `bd` in one project stops the Dolt server of any other beads project on the same machine. The next `bd` command restarts it, so this is harmless between commands. Don't put the text of the server's process name in a shell command that also runs `bd`, because bd's cleanup matches on it and can kill that shell.
+**If `bd` can't open the database:** stop any other sessions using it, then rebuild from the remote the same way as the 0.60 steps above. Any unpushed issue changes are lost, so note them first, and move the old database aside rather than deleting it.
 
 ### Important Rules
 
