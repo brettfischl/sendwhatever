@@ -143,7 +143,7 @@ afterAll(async () => {
   const admin = new pg.Client({
     host: 'localhost',
     port: config.postgresPort,
-    database: 'sw_data',
+    database: 'postgres',
     user: 'sw_data',
     password: config.dataDbPassword,
   });
@@ -181,7 +181,7 @@ describe('accounts provisioning to worker', () => {
     expect(store.status).toBe('active');
     expect(Buffer.isBuffer(store.credentials)).toBe(true);
     expect(decryptCredentials(store.credentials)).toEqual({ user: 'sw_data', password: config.dataDbPassword });
-    expect(store.connection).toEqual({ host: 'localhost', port: config.postgresPort, database: 'sw_data' });
+    expect(store.connection).toEqual({ host: 'localhost', port: config.postgresPort, database: 'postgres' });
     expect(decryptCredentials(store.read_credentials)).toEqual({
       user: account.login.user,
       password: account.login.password,
@@ -245,7 +245,7 @@ describe('the customer login', () => {
     }
   });
 
-  it.each(['sw_app', 'sw_data', 'postgres', 'template1'])('cannot connect to %s', async (database) => {
+  it.each(['sw_app', 'postgres', 'template1'])('cannot connect to %s', async (database) => {
     const account = await newAccount();
     const client = new pg.Client({ ...account.login, database });
     client.on('error', () => {});

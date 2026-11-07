@@ -64,7 +64,7 @@ afterAll(async () => {
   const admin = new pg.Client({
     host: 'localhost',
     port: config.postgresPort,
-    database: 'sw_data',
+    database: 'postgres',
     user: 'sw_data',
     password: config.dataDbPassword,
   });
@@ -146,7 +146,7 @@ describe('POST /accounts', () => {
   });
 
   it('rejects malformed postgres storage', async () => {
-    const connection = { host: 'localhost', port: 5432, database: 'sw_data' };
+    const connection = { host: 'localhost', port: 5432, database: 'postgres' };
     const credentials = { user: 'u', password: 'p' };
     const cases: Record<string, unknown> = {
       'only a backend': { backend: 'postgres' },
@@ -175,7 +175,7 @@ describe('POST /accounts', () => {
     expect(database.host).toBe('localhost');
     expect(database.port).toBe(config.postgresPort);
     expect(database.database).toBe(`acct_${created.account_id.replaceAll('-', '')}_1`);
-    expect(database.database).not.toBe('sw_data');
+    expect(database.database).not.toBe('postgres');
 
     const connect = (name: string) =>
       new pg.Client({
@@ -240,7 +240,7 @@ describe('POST /accounts', () => {
         store: 'active',
         generation: 1,
         namespace: database.database,
-        connection: { host: 'localhost', port: config.postgresPort, database: 'sw_data' },
+        connection: { host: 'localhost', port: config.postgresPort, database: 'postgres' },
       },
     ]);
   });

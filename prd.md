@@ -741,7 +741,7 @@ The backend is part of the account object in the application database, set when 
   "slug": "account-123",
   "storage": {
     "backend": "postgres",
-    "connection": { "host": "pg-data", "port": 5432, "database": "sw_data" },
+    "connection": { "host": "pg-data", "port": 5432, "database": "postgres" },
     "credentials": { "user": "sw_data", "password": "..." }
   }
 }
@@ -935,10 +935,9 @@ Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. W
 Postgres 18, with the platform's databases kept separate, even when they share a server in development:
 
 - `sw_app`: the application database.
-- `sw_data`: where the platform connects to run `provision`. It holds no customer data.
 - `acct_<account id>_<generation>`: one database per store, holding that store's tables in its `public` schema.
 
-Each has its own access: the `sw_data` role has no access to `sw_app`, and it has `CREATEDB` and `CREATEROLE` so `provision` can create store databases and logins. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
+Each has its own access: the `sw_data` role has no access to `sw_app`, connects from the built-in `postgres` database, and has `CREATEDB` and `CREATEROLE` so `provision` can create store databases and logins. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
 
 **Direct customer access.** Customers connect straight to their store's own database over TLS with standard Postgres clients. `provision` creates a login for each store that can connect only to that database, and read its tables, including tables added later through default privileges. The login has a default statement timeout and a limit of 10 connections so heavy use is less likely to starve ingestion. `sw_app` is not reachable from outside.
 

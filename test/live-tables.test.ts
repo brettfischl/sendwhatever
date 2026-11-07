@@ -127,7 +127,7 @@ afterAll(async () => {
   const admin = new pg.Client({
     host: 'localhost',
     port: config.postgresPort,
-    database: 'sw_data',
+    database: 'postgres',
     user: 'sw_data',
     password: config.dataDbPassword,
   });
@@ -315,7 +315,7 @@ describe('watching tables appear', () => {
 });
 
 describe('how the panel reaches the store', () => {
-  it('connects as the store login, to the store database, and not to sw_data', async () => {
+  it('connects as the store login, to the store database, and not to postgres', async () => {
     await poll('/api/tables');
     const { rows } = await appDb.query<{ usename: string; datname: string }>(
       `SELECT usename, datname FROM pg_stat_activity

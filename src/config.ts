@@ -41,12 +41,12 @@ export function loadConfig(): Config {
   }
 
   const port = required('POSTGRES_PORT');
-  const url = (role: string, password: string) =>
-    `postgres://${role}:${encodeURIComponent(password)}@localhost:${port}/${role}`;
+  const url = (role: string, password: string, database: string) =>
+    `postgres://${role}:${encodeURIComponent(password)}@localhost:${port}/${database}`;
 
   return {
-    appDatabaseUrl: url('sw_app', required('SW_APP_DB_PASSWORD')),
-    dataDatabaseUrl: url('sw_data', required('SW_DATA_DB_PASSWORD')),
+    appDatabaseUrl: url('sw_app', required('SW_APP_DB_PASSWORD'), 'sw_app'),
+    dataDatabaseUrl: url('sw_data', required('SW_DATA_DB_PASSWORD'), 'postgres'),
     postgresPort: Number(port),
     dataDbPassword: required('SW_DATA_DB_PASSWORD'),
     encryptionKey: parseEncryptionKey(required('SW_ENCRYPTION_KEY')),
