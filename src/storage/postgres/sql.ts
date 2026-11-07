@@ -42,13 +42,14 @@ export function readOnlyRoleName(namespace: string): string {
   return `${namespace.slice(0, 40)}_${shortHash(namespace)}_ro`;
 }
 
-function qualified(namespace: string, table: string): string {
-  return `${quote(namespace)}.${quote(table)}`;
+/** Each store has its own database, and its tables live in that database's `public` schema. */
+function qualified(table: string): string {
+  return `"public".${quote(table)}`;
 }
 
 /** Every statement is additive and idempotent, and no other DDL exists here (§9). */
-export function schemaChangeSql(namespace: string, change: SchemaChange): string {
-  const target = qualified(namespace, change.table);
+export function schemaChangeSql(change: SchemaChange): string {
+  const target = qualified(change.table);
   switch (change.kind) {
     case 'create_table': {
       const primaryKey = quote(relationName('pk', change.table));
@@ -89,7 +90,6 @@ function bindValue(type: LogicalType, value: unknown): unknown {
  * `_event_seq` is decimal text.
  */
 export function mergeStatement(
-  namespace: string,
   table: string,
   columns: Record<string, LogicalType>,
   row: TableRow,
@@ -117,7 +117,7 @@ export function mergeStatement(
       ELSE COALESCE(${TARGET}.${name}, EXCLUDED.${name}) END`;
   });
 
-  const text = `INSERT INTO ${qualified(namespace, table)} AS ${TARGET} (${names.join(', ')})
+  const text = `INSERT INTO ${qualified(table)} AS ${TARGET} (${names.join(', ')})
     VALUES (${placeholders.join(', ')})
     ON CONFLICT ("id") DO UPDATE SET
       ${[

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { StorageError } from '../src/contracts/index.js';
 import type { LogicalType, StoreConfig, TableRow } from '../src/contracts/index.js';
@@ -19,11 +19,26 @@ const credentials = {
   password: decodeURIComponent(dataUrl.password),
 };
 
-const backend = new PostgresBackend();
+// Every store here has its own database, and creating that many takes a while.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 180_000 });
+
+// Tests create far more stores than a server has connections, so idle ones close at once.
+const backend = new PostgresBackend({ idleTimeoutMs: 50 });
 const admin = new pg.Client({ ...connection, ...credentials });
 const scratch: string[] = [];
 
-/** A store in its own scratch schema, removed after the suite. */
+/** Runs `run` as the platform role, in the store's own database. */
+async function inStore<T>(store: StoreConfig, run: (client: pg.Client) => Promise<T>): Promise<T> {
+  const client = new pg.Client({ ...connection, ...credentials, database: store.namespace });
+  await client.connect();
+  try {
+    return await run(client);
+  } finally {
+    await client.end();
+  }
+}
+
+/** A store in its own scratch database, removed after the suite. */
 function newStore(label = 'store'): StoreConfig {
   const namespace = `t_${randomBytes(6).toString('hex')}_${label}`;
   scratch.push(namespace);
@@ -46,10 +61,12 @@ async function tableStore(table = 'item', columns: Record<string, LogicalType> =
 }
 
 async function readRow(store: StoreConfig, table: string, id: string) {
-  const name = `${pg.escapeIdentifier(store.namespace)}.${pg.escapeIdentifier(table)}`;
-  const result = await admin.query(
-    `SELECT *, "_event_seq"::text AS "_event_seq" FROM ${name} WHERE "id" = $1`,
-    [id],
+  const result = await inStore(store, (client) =>
+    client.query(
+      `SELECT *, "_event_seq"::text AS "_event_seq" FROM ${pg.escapeIdentifier(table)}
+       WHERE "id" = $1`,
+      [id],
+    ),
   );
   return result.rows[0];
 }
@@ -62,6 +79,7 @@ async function asLogin<T>(
     ...connection,
     user: login.user as string,
     password: login.password as string,
+    database: login.database as string,
   });
   await client.connect();
   try {
@@ -87,23 +105,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await backend.close();
   for (const namespace of scratch) {
-    const role = pg.escapeIdentifier(readOnlyRoleName(namespace));
-    // Dropping the schema removes its grants. sw_data isn't a member of the role, so it can't use
-    // DROP OWNED, and revokes the database grant directly.
-    await admin.query(`DROP SCHEMA IF EXISTS ${pg.escapeIdentifier(namespace)} CASCADE`);
-    const exists = await admin.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [
-      readOnlyRoleName(namespace),
-    ]);
-    if (exists.rowCount) {
-      await admin.query(
-        `REVOKE CONNECT ON DATABASE ${pg.escapeIdentifier(connection.database)} FROM ${role}`,
-      );
-      await admin.query(`DROP ROLE ${role}`);
-    }
+    // Dropping the database removes the grants that would otherwise block dropping the role.
+    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
   }
   await admin.end();
-  await backend.close();
 });
 
 describe('capabilities', () => {
@@ -200,11 +208,34 @@ describe('provision', () => {
     const mine = await tableStore();
     const other = await tableStore('secret', { value: 'string' });
     const login = await backend.provision(mine);
-    const table = `${pg.escapeIdentifier(other.namespace)}."secret"`;
+
+    // Not even a connection, to the other store or any platform database.
+    for (const database of [other.namespace, connection.database, 'sw_app', 'postgres', 'template1']) {
+      await expect(
+        asLogin({ ...login, database }, async () => undefined),
+        database,
+      ).rejects.toMatchObject({ code: '42501' });
+    }
 
     await asLogin(login, async (client) => {
-      await expect(client.query(`SELECT * FROM ${table}`)).rejects.toMatchObject({ code: '42501' });
+      const table = `${pg.escapeIdentifier(other.namespace)}."public"."secret"`;
+      await expect(client.query(`SELECT * FROM ${table}`)).rejects.toMatchObject({ code: '0A000' });
+
+      // Per-database catalogs don't list another store's tables.
+      const listed = await client.query(`SELECT 1 FROM pg_class WHERE relname = 'secret'`);
+      expect(listed.rowCount).toBe(0);
     });
+  });
+
+  it('returns the database the login connects to', async () => {
+    const store = newStore();
+    const login = await backend.provision(store);
+    expect(login.database).toBe(store.namespace);
+    const current = await asLogin(login, async (client) => {
+      const result = await client.query('SELECT current_database() AS name');
+      return result.rows[0].name;
+    });
+    expect(current).toBe(store.namespace);
   });
 
   it('gives the login a statement timeout and limits its role', async () => {
@@ -244,6 +275,7 @@ describe('provision', () => {
           ...connection,
           user: login.user as string,
           password: login.password as string,
+          database: login.database as string,
         });
         await client.connect();
         open.push(client);
@@ -280,18 +312,21 @@ describe('provision', () => {
 
 describe('applySchema', () => {
   async function columnsOf(store: StoreConfig, table: string) {
-    const result = await admin.query(
-      `SELECT column_name, data_type FROM information_schema.columns
-       WHERE table_schema = $1 AND table_name = $2`,
-      [store.namespace, table],
+    const result = await inStore(store, (client) =>
+      client.query(
+        `SELECT column_name, data_type FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1`,
+        [table],
+      ),
     );
     return Object.fromEntries(result.rows.map((row) => [row.column_name, row.data_type]));
   }
 
   async function indexesOf(store: StoreConfig, table: string): Promise<string[]> {
-    const result = await admin.query(
-      'SELECT indexdef FROM pg_indexes WHERE schemaname = $1 AND tablename = $2',
-      [store.namespace, table],
+    const result = await inStore(store, (client) =>
+      client.query(`SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1`, [
+        table,
+      ]),
     );
     return result.rows.map((row) => row.indexdef);
   }
@@ -415,11 +450,11 @@ describe('applySchema', () => {
 
   it('gives up on a held table lock with a retryable error', { timeout: 15_000 }, async () => {
     const store = await tableStore();
-    const holder = new pg.Client({ ...connection, ...credentials });
+    const holder = new pg.Client({ ...connection, ...credentials, database: store.namespace });
     await holder.connect();
     try {
       await holder.query('BEGIN');
-      await holder.query(`LOCK TABLE ${pg.escapeIdentifier(store.namespace)}."item"`);
+      await holder.query('LOCK TABLE "item"');
       const started = Date.now();
       const errors = await Promise.all([
         failure(
@@ -478,8 +513,8 @@ describe('write', () => {
       await put(store, row);
       await put(store, row);
 
-      const count = await admin.query(
-        `SELECT count(*)::int AS n FROM ${pg.escapeIdentifier(store.namespace)}."item"`,
+      const count = await inStore(store, (client) =>
+        client.query('SELECT count(*)::int AS n FROM "item"'),
       );
       expect(count.rows[0].n).toBe(1);
       expect(await readRow(store, 'item', 'r')).toMatchObject({ a: 'x', _event_seq: '5' });
@@ -833,14 +868,11 @@ describe('write', () => {
   describe('failures', () => {
     /** Runs `check` while another connection holds an uncommitted insert of row `r`. */
     async function withRowLocked(store: StoreConfig, check: () => Promise<void>) {
-      const holder = new pg.Client({ ...connection, ...credentials });
+      const holder = new pg.Client({ ...connection, ...credentials, database: store.namespace });
       await holder.connect();
       try {
         await holder.query('BEGIN');
-        await holder.query(
-          `INSERT INTO ${pg.escapeIdentifier(store.namespace)}."item" ("id", "_event_seq")
-           VALUES ('r', 1)`,
-        );
+        await holder.query(`INSERT INTO "item" ("id", "_event_seq") VALUES ('r', 1)`);
         await check();
       } finally {
         await holder.query('ROLLBACK');
@@ -858,7 +890,7 @@ describe('write', () => {
           await new Promise((resolve) => setTimeout(resolve, 50));
           const result = await admin.query(
             `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-             WHERE wait_event_type = 'Lock' AND position($1 IN query) > 0`,
+             WHERE wait_event_type = 'Lock' AND datname = $1`,
             [store.namespace],
           );
           killed = result.rowCount ?? 0;
@@ -987,6 +1019,14 @@ describe('write', () => {
       }
     });
 
+    it('classifies a store with no database as permanent', async () => {
+      const store = { namespace: 'no_such_store', connection, credentials };
+      const error = await failure(
+        backend.write(store, [{ table: 't', columns: {}, rows: [{ id: 'r', _event_seq: '1' }] }]),
+      );
+      expect(error.retryable).toBe(false);
+    });
+
     it('classifies incomplete store settings as permanent', async () => {
       const store = { namespace: 'unused', connection: {} };
       const error = await failure(backend.applySchema(store, [{ kind: 'create_table', table: 't' }]));
@@ -1009,8 +1049,8 @@ describe('health', () => {
     await expect(backend.health(store)).resolves.toBeUndefined();
   });
 
-  it('fails permanently when the schema is missing', async () => {
-    const error = await failure(backend.health({ namespace: 'no_such_schema', connection, credentials }));
+  it('fails permanently when the database is missing', async () => {
+    const error = await failure(backend.health({ namespace: 'no_such_store', connection, credentials }));
     expect(error.retryable).toBe(false);
   });
 });
@@ -1044,6 +1084,7 @@ describe('error classification', () => {
     ['23502', 'not null'],
     ['42P01', 'missing table'],
     ['42703', 'missing column'],
+    ['3D000', 'missing database'],
     ['3F000', 'missing schema'],
     ['54011', 'too many columns'],
   ])('treats %s (%s) as permanent', (code) => {
