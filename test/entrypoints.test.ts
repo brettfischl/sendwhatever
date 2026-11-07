@@ -1,6 +1,7 @@
 // Runs the documented commands as real processes, the way someone at a terminal would.
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import net from 'node:net';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -266,6 +267,41 @@ describe('npm run dev', () => {
 
     await expectAllStopped(dev, 1);
     expect(dev.output()).toContain('[dev] worker exited (SIGKILL), so stopping everything');
+  });
+});
+
+describe('npm start', () => {
+  it('finishes a request in flight when Ctrl-C arrives twice, then exits cleanly', async () => {
+    const port = await freePort();
+    const start = npmRun('start', randomUUID(), port);
+    await waitForStart(start, 'sendwhatever listening');
+
+    // The login route reads the whole body and then queries the database, so it needs the pool to last.
+    const form = 'email=nobody%40example.com&password=wrong-password';
+    const client = net.connect(port, '127.0.0.1');
+    await once(client, 'connect');
+    const response = new Promise<string>((resolve, reject) => {
+      let text = '';
+      client.on('data', (chunk) => (text += chunk));
+      client.on('end', () => resolve(text));
+      client.on('error', reject);
+    });
+    client.write(
+      `POST /admin/login HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nOrigin: http://127.0.0.1:${port}\r\n` +
+        `Content-Type: application/x-www-form-urlencoded\r\nContent-Length: ${form.length}\r\nConnection: close\r\n\r\n`,
+    );
+    client.write(form.slice(0, 5));
+    await sleep(300);
+
+    // npm passes a Ctrl-C on as well, so the server can see it twice.
+    process.kill(-start.group, 'SIGINT');
+    await sleep(100);
+    process.kill(-start.group, 'SIGINT');
+    await sleep(300);
+    client.write(form.slice(5));
+
+    expect(await response).toMatch(/^HTTP\/1\.1 [234]\d\d /);
+    await expectAllStopped(start, 0);
   });
 });
 

@@ -17,14 +17,34 @@ if (!config.internalApiToken) {
 }
 await ensureSuperAdmin(appDb, config.adminEmail, config.adminPassword);
 
-const app = createApp({ appDb, backend: new PostgresBackend(), config });
+const backend = new PostgresBackend();
+const app = createApp({ appDb, backend, config });
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
   console.log(`sendwhatever listening on http://${info.address}:${info.port}`);
 });
 
+/** Most requests finish well within this. One cut off here is safe for a client that retries. */
+const SHUTDOWN_TIMEOUT_MS = 30_000;
+
+// One Ctrl-C can arrive several times, from the terminal and again from npm passing it on, so only the
+// first counts. The pools close after the last request, which may still need them.
+let stopping = false;
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
-    server.close();
-    void appDb.end().finally(() => process.exit(0));
+    if (stopping) return;
+    stopping = true;
+    setTimeout(() => {
+      console.error('Running requests did not finish in time, so exiting without them');
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS).unref();
+    server.close(() => {
+      Promise.all([appDb.end(), backend.close()]).then(
+        () => process.exit(0),
+        (error: Error) => {
+          console.error(`Shutdown failed: ${error.message}`);
+          process.exit(1);
+        },
+      );
+    });
   });
 }
