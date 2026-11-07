@@ -352,7 +352,7 @@ The platform then:
 
 The platform uses a lazy, additive schema strategy, defined in logical types so it behaves the same on every storage backend.
 
-- Tables are created on first write if they do not exist. Every table has an `id` primary key and platform-managed columns: `_event_seq` (the highest `events.seq` that has written the row), `_column_seq` (the same, per column, §11.2), and `_deleted_at` (set when the record is marked deleted, §8).
+- Tables are created on first write if they do not exist. Every table has an `id` primary key and platform-managed columns: `_event_seq` (the highest `events.seq` that has written the row) and `_deleted_at` (set when the record is marked deleted, §8). Per-column ordering (§11.2) adds `_column_seq`, which isn't in the MVP.
 - Columns are added on first non-null value if they do not exist. A value that is always `null` creates no column.
 - Column types are inferred from the first non-null value seen, unless the adapter declares them:
   - `number` → `number`
@@ -663,7 +663,7 @@ interface TableRow {
 
 interface TableRows {
   table: string;
-  columns: Record<string, LogicalType>;       // the columns these rows use, not counting platform columns
+  columns: Record<string, LogicalType>;       // every data column in rows, or write() throws; not platform columns
   rows: TableRow[];
 }
 
@@ -686,7 +686,8 @@ class StorageError extends Error {
 
 ### 11.2 Backend Requirements
 
-- `provision` and `applySchema` must be idempotent.
+- `provision` and `applySchema` must be idempotent. A repeat `provision` may rotate the read-only password, since Postgres can't return an existing one, so callers only call it before a store goes active and serialize those calls. `applySchema` may commit each change separately, so a retry finishes what's left.
+- A row's data keys must all be listed in `columns`. An undeclared key makes `write` throw a permanent `StorageError`, whatever its value, so a clear can't be silently lost.
 - `write` receives all rows for one event and must be idempotent on `id`: writing the same row twice leaves one logical row.
 - `write` merges into existing rows, so a store's final state doesn't depend on the order workers ran in or on when a quarantined event is released:
   - Each included column is updated only if the write's `_event_seq` is at least that column's entry in `_column_seq`; other columns are left alone. Out-of-order partial updates therefore all land, and a late event never overrides a newer value.
@@ -929,9 +930,11 @@ Postgres 16 or later, with two separate databases, even when they share a server
 
 Each has its own role, and the `sw_data` role has no access to `sw_app`. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
 
-**Direct customer access.** Customers connect straight to `sw_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a statement timeout so heavy queries can't starve ingestion. `sw_app` is not reachable from outside.
+**Direct customer access.** Customers connect straight to `sw_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a default statement timeout and a limit of 10 connections so heavy use is less likely to starve ingestion. `sw_app` is not reachable from outside.
 
-Customers query the raw tables, including the platform columns `_event_seq`, `_column_seq`, and `_deleted_at`. Soft-deleted rows are visible, so queries for current records filter on `_deleted_at IS NULL`.
+MVP limits: a customer can turn the statement timeout off for their own session, and can see other stores' schema and table names through `pg_catalog`, though not their rows.
+
+Customers query the raw tables, including the platform columns `_event_seq` and `_deleted_at`. Soft-deleted rows are visible, so queries for current records filter on `_deleted_at IS NULL`.
 
 ### 14.2 Caddy Routing
 
