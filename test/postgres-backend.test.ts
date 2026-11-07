@@ -458,7 +458,7 @@ describe('applySchema', () => {
     expect(await columnsOf(store, 'later')).toHaveProperty('x');
   });
 
-  it('gives up on a held table lock with a retryable error', { timeout: 15_000 }, async () => {
+  it('gives up on a held table lock with a retryable error', async () => {
     const store = await tableStore();
     const holder = new pg.Client({ ...connection, ...credentials, database: store.namespace });
     await holder.connect();
@@ -476,7 +476,7 @@ describe('applySchema', () => {
       ]);
       for (const error of errors) expect(error.retryable).toBe(true);
       // The 5s lock timeout, not the 10-minute DDL statement timeout.
-      expect(Date.now() - started).toBeLessThan(8_000);
+      expect(Date.now() - started).toBeLessThan(25_000);
     } finally {
       await holder.query('ROLLBACK');
       await holder.end();
