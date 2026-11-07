@@ -288,10 +288,10 @@ Rules:
 - `rows` is required. Each row represents one record in the table. One ingress event can produce any number of rows: `{ "messages": [{ "msg": "hi" }, { "msg": "hello!" }] }` can become two `messages` rows.
 - `id` is optional on each row, including child rows. If missing, the platform injects a UUIDv5, so reprocessing the same event produces the same IDs:
   - A child of a parent with an adapter-supplied `id` derives from `(parent id, table, position)`, so a repeat of the parent updates its children instead of adding more.
-  - A parent row that includes a child table replaces that set: the parent's children from earlier events that this event doesn't write are marked deleted (§9). A parent row that omits the child table leaves it alone. Tables with `append: true` are never replaced.
+  - A shorter list never removes anything. If a later event has fewer children, the extra rows stay current, because the event may be a partial update. Removing a child takes an explicit delete: a `DELETE` request for it, or a `_deleted: true` child row (below).
   - Every other row, and any child table with `append: true`, derives from `(event_id, table, row path)`.
 - An adapter-supplied `id` is treated as the record's identity, and writes to it merge: columns in the write are updated, and columns absent from it keep their values. An explicit `null` clears a column. When events conflict on a column, the one latest in the log wins (§11.2).
-- `_deleted: true` marks the record deleted by setting `_deleted_at`, and any fields included on the row are written too, so nothing in the event is lost. A write later in the log for the same `id` restores it; a delayed earlier event does not (§11.2). Rows are never physically removed.
+- `_deleted: true` marks the record deleted by setting `_deleted_at`, and any fields included on the row are written too, so nothing in the event is lost. A write later in the log for the same `id` restores it; a delayed earlier event does not (§11.2). Rows are never physically removed. This works on child rows too, so an adapter can turn `{ "id": "order_1", "items": [{ "id": "1", "deleted": true }] }` into a `_deleted: true` row for item 1. Deletes are always explicit, and the platform never infers one from a missing row.
 - Returning an array writes several top-level tables from one event, such as an order and the customer embedded in it. An entity with its own identity belongs in its own table, referenced by a column like `customer_id`, rather than repeated as a child of each parent.
 - Column values are strings, numbers, booleans, or `null`, plus objects or arrays at declared opaque paths (§9). A `timestamp` column is declared in `column_types`, and its values must be ISO 8601 strings with a timezone.
 - `children` is reserved, as are injected foreign key names. An adapter must rename payload fields that collide with them, and a collision fails with `adapter_error`.
@@ -634,7 +634,6 @@ interface TableRows {
   table: string;
   columns: Record<string, LogicalType>;       // the columns these rows use
   rows: Record<string, unknown>[];            // every row has id and _event_seq; an absent key keeps the stored value
-  replaceChildrenOf?: { column: string; ids: string[] };  // mark deleted rows whose column is in ids and that this write doesn't include (§8)
 }
 
 interface StorageBackend {
@@ -660,7 +659,7 @@ class StorageError extends Error {
 - `write` receives all rows for one event and must be idempotent on `id`: writing the same row twice leaves one logical row.
 - `write` merges into existing rows, so a store's final state doesn't depend on the order workers ran in or on when a quarantined event is released:
   - Each included column is updated only if the write's `_event_seq` is at least that column's entry in `_column_seq`; other columns are left alone. Out-of-order partial updates therefore all land, and a late event never overrides a newer value.
-  - The row keeps the higher `_event_seq`. Deletes and child-set replacement (§8) compare it, and raise it to the deleting event's `seq`, so only a write at or above that `seq` can clear `_deleted_at`.
+  - The row keeps the higher `_event_seq`. Deletes (§8) compare it, and raise it to the deleting event's `seq`, so only a write at or above that `seq` can clear `_deleted_at`.
   - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns. A rebuild, which runs in order, corrects anything missed.
 - `provision` must also create read-only credentials limited to that store's namespace, and they must keep working for tables and columns added later.
 - `write` must classify every failure as retryable or permanent through `StorageError`.
@@ -793,7 +792,7 @@ A configurable cap limits generations per shape, and the shape then waits for an
 - Declare date and time fields as `timestamp`, and normalize them to ISO 8601 with a timezone.
 - Give an embedded entity with its own identity, such as a customer inside an order, its own table.
 - Choose table names from the content of the payload. Use the path and headers as hints when they are present, and don't rely on them being there.
-- Use `payload.request` to tell event kinds apart. For `DELETE` requests, and events whose body or headers say a record was deleted, set `_deleted: true` on the same table and `id` the write adapter uses. Keep any fields the event includes.
+- Use `payload.request` to tell event kinds apart. For `DELETE` requests, and events whose body or headers say a record was deleted, set `_deleted: true` on the same table and `id` the write adapter uses. Keep any fields the event includes. Look for per-item signals too, like `items: [{ "id": 1, "deleted": true }]`, and mark that child row the same way. Never treat a missing item as a delete.
 
 Prompts are guidance, so the rules that matter are also enforced in code, by the gate below and the schema layer (§9).
 
@@ -804,7 +803,7 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 - Causes no type conflicts with registered columns.
 - Declares opaque paths only on specific named fields, never the payload root or an array of the root, so an adapter can't match everything.
 - For `op = delete`, sets `_deleted: true` on every top-level row, with an `id`.
-- Carries every field value in the payload through to the output, allowing for casts like `5` to `"5"`, so an adapter can't pass while silently losing data.
+- Carries every field value in the payload through to the output, allowing for casts like `5` to `"5"` and for a delete flag becoming `_deleted`, so an adapter can't pass while silently losing data.
 - If it replaces an earlier version for the same shape, still writes every column that version wrote, so a column can't quietly stop being populated.
 
 **Mistakes are recoverable.** A bad adapter that passes the gate writes wrong rows, not lost data. The original payloads remain in the event log, so a corrected adapter and a rebuild (§5.4) repair the account.
@@ -950,7 +949,8 @@ curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
 | Value conflicts with registered column type | Quarantine with `schema_conflict` |
 | Generated adapter fails validation | Not activated; LLM retries with the errors, up to the generation cap, then the shape waits for an operator |
 | Quarantined event released after newer writes to the same row | Updates only columns no newer event has written; newer values are kept |
-| Parent resent with fewer children | Missing children are marked deleted; nothing is removed |
+| Parent resent with fewer children | Missing children stay current; removing one takes an explicit delete |
+| Parent resent with a child marked deleted | That child row is soft-deleted |
 | LLM provider unavailable | Generator retries with backoff; events stay safely in quarantine |
 | Application database unavailable at ingest | Return `503`; client retries |
 | Storage backend unavailable or times out | Job stays queued with backoff; `write_error` after maximum age |
@@ -981,7 +981,7 @@ This is a one-day hackathon build at low volume: it needs to work end to end. Wo
 - `/ingest` with any JSON body and no required type, optional paths, HTTP verbs including `DELETE`, API keys (header or `?key=`), and `Idempotency-Key`, including webhook delivery IDs (§6, §6.2).
 - Event log, Postgres queue, and worker.
 - Fingerprinting, Adapter Generator, validation gate, and `isolated-vm` sandbox.
-- `StorageBackend` interface and Postgres implementation, including merging writes (the §11.2 MVP option is acceptable), soft deletes and child-set replacement, timestamps, indexes, and read-only credentials.
+- `StorageBackend` interface and Postgres implementation, including merging writes (the §11.2 MVP option is acceptable), soft deletes, timestamps, indexes, and read-only credentials.
 - Quarantine and replay.
 
 **2. If time allows.**
@@ -1014,7 +1014,7 @@ For the hackathon:
 - An unknown shape reaches relational tables with no human involvement, delayed only by adapter generation and replay.
 - A customer can connect with read-only credentials and query normalized tables with typed timestamps and indexed joins.
 - Partial updates to the same record merge into one row without losing earlier values.
-- Resending a parent with fewer children marks the missing ones deleted.
+- Resending a parent with fewer children leaves the others current, and a child can be removed with a `DELETE` or a per-item delete flag.
 - A simulated third-party webhook, using a recorded GitHub or Shopify payload and headers sent to `/ingest?key=…`, reaches tables.
 - Can replay quarantined rows transactionally after adapter activation, with repeated or interrupted replays producing no duplicate rows.
 - A client retry with the same `Idempotency-Key` creates no duplicate data.
