@@ -25,6 +25,8 @@ ensure_var SW_APP_DB_PASSWORD "$(random_password)"
 ensure_var SW_DATA_DB_PASSWORD "$(random_password)"
 ensure_var SW_ENCRYPTION_KEY "$(random_key)"
 ensure_var INTERNAL_API_TOKEN "$(random_password)"
+ensure_var ADMIN_EMAIL admin@localhost
+ensure_var ADMIN_PASSWORD "$(random_password)"
 ensure_var FIREWORKS_API_KEY ""
 
 npm ci

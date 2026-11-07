@@ -3,6 +3,7 @@ import type pg from 'pg';
 import type { AdapterRequest, LogicalType } from '../contracts/index.js';
 import { fingerprint } from '../fingerprint/index.js';
 import type { RegisteredColumns } from '../planner/registry.js';
+import { enqueueReplay } from '../worker/queue.js';
 import {
   checkOpaquePaths,
   runGate,
@@ -255,20 +256,6 @@ export async function validateAdapter(
   const gate = await gateAdapter(pool, adapter, options);
   if (gate.ok) await markValidated(pool, id);
   return { adapter, gate };
-}
-
-/**
- * Enqueues a replay (§10.1) if the adapter is active, and returns whether it is. If a replay is already
- * queued it may have paged past rows that now match, so this asks it to run again instead.
- */
-async function enqueueReplay(db: Queryable, adapterId: string): Promise<boolean> {
-  const result = await db.query(
-    `INSERT INTO queue (account_id, kind, adapter_id)
-     SELECT account_id, 'replay', id FROM adapters WHERE id = $1 AND active
-     ON CONFLICT (adapter_id) WHERE kind = 'replay' DO UPDATE SET rerun_requested = true`,
-    [adapterId],
-  );
-  return result.rowCount === 1;
 }
 
 export type ReplayResult = 'enqueued' | 'not_found' | 'not_active';

@@ -14,6 +14,9 @@ export interface Config {
   host: string;
   /** Bearer token for the adapter and quarantine routes. Undefined means they refuse every request. */
   internalApiToken: string | undefined;
+  /** Seed for the first super admin; both optional. */
+  adminEmail: string | undefined;
+  adminPassword: string | undefined;
   /** Undefined until a key is set. Code that calls the LLM should fail with a clear error. */
   fireworksApiKey: string | undefined;
   fireworksModel: string;
@@ -44,6 +47,8 @@ export function loadConfig(): Config {
     port: Number(process.env.PORT || 3000),
     host: process.env.HOST || '127.0.0.1',
     internalApiToken: process.env.INTERNAL_API_TOKEN || undefined,
+    adminEmail: process.env.ADMIN_EMAIL || undefined,
+    adminPassword: process.env.ADMIN_PASSWORD || undefined,
     fireworksApiKey: process.env.FIREWORKS_API_KEY || undefined,
     fireworksModel: process.env.FIREWORKS_MODEL || DEFAULT_FIREWORKS_MODEL,
   };

@@ -1,21 +1,12 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { createInternalRoutes } from '../adapters/index.js';
-import { HttpError, type AppDeps, type AppEnv } from './deps.js';
+import { adminRoutes } from '../admin/index.js';
+import { HttpError, isConnectionError, type AppDeps, type AppEnv } from './deps.js';
 import { accountRoutes } from './routes/accounts.js';
 import { ingestRoutes } from './routes/ingest.js';
 
 export const MAX_BODY_BYTES = 25 * 1024 * 1024;
-
-const CONNECTION_ERROR_CODES = new Set([
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'ENOTFOUND',
-  'ETIMEDOUT',
-  'EHOSTUNREACH',
-  '57P01', // admin_shutdown
-  '57P03', // cannot_connect_now
-]);
 
 /** Builds the app from injected dependencies, so tests call `app.request()` with no port. */
 export function createApp(deps: AppDeps): Hono<AppEnv> {
@@ -50,6 +41,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   app.route('/accounts', accountRoutes);
   app.route('/ingest', ingestRoutes);
   app.route('/', createInternalRoutes({ pool: deps.appDb, token: deps.config.internalApiToken }));
+  app.route('/admin', adminRoutes);
 
   app.notFound((c) => c.json({ error: 'not found' }, 404));
   app.onError((error, c) => {
@@ -74,19 +66,4 @@ function hasDotSegment(target: string): boolean {
       }
       return segment === '.' || segment === '..';
     });
-}
-
-function isConnectionError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const { code, errors, message } = error as {
-    code?: string;
-    errors?: unknown[];
-    message?: string;
-  };
-  if (code && CONNECTION_ERROR_CODES.has(code)) return true;
-  if (errors?.some(isConnectionError)) return true;
-  return (
-    message === 'Connection terminated unexpectedly' ||
-    message === 'timeout exceeded when trying to connect'
-  );
 }

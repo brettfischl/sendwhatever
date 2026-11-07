@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import pg from 'pg';
 import { loadConfig } from '../config.js';
+import { ensureSuperAdmin } from '../admin/users.js';
 import { PostgresBackend } from '../storage/postgres/index.js';
 import { createApp } from './app.js';
 
@@ -12,6 +13,7 @@ appDb.on('error', (error) => console.error('app database pool error:', error.mes
 if (!config.internalApiToken) {
   console.warn('INTERNAL_API_TOKEN is not set, so the adapter and quarantine routes refuse every request.');
 }
+await ensureSuperAdmin(appDb, config.adminEmail, config.adminPassword);
 
 const app = createApp({ appDb, backend: new PostgresBackend(), config });
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {

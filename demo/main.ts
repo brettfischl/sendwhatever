@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { loadDemoConfig } from './config.js';
+import { createRawIngestClient } from './console.js';
 import { createIngestClient, RequestLog } from './ingest-client.js';
 import { createDemoServer, SiteEvents } from './server.js';
 import { startStub } from './stub.js';
@@ -19,12 +20,13 @@ const ingestUrl = config.ingestUrl ?? stub!.url;
 
 const events = new SiteEvents();
 const log = new RequestLog((change) => events.logChanged(change));
-const send = createIngestClient({
+const clientOptions = {
   url: ingestUrl,
   apiKey: config.ingestApiKey ?? STUB_API_KEY,
   ...(config.accountSlug ? { accountSlug: config.accountSlug } : {}),
   log,
-});
+};
+const send = createIngestClient(clientOptions);
 const webinar = new Webinar(send, (sessionId) => events.sessionChanged(sessionId));
 
 const server = createDemoServer(
@@ -32,6 +34,7 @@ const server = createDemoServer(
     webinar,
     log,
     target: { mode: stub ? 'stub' : 'real', url: ingestUrl, accountSlug: config.accountSlug },
+    consoleSend: createRawIngestClient(clientOptions),
   },
   events,
 );
@@ -42,5 +45,6 @@ server.on('error', (error) => {
 });
 server.listen(config.port, config.host, () => {
   console.log(`Demo site: http://${config.host}:${config.port}`);
+  console.log(`Demo console: http://${config.host}:${config.port}/console`);
   console.log(`Sending to: ${ingestUrl}${stub ? ' (built-in stub)' : ''}`);
 });
