@@ -927,7 +927,7 @@ Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. W
 
 ### 14.1 Postgres
 
-Postgres 16 or later, with the platform's databases kept separate, even when they share a server in development:
+Postgres 18, with the platform's databases kept separate, even when they share a server in development:
 
 - `sw_app`: the application database.
 - `sw_data`: where the platform connects to run `provision`. It holds no customer data.

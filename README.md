@@ -27,6 +27,8 @@ Set `FIREWORKS_API_KEY` in `.env` yourself. Nothing needs it yet. `FIREWORKS_MOD
 
 If you delete `.env` but keep the volume, the new passwords won't match the existing roles. Run `docker compose down -v` and then `npm run setup`.
 
+If you set up before the move to Postgres 18, run `docker compose down -v` and then `npm run setup`. That deletes this checkout's local data.
+
 If port 5433 is taken, for example by another worktree, change `POSTGRES_PORT` in `.env`.
 
 ## Demo site
