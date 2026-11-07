@@ -30,8 +30,10 @@ export interface TableRow {
    */
   _event_seq: string;
   /**
-   * Marks the record deleted, set to the deleting event's `received_at` so replays match. Unlike
-   * other keys, leaving it out of a write at or above the stored `_event_seq` clears it (§8, §11.2).
+   * Marks the record deleted, set to the deleting event's `received_at` so replays match. Only a
+   * write at or above the row's `_event_seq` can change it: it sets it if included and clears it if
+   * not, the one exception to an absent key keeping its value. A lower write never touches it, even
+   * under the MVP rule that fills `NULL` columns (§8, §11.2).
    */
   _deleted_at?: string;
   [column: string]: unknown;

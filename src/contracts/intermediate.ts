@@ -59,10 +59,11 @@ export type AdapterResult = IntermediateObject | IntermediateObject[];
 /** The logged request (§6.2), with obvious auth already removed. */
 export interface AdapterRequest {
   method: string;
+  /** The path as received. */
   path: string;
   /** The raw query string, without the leading `?`. Empty when there is none. */
   query: string;
-  /** Repeated headers are joined with `, `. */
+  /** Names are lowercase. Repeated headers are joined with `, `. */
   headers: Record<string, string>;
 }
 
