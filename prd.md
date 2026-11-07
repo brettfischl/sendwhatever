@@ -522,7 +522,8 @@ CREATE TABLE quarantine (
   released_by_adapter_id UUID,
   FOREIGN KEY (account_id, event_id) REFERENCES events(account_id, id),
   FOREIGN KEY (account_id, store_id) REFERENCES account_stores(account_id, id),
-  FOREIGN KEY (account_id, released_by_adapter_id) REFERENCES adapters(account_id, id)
+  FOREIGN KEY (account_id, released_by_adapter_id) REFERENCES adapters(account_id, id),
+  UNIQUE (account_id, id)                         -- target for same-account foreign keys
 );
 
 CREATE INDEX quarantine_unreleased
@@ -534,11 +535,14 @@ CREATE UNIQUE INDEX quarantine_one_open
 
 CREATE TABLE replay_log (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  quarantine_id UUID NOT NULL REFERENCES quarantine(id),
-  adapter_id UUID NOT NULL REFERENCES adapters(id),
+  account_id UUID NOT NULL REFERENCES accounts(id),
+  quarantine_id UUID NOT NULL,
+  adapter_id UUID NOT NULL,
   status TEXT NOT NULL,
   detail TEXT,
-  attempted_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  attempted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (account_id, quarantine_id) REFERENCES quarantine(account_id, id),
+  FOREIGN KEY (account_id, adapter_id) REFERENCES adapters(account_id, id)
 );
 
 CREATE TABLE adapter_attempts (

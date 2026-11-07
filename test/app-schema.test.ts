@@ -124,6 +124,7 @@ const EXPECTED_COLUMNS: Record<string, string[]> = {
   ],
   replay_log: [
     'id int8 not null identity',
+    'account_id uuid not null',
     'quarantine_id uuid not null',
     'adapter_id uuid not null',
     'status text not null',
@@ -209,12 +210,14 @@ const EXPECTED_CONSTRAINTS: Record<string, string[]> = {
     'FOREIGN KEY (account_id, event_id) REFERENCES events(account_id, id)',
     'FOREIGN KEY (account_id, store_id) REFERENCES account_stores(account_id, id)',
     'FOREIGN KEY (account_id, released_by_adapter_id) REFERENCES adapters(account_id, id)',
+    'UNIQUE (account_id, id)',
     "CHECK ((reason = ANY (ARRAY['unknown_fingerprint'::text, 'malformed'::text, 'adapter_error'::text, 'schema_conflict'::text, 'write_error'::text])))",
   ],
   replay_log: [
     'PRIMARY KEY (id)',
-    'FOREIGN KEY (quarantine_id) REFERENCES quarantine(id)',
-    'FOREIGN KEY (adapter_id) REFERENCES adapters(id)',
+    'FOREIGN KEY (account_id) REFERENCES accounts(id)',
+    'FOREIGN KEY (account_id, quarantine_id) REFERENCES quarantine(account_id, id)',
+    'FOREIGN KEY (account_id, adapter_id) REFERENCES adapters(account_id, id)',
   ],
   adapter_attempts: [
     'PRIMARY KEY (id)',
@@ -567,6 +570,7 @@ describe('same-account references', () => {
     const other = await createAccount();
     return {
       account,
+      other,
       event: await createEvent(account),
       adapter: await createAdapter(account, { version: 1, active: true }),
       store: await createStore(account, 1),
@@ -614,6 +618,21 @@ describe('same-account references', () => {
       t.adapter,
       entry,
     ]);
+  });
+
+  it('rejects replay log entries that reference another account', async () => {
+    const t = await twoAccounts();
+    const entry = await quarantine(t.account, t.event, t.store);
+    const otherEntry = await quarantine(t.other, t.otherEvent, t.otherStore);
+
+    await expect(logReplay(t.account, entry, t.otherAdapter)).rejects.toMatchObject(
+      foreignKeyViolation,
+    );
+    await expect(logReplay(t.account, otherEntry, t.adapter)).rejects.toMatchObject(
+      foreignKeyViolation,
+    );
+
+    await logReplay(t.account, entry, t.adapter);
   });
 
   it('rejects adapter attempts that reference another account', async () => {
@@ -775,6 +794,14 @@ function quarantine(account: string, event: string, store: string | null): Promi
     `INSERT INTO quarantine (event_id, account_id, store_id, reason)
      VALUES ($1, $2, $3, 'write_error')`,
     [event, account, store],
+  );
+}
+
+function logReplay(account: string, entry: string, adapter: string): Promise<string> {
+  return insertReturningId(
+    `INSERT INTO replay_log (account_id, quarantine_id, adapter_id, status)
+     VALUES ($1, $2, $3, 'released')`,
+    [account, entry, adapter],
   );
 }
 
