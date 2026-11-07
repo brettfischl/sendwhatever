@@ -111,8 +111,8 @@ describe('manage accounts', () => {
     expect(html).toContain('Read-only database login');
     expect(html).toContain('Credentials page');
     expect(html).not.toMatch(/database password.{0,40}cannot be shown again/);
-    expect(html).toContain('Host <code>localhost</code>');
-    expect(html).toContain(`Port <code>${config.postgresPort}</code>`);
+    expect(html).toContain('<td>Host</td><td><code>localhost</code></td>');
+    expect(html).toContain(`<td>Port</td><td><code>${config.postgresPort}</code></td>`);
     expect(html).not.toContain('SSL mode');
 
     expect((await ingest(slug, apiKey)).status).toBe(202);
@@ -171,9 +171,9 @@ describe('manage accounts', () => {
     });
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain('Host <code>db.example.test</code>');
-    expect(html).toContain('Port <code>5432</code>');
-    expect(html).toContain('SSL mode <code>require</code>');
+    expect(html).toContain('<td>Host</td><td><code>db.example.test</code></td>');
+    expect(html).toContain('<td>Port</td><td><code>5432</code></td>');
+    expect(html).toContain('<td>SSL mode</td><td><code>require</code></td>');
     expect(html).not.toContain('localhost');
   });
 
@@ -206,6 +206,30 @@ describe('manage accounts', () => {
     expect(res.status).toBe(409);
     const { rows: after } = await appDb.query('SELECT status FROM accounts WHERE id = $1', [rows[0]!.id]);
     expect(after[0].status).toBe('provisioning');
+    const detail = await (
+      await app.request(`/admin/manage/accounts/${rows[0]!.id}`, { headers: s.headers })
+    ).text();
+    expect(detail).toContain('Still provisioning');
+    expect(detail).toContain('callout-info');
+    expect(detail).not.toContain('Disable account');
+    expect(detail).not.toContain('Re-enable account');
+  });
+
+  it('offers Re-enable on a disabled account', async () => {
+    const admin = await newUser('acct-reenable', true);
+    const s = await session(admin.email);
+    const slug = `mgr-${tag}`;
+    slugs.push(slug);
+    const { rows } = await appDb.query<{ id: string }>(
+      `INSERT INTO accounts (slug, status) VALUES ($1, 'disabled') RETURNING id`,
+      [slug],
+    );
+    const detail = await (
+      await app.request(`/admin/manage/accounts/${rows[0]!.id}`, { headers: s.headers })
+    ).text();
+    expect(detail).toContain('Re-enable account');
+    expect(detail).toContain(`/admin/manage/accounts/${rows[0]!.id}/enable`);
+    expect(detail).not.toContain('Disable account');
   });
 
   it('answers a friendly error for an unknown member email', async () => {
@@ -299,6 +323,42 @@ describe('manage users', () => {
     const weak = await post(`/admin/manage/users/${target.id}/password`, s, { password: 'tiny' });
     expect(weak.status).toBe(400);
     expect(await weak.text()).toContain('at least 12 characters');
+  });
+});
+
+describe('page headers', () => {
+  it('renders a PageHeader title and breadcrumb on every manage page', async () => {
+    const admin = await newUser('hdr-admin', true);
+    const s = await session(admin.email);
+    const slug = `hd-${tag}`;
+    slugs.push(slug);
+
+    const list = await (await app.request('/admin/manage/accounts', { headers: s.headers })).text();
+    expect(list).toContain('<h1>Manage accounts</h1>');
+    expect(list).toContain('aria-label="Breadcrumb"');
+    expect(list).toContain('Create account');
+
+    const created = await post('/admin/manage/accounts', s, { slug });
+    const createdHtml = await created.text();
+    expect(createdHtml).toContain(`<h1>Account ${slug} created</h1>`);
+    expect(createdHtml).toContain('aria-label="Breadcrumb"');
+    expect(createdHtml).toContain('callout-warning');
+
+    const { rows } = await appDb.query<{ id: string }>('SELECT id FROM accounts WHERE slug = $1', [slug]);
+    const detail = await (
+      await app.request(`/admin/manage/accounts/${rows[0]!.id}`, { headers: s.headers })
+    ).text();
+    expect(detail).toContain(slug);
+    expect(detail).toContain('aria-label="Breadcrumb"');
+    expect(detail).toContain('Disable account');
+    expect(detail).toContain('No members.');
+
+    const users = await (await app.request('/admin/manage/users', { headers: s.headers })).text();
+    expect(users).toContain('<h1>Manage users</h1>');
+    expect(users).toContain('aria-label="Breadcrumb"');
+    expect(users).toContain('Create user');
+    expect(users).toContain(admin.email);
+    expect(users).toContain('Reset password');
   });
 });
 

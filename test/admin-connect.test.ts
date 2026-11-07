@@ -56,11 +56,11 @@ async function session(email: string) {
 type Session = Awaited<ReturnType<typeof session>>;
 
 const get = (path: string, s: Session) => app.request(path, { headers: s.headers });
-const post = (path: string, s: Session) =>
+const post = (path: string, s: Session, fields: Record<string, string> = {}) =>
   app.request(path, {
     method: 'POST',
     headers: { ...s.headers, 'content-type': 'application/x-www-form-urlencoded', origin: ORIGIN },
-    body: form({ _csrf: s.csrf }),
+    body: form({ _csrf: s.csrf, ...fields }),
   });
 
 const ingest = (slug: string, key: string) =>
@@ -167,9 +167,9 @@ describe('with public addresses set', () => {
     expect(html).toContain(
       `postgres://${user}:${encodeURIComponent(String(password))}@db.example.test:5432/${database}?sslmode=require`,
     );
-    expect(html).toContain('Host <code>db.example.test</code>');
-    expect(html).toContain('Port <code>5432</code>');
-    expect(html).toContain('SSL mode <code>require</code>');
+    expect(html).toContain('<td>Host</td><td><code>db.example.test</code></td>');
+    expect(html).toContain('<td>Port</td><td><code>5432</code></td>');
+    expect(html).toContain('<td>SSL mode</td><td><code>require</code></td>');
 
     // Only the display changed: the store's own connection is untouched.
     const { rows } = await appDb.query<{ connection: { host: string; port: number } }>(
@@ -274,6 +274,8 @@ describe('credentials', () => {
     const html = await page.text();
     expect(html).not.toContain('Create API key');
     expect(html).not.toContain('Reveal login');
+    expect(html).not.toContain('Revoke'); // a key exists, but a read-only viewer gets no Revoke
+    expect(html).not.toContain('Create read-only API key');
     expect(html).toContain('requires account membership');
     expect(html).toContain(`href="/admin/manage/accounts/${acct.accountId}"`);
 
@@ -289,5 +291,62 @@ describe('credentials', () => {
     const after = (await appDb.query('SELECT 1 FROM api_keys WHERE account_id = $1', [acct.accountId]))
       .rowCount;
     expect(after).toBe(before);
+  });
+
+  it('shows each key scope and a read-only create button that makes a read key', async () => {
+    const base = `/admin/accounts/${acct.accountId}/credentials`;
+    const html = await (await get(base, ownerSession)).text();
+    expect(html).toContain('Create API key');
+    expect(html).toContain('Create read-only API key');
+    expect(html).toContain('<input type="hidden" name="scope" value="read"/>');
+    expect(html).toContain('<th scope="col">Scope</th>');
+    expect(html).toContain('>ingest</span>');
+
+    const created = await post(`${base}/keys`, ownerSession, { scope: 'read' });
+    expect(created.status).toBe(200);
+    const createdHtml = await created.text();
+    expect(createdHtml).toContain('<h1>New read-only API key</h1>');
+    const key = KEY_RE.exec(createdHtml)![0];
+    const { rows } = await appDb.query<{ scope: string }>('SELECT scope FROM api_keys WHERE key_hash = $1', [
+      hashApiKey(key),
+    ]);
+    expect(rows[0]!.scope).toBe('read');
+    expect(await (await get(base, ownerSession)).text()).toContain('>read-only</span>');
+  });
+
+  it('explains read-only access to a super admin who is not a member, and not to members', async () => {
+    const admin = await newUser('super-explain', true);
+    const s = await session(admin.email);
+    const url = `/admin/accounts/${acct.accountId}/credentials`;
+    const superHtml = await (await get(url, s)).text();
+    expect(superHtml).toContain('Super admins have read-only access to accounts');
+    expect(superHtml).toContain('must do that');
+    expect(superHtml).toContain('callout-info');
+
+    const memberHtml = await (await get(url, ownerSession)).text();
+    expect(memberHtml).not.toContain('Super admins have read-only access');
+    expect(memberHtml).toContain('Create API key');
+    expect(memberHtml).toContain('Reveal login');
+  });
+
+  it('renders the page header, breadcrumbs and copy-now warnings', async () => {
+    const base = `/admin/accounts/${acct.accountId}/credentials`;
+    const html = await (await get(base, ownerSession)).text();
+    expect(html).toContain('<h1>Credentials</h1>');
+    expect(html).toContain('aria-label="Breadcrumb"');
+    expect(html).toContain(`href="/admin/accounts/${acct.accountId}">${acct.slug}</a>`);
+
+    const created = await (await post(`${base}/keys`, ownerSession)).text();
+    expect(created).toContain('<h1>New API key</h1>');
+    expect(created).toContain('aria-label="Breadcrumb"');
+    expect(created).toContain('callout-warning');
+    expect(created).toContain('Copy it now');
+    expect(created).toContain('aria-label="Copy API key"');
+
+    const revealed = await (await post(`${base}/reveal`, ownerSession)).text();
+    expect(revealed).toContain('<h1>Read-only database login</h1>');
+    expect(revealed).toContain('aria-label="Breadcrumb"');
+    expect(revealed).toContain('callout-info'); // repeatable, so no one-time warning
+    expect(revealed).not.toContain('Copy it now');
   });
 });
