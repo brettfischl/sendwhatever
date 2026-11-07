@@ -4,7 +4,7 @@
 
 Build a platform that accepts arbitrary JSON payloads sent to per-account endpoints, classifies their structure, and writes them into per-account storage. When an unrecognized payload structure arrives, the system quarantines it, and a continuously running LLM process writes a new data adapter for it. Once the adapter passes validation, it is activated (or waits for an operator, if the account's `auto_activate` setting is off) and all matching quarantined payloads are replayed through it, so the delay for a new shape is essentially the time it takes to generate the adapter. A human operator can step in at any point.
 
-The platform gives each account one way in and two ways to use the result:
+The platform has one way in and two ways to use the result:
 1. **Direct adapter-driven ingestion** — any JSON payload is classified and written automatically.
 2. **Direct SQL access** — customers connect to their own clean, normalized database with read-only credentials.
 3. **Custom API built on top** — our application server connects to the same per-account storage and exposes domain-specific HTTP endpoints.
@@ -39,7 +39,7 @@ Every accepted payload is kept in an append-only ingress event log. Normalized t
 
 - Roles beyond super admin and account member, and login methods beyond email and password (§19). Ingestion itself uses only per-account API keys and webhook signatures (§13.4).
 - Billing, usage metering, or rate limiting.
-- Payload size limits and throughput targets. This is a low-volume, one-day hackathon build (§17).
+- Throughput targets. This is a low-volume, one-day hackathon build (§17).
 - Customer-supplied databases. Storage connections are set by the platform, and customers only receive read-only access.
 - Multi-region replication or edge distribution.
 - Strict foreign-key constraints or schema validation beyond column existence and logical type.
@@ -376,6 +376,7 @@ The platform uses a lazy, additive schema strategy, defined in logical types so 
 **Identifiers.** Table and column names come from client payloads and adapter output, so they are untrusted:
 - They must match `^[a-z][a-z0-9_]*$` and be at most 63 characters, the Postgres limit. Nothing is truncated, since truncated names can collide. A leading underscore is reserved for platform columns. Output that breaks these rules is an `adapter_error`.
 - Backends must always quote identifiers. Common names like `user` and `order` are reserved words in Postgres.
+- Postgres system column names (`xmin`, `xmax`, `cmin`, `cmax`, `ctid`, `tableoid`) are reserved, and fail with `adapter_error`.
 
 **Concurrent changes.** Workers run in parallel, so schema changes for a store are serialized with a Postgres advisory lock on the application database. The lock is taken only when the registry shows a change is needed. The backend change is applied first and the registry updated second, so a crash between them is repaired by reapplying the idempotent change.
 
@@ -766,6 +767,7 @@ MVP approach:
 - All services are written in TypeScript on Node.js, so adapters run on the same engine as the platform.
 - Adapters are JavaScript functions stored as text.
 - The worker runs them in `isolated-vm` with no access to network, filesystem, or globals other than a provided `payload` argument, and with an execution timeout.
+- Adapters have a 5-second limit by default, so a busy machine isn't mistaken for a bad adapter.
 - `Date.now()`, `new Date()` without arguments, and `Math.random()` are removed from the sandbox. Replays depend on an adapter producing the same output for the same event.
 - Integers too large for a JavaScript number are passed to adapters as strings, so long numeric IDs aren't rounded.
 - `payload` is `{ data, request }`, where `data` is the parsed body and `request` is the logged `{ method, path, query, headers }` (§6.2).
@@ -845,7 +847,7 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 - Produces identical output when run twice on the same payload.
 - Produces parseable values for every declared `timestamp` column.
 - Writes no number to an ID-like column: `id` or a name ending in `_id`. It must be cast to a string, because the column's type can never change later.
-- Writes no ISO 8601 date-time to a string column. It must be declared as `timestamp`, for the same reason.
+- Writes no ISO 8601 date-time to a new string column. It must be declared as `timestamp`, for the same reason. A column already registered as `string` is exempt, since it can't change.
 - Causes no type conflicts with registered columns.
 - Declares opaque paths only on specific named fields, never the payload root or an array of the root, so an adapter can't match everything.
 - For `op = delete`, sets `_deleted: true` on every top-level row, with an `id`.
@@ -868,20 +870,21 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 - Returns `202 Accepted` once the payload is committed to the event log, and queued if well formed.
 - Returns `400` if the body isn't valid JSON, the first path segment or `Idempotency-Key` is over 255 bytes, or the first path segment percent-decodes to invalid UTF-8 or a NUL byte. Nothing is stored.
 - Returns `401` if the API key is missing, invalid, or belongs to another account, `403` if the account is disabled, and `404` if the subdomain matches no account.
+- Returns `413` if the body is over 5 MB, the most the adapter sandbox can reliably process, and nothing is stored.
 - Returns `503` if the application database is unavailable, and the client should retry.
 - Response body:
   - `status`: `queued`, `malformed`
   - `event_id`: always
 - Processing is asynchronous, so the response does not report whether a queued payload was written or quarantined. Quarantined payloads appear in `GET /quarantine` with their `event_id`.
 
-All routes below are internal only and not routed through Caddy.
+All routes below are internal only and not routed through Caddy. They require `Authorization: Bearer <INTERNAL_API_TOKEN>`, refuse everything if it isn't set, and return `404` to anything that arrived through a proxy, so don't send `X-Account-Slug` to them.
 
 `GET /quarantine`
-- Lists quarantined payloads, optionally filtered by `source`, `op`, `fingerprint`, or `reason`.
+- Requires `account_id`. Lists quarantined events without their bodies, up to 200 per page, optionally filtered by `source`, `op`, `fingerprint`, or `reason`. Reading a payload is a separate, deliberate action.
 
 `POST /adapters`
 - Creates a new adapter (initially `active = false`). The generator normally does this; the route is the operator override, along with `activate`.
-- Body: `op`, `fingerprint`, `code`, and optional `source` and `opaque_paths`.
+- Body: `account_id`, `op`, `fingerprint`, `code`, and optional `source` and `opaque_paths`.
 
 `POST /adapters/:id/activate`
 - Sets `active = true` and enqueues a replay of matching quarantined rows.
@@ -902,7 +905,7 @@ Looks up the account's active store on each request through an internal Ingestio
 
 ### 13.3 Account Administration
 
-These routes are internal only and not routed through Caddy.
+These routes are internal only and not routed through Caddy, with the same token rule as §13.1.
 
 `POST /accounts`
 - Body: `slug`, `storage` (§11.4). `slug` must be one lowercase DNS label; anything else gets `400`.
@@ -921,7 +924,7 @@ These routes are internal only and not routed through Caddy.
 
 ### 13.4 Authentication
 
-Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on any `/ingest` route, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain. Only a hash of each key is stored. There are no user logins or roles.
+Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on any `/ingest` route, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain. Only a hash of each key is stored. User logins and roles apply only to the admin interface (§19).
 
 ---
 

@@ -61,6 +61,7 @@ export const Layout: FC<PropsWithChildren<{ title: string; user?: SessionUser; c
               {user.email}
               {user.isSuperAdmin ? ' (super admin)' : ''}
             </span>
+            {user.isSuperAdmin && <a href="/admin/manage/accounts">Manage</a>}
             <Form action="/admin/logout" csrf={csrf}>
               <button class="quiet" type="submit">
                 Sign out
@@ -152,7 +153,23 @@ export const AccountHomePage: FC<{
         <span class={`tag ${account.status}`}>{account.status}</span>
         {readOnly && <span class="tag">read-only (super admin)</span>}
       </p>
-      <p class="muted">Connect, credentials, schema, traffic, and pipeline pages will appear here.</p>
+      <ul class="account-nav">
+        <li>
+          <a href={`/admin/accounts/${account.id}/connect`}>Connect</a>
+        </li>
+        <li>
+          <a href={`/admin/accounts/${account.id}/credentials`}>Credentials</a>
+        </li>
+        <li>
+          <a href={`/admin/accounts/${account.id}/schema`}>Schema</a>
+        </li>
+        <li>
+          <a href={`/admin/accounts/${account.id}/traffic`}>Traffic</a>
+        </li>
+        <li>
+          <a href={`/admin/accounts/${account.id}/pipeline`}>Pipeline</a>
+        </li>
+      </ul>
       <p>
         <a href="/admin">All accounts</a>
       </p>
