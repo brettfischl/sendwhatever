@@ -5,12 +5,14 @@ import {
   type IngestClientOptions,
   type LogEntry,
 } from './ingest-client.js';
+import { freshFlow, shopifyFlows } from './shopify/index.js';
 
 /** Served at these names by the demo server. The console's views add theirs here. */
 export const CONSOLE_ASSETS: Record<string, string> = {
   '/assets/console.css': 'text/css',
   '/assets/console.js': 'text/javascript',
   '/assets/console-arbitrary.js': 'text/javascript',
+  '/assets/console-flows.js': 'text/javascript',
   '/assets/console-format.js': 'text/javascript',
   '/assets/console-tables.js': 'text/javascript',
   '/assets/console-webhooks.js': 'text/javascript',
@@ -38,6 +40,14 @@ const RESERVED_HEADERS = new Set([
   'trailer',
   'expect',
 ]);
+
+/**
+ * The guided flows for the browser. Each call is a new set of deliveries, so a page that asks again
+ * starts a run that ingest treats as new. Sending a copy it already has is what looks like a retry.
+ */
+export function consoleFlows() {
+  return shopifyFlows.map((flow) => freshFlow(flow));
+}
 
 export interface RawIngestRequest {
   label: string;

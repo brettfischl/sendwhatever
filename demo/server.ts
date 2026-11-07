@@ -6,7 +6,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { CONSOLE_ASSETS, parseConsoleRequest, type SendRaw } from './console.js';
+import { CONSOLE_ASSETS, consoleFlows, parseConsoleRequest, type SendRaw } from './console.js';
 import { HttpError, readBody } from './http.js';
 import type { RequestLog, LogChange } from './ingest-client.js';
 import type { LookalikeKind, SessionTransition } from './payloads.js';
@@ -160,6 +160,7 @@ function buildRoutes({ webinar, log, target, simulatePauseMs, consoleSend }: Ser
       await webinar.removeComment(id!);
       return {};
     }),
+    route('GET', '/api/console/flows', async () => consoleFlows()),
     ...(consoleSend
       ? [route('POST', '/api/console/send', async (_, body) => consoleSend(parseConsoleRequest(body)))]
       : []),
