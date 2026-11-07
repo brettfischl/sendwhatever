@@ -268,6 +268,69 @@ describe('reading rows', () => {
     expect((await tables(a, 'orders?after=a%00b')).status).toBe(400);
   });
 
+  describe('filters', () => {
+    const ids = async (query: string) => {
+      const res = await tables(a, `orders?${query}`);
+      expect(res.status).toBe(200);
+      return ((await res.json()) as { rows: { id: string }[] }).rows.map((r) => r.id).sort();
+    };
+
+    it('matches each column type by equality', async () => {
+      expect(await ids('title=second')).toEqual(['o2']);
+      expect(await ids('price=12.5')).toEqual(['o1']);
+      expect(await ids('active=true')).toEqual(['o1']);
+      expect(await ids(`placed_at=${encodeURIComponent('2026-01-02T03:04:05.123456Z')}`)).toEqual(['o1']);
+      expect(await ids('id=o4')).toEqual(['o4']);
+    });
+
+    it('combines filters with AND, and returns nothing on no match', async () => {
+      expect(await ids('title=first&price=12.5')).toEqual(['o1']);
+      expect(await ids('title=first&price=1')).toEqual([]);
+    });
+
+    it('never finds a soft-deleted row', async () => {
+      expect(await ids('title=gone')).toEqual([]);
+      expect(await ids('id=o3')).toEqual([]);
+    });
+
+    it('treats a value as data, not SQL', async () => {
+      expect(await ids(`title=${encodeURIComponent("x' OR '1'='1")}`)).toEqual([]);
+    });
+
+    it.each([
+      ['an unknown column', 'nope=1'],
+      ['a platform column', '_deleted_at=2026-01-01T00:00:00Z'],
+      ['a json column', 'extra=1'],
+      ['a repeated filter', 'title=a&title=b'],
+      ['a non-numeric number', 'price=abc'],
+      ['a blank number', 'price=%20'],
+      ['a non-boolean', 'active=yes'],
+      ['a bad timestamp', 'placed_at=soon'],
+      ['a NUL in a value', 'title=a%00b'],
+      ['a column name as SQL', `${encodeURIComponent('title" OR 1=1 --')}=x`],
+    ])('refuses %s', async (_label, query) => {
+      expect((await tables(a, `orders?${query}`)).status).toBe(400);
+    });
+
+    it('documents the filters that work, and no others', async () => {
+      await register(a, 'reserved_names', { limit: 'number', label: 'string' });
+      const spec = (await (
+        await admin(`/admin/accounts/${a.id}/schema/orders/openapi.json`, member)
+      ).json()) as any;
+      const names = spec.paths['/tables/orders'].get.parameters.map((p: { name: string }) => p.name);
+      expect(names).toEqual(
+        expect.arrayContaining(['limit', 'after', 'title', 'price', 'active', 'placed_at']),
+      );
+      expect(names).not.toContain('extra');
+      const other = (await (
+        await admin(`/admin/accounts/${a.id}/schema/reserved_names/openapi.json`, member)
+      ).json()) as any;
+      const params = other.paths['/tables/reserved_names'].get.parameters.map((p: { name: string }) => p.name);
+      expect(params.filter((n: string) => n === 'limit')).toHaveLength(1);
+      expect(params).toContain('label');
+    });
+  });
+
   it('only reaches tables in the registry', async () => {
     for (const name of ['unregistered', 'pg_authid', 'pg_catalog.pg_class', 'orders"; DROP TABLE orders; --']) {
       expect((await tables(a, encodeURIComponent(name))).status).toBe(404);

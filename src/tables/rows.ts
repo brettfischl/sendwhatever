@@ -32,20 +32,52 @@ export async function getReadableStore(
   return row && { id: row.id, connection: row.connection, readCredentials: row.read_credentials };
 }
 
-/** The table's columns, `id` included, or undefined if the store has no such table. */
+export type TableColumns = Map<string, string>;
+
+/** The table's columns and logical types, `id` included, or undefined if the store has no such table. */
 export async function getTableColumns(
   db: pg.Pool,
   storeId: string,
   table: string,
-): Promise<string[] | undefined> {
-  const { rows } = await db.query<{ column_name: string }>(
-    `SELECT column_name FROM data_columns
+): Promise<TableColumns | undefined> {
+  const { rows } = await db.query<{ column_name: string; logical_type: string }>(
+    `SELECT column_name, logical_type FROM data_columns
       WHERE store_id = $1 AND table_name = $2 ORDER BY column_name`,
     [storeId, table],
   );
   if (rows.length === 0) return undefined;
   // Platform columns are bookkeeping, and client columns can't start with an underscore.
-  return rows.map((r) => r.column_name).filter((name) => !name.startsWith('_'));
+  return new Map(
+    rows
+      .filter((r) => !r.column_name.startsWith('_'))
+      .map((r) => [r.column_name, r.logical_type]),
+  );
+}
+
+/** Query parameters the API itself uses, so a column with one of these names can't be filtered on. */
+export const RESERVED_PARAMS = new Set(['limit', 'after']);
+
+/** Whether `?column=value` can filter on this column. A `json` value has no single text form. */
+export function isFilterable(column: string, type: string): boolean {
+  return type !== 'json' && !RESERVED_PARAMS.has(column);
+}
+
+/**
+ * The value to compare a column with, or undefined if it can't be that column's type. Checking here
+ * means a bad value is the client's 400, not a failed cast in the database.
+ */
+export function parseFilterValue(type: string, value: string): string | undefined {
+  if (value.includes('\0')) return undefined;
+  switch (type) {
+    case 'number':
+      return value.trim() !== '' && Number.isFinite(Number(value)) ? value : undefined;
+    case 'boolean':
+      return value === 'true' || value === 'false' ? value : undefined;
+    case 'timestamp':
+      return Number.isNaN(Date.parse(value)) ? undefined : value;
+    default:
+      return value;
+  }
 }
 
 export interface RowQuery {
@@ -56,6 +88,8 @@ export interface RowQuery {
   after?: string;
   /** Returns only the row with this id. */
   id?: string;
+  /** Column and already checked value pairs that a row must equal. Names come from the registry. */
+  filters?: [column: string, value: string][];
 }
 
 /**
@@ -65,7 +99,7 @@ export interface RowQuery {
 export async function readRows(
   store: ReadableStore,
   key: Buffer,
-  { table, columns, limit, after, id }: RowQuery,
+  { table, columns, limit, after, id, filters = [] }: RowQuery,
 ): Promise<Record<string, unknown>[]> {
   const { host, port } = store.connection;
   if (!store.readCredentials || typeof host !== 'string' || typeof port !== 'number') {
@@ -95,6 +129,10 @@ export async function readRows(
     if (id !== undefined) {
       values.push(id);
       where += ` AND "id" = $${values.length}`;
+    }
+    for (const [column, value] of filters) {
+      values.push(value);
+      where += ` AND ${pg.escapeIdentifier(column)} = $${values.length}`;
     }
     const names = columns.map(pg.escapeIdentifier).join(', ');
     const { rows } = await client.query<{ row: Record<string, unknown> }>(

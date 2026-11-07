@@ -930,7 +930,7 @@ Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. W
 
 A key has one scope. An `ingest` key works only on `/ingest`, and a `read` key works only on `/tables`, only as `Authorization: Bearer <key>`. Ingest keys can be held by webhook providers, so they must never be able to read data.
 
-`GET /tables/:table` lists live rows ordered by `id`, with `limit` (default 100, at most 1000) and `after` for paging, and `GET /tables/:table/:id` returns one. Both use the store's read-only login, leave out soft-deleted rows and platform columns, and only reach tables in the registry. Each table's OpenAPI document is generated from the registry and shown with Swagger UI in the admin, from the Schema page.
+`GET /tables/:table` lists live rows ordered by `id`, with `limit` (default 100, at most 1000) and `after` for paging and `?column=value` equality filters, and `GET /tables/:table/:id` returns one. Both use the store's read-only login, leave out soft-deleted rows and platform columns, and only reach tables in the registry. Each table's OpenAPI document is generated from the registry and shown with Swagger UI in the admin, from the Schema page.
 
 ---
 

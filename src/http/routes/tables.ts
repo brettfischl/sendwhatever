@@ -4,9 +4,13 @@ import {
   MAX_ROW_LIMIT,
   getReadableStore,
   getTableColumns,
+  isFilterable,
+  parseFilterValue,
   readRows,
+  RESERVED_PARAMS,
   type ReadableStore,
   type RowQuery,
+  type TableColumns,
 } from '../../tables/rows.js';
 import { authenticate } from '../auth.js';
 import { HttpError, type AppEnv } from '../deps.js';
@@ -20,7 +24,7 @@ export const tableRoutes = new Hono<AppEnv>();
 interface Target {
   store: ReadableStore;
   table: string;
-  columns: string[];
+  columns: TableColumns;
 }
 
 async function resolveTable(c: Context<AppEnv>): Promise<Target> {
@@ -48,6 +52,25 @@ function limitParam(value: string | undefined): number {
   return limit;
 }
 
+/**
+ * Every other query parameter must be a filter on a known column. Ignoring an unknown or repeated one
+ * would return more rows than the client asked for, as if the filter had matched them.
+ */
+function filterParams(c: Context<AppEnv>, columns: TableColumns): [string, string][] {
+  const filters: [string, string][] = [];
+  for (const [name, values] of Object.entries(c.req.queries())) {
+    if (RESERVED_PARAMS.has(name)) continue;
+    const type = columns.get(name);
+    if (type === undefined || !isFilterable(name, type) || values.length !== 1) {
+      throw new HttpError(400, 'unknown or repeated query parameter');
+    }
+    const value = parseFilterValue(type, values[0]!);
+    if (value === undefined) throw new HttpError(400, 'a filter value does not fit its column');
+    filters.push([name, value]);
+  }
+  return filters;
+}
+
 /** The client gets a plain 503, and only the error code is logged, since messages can quote values. */
 async function read(c: Context<AppEnv>, store: ReadableStore, query: RowQuery) {
   try {
@@ -62,8 +85,15 @@ tableRoutes.get('/:table', async (c) => {
   const { store, table, columns } = await resolveTable(c);
   const limit = limitParam(c.req.query('limit'));
   const after = textParam(c.req.query('after') || undefined, 'after');
+  const filters = filterParams(c, columns);
   // One extra row shows whether there is another page.
-  const rows = await read(c, store, { table, columns, limit: limit + 1, after });
+  const rows = await read(c, store, {
+    table,
+    columns: [...columns.keys()],
+    limit: limit + 1,
+    after,
+    filters,
+  });
   const page = rows.slice(0, limit);
   return c.json({
     rows: page,
@@ -74,7 +104,7 @@ tableRoutes.get('/:table', async (c) => {
 tableRoutes.get('/:table/:id', async (c) => {
   const { store, table, columns } = await resolveTable(c);
   const id = textParam(c.req.param('id'), 'id');
-  const [row] = await read(c, store, { table, columns, limit: 1, id });
+  const [row] = await read(c, store, { table, columns: [...columns.keys()], limit: 1, id });
   if (!row) throw new HttpError(404, 'unknown row');
   return c.json(row);
 });

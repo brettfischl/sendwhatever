@@ -1,5 +1,5 @@
 import type { SchemaTable } from '../admin/stats.js';
-import { DEFAULT_ROW_LIMIT, MAX_ROW_LIMIT } from './rows.js';
+import { DEFAULT_ROW_LIMIT, MAX_ROW_LIMIT, isFilterable } from './rows.js';
 
 /**
  * Builds a table's OpenAPI document from the live registry, so it can't drift from the schema.
@@ -46,6 +46,14 @@ export function buildTableSpec(table: SchemaTable, accountSlug: string) {
     }),
   );
   const path = `/tables/${encodeURIComponent(table.name)}`;
+  const filterParameters = columns
+    .filter(({ name, type }) => isFilterable(name, type))
+    .map(({ name }) => ({
+      name,
+      in: 'query',
+      description: 'Returns rows where this column equals the value.',
+      schema: properties[name],
+    }));
 
   return {
     openapi: '3.1.0',
@@ -53,7 +61,7 @@ export function buildTableSpec(table: SchemaTable, accountSlug: string) {
       title: `Table: ${table.name}`,
       version: '1',
       description:
-        'Generated from the live schema. Reads return live rows only: soft-deleted rows and platform columns are left out. Requires a read-only API key from the Credentials page.',
+        'Generated from the live schema. Reads return live rows only: soft-deleted rows and platform columns are always left out. Requires a read-only API key from the Credentials page.',
     },
     servers: [{ url: '/' }],
     security: [{ readKey: [] }],
@@ -75,6 +83,7 @@ export function buildTableSpec(table: SchemaTable, accountSlug: string) {
               description: 'Returns rows after this id. Pass `next_after` from the previous page.',
               schema: { type: 'string' },
             },
+            ...filterParameters,
           ],
           responses: {
             '200': {
