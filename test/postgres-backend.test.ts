@@ -1003,11 +1003,11 @@ describe('write', () => {
       const separate = new PostgresBackend();
       try {
         for (const attempt of [
-          separate.write(store, [{ table: 't', columns: {}, rows: [{ id: 'r', _event_seq: '1' }] }]),
-          separate.applySchema(store, [{ kind: 'create_table', table: 't' }]),
-          separate.health(store),
+          () => separate.write(store, [{ table: 't', columns: {}, rows: [{ id: 'r', _event_seq: '1' }] }]),
+          () => separate.applySchema(store, [{ kind: 'create_table', table: 't' }]),
+          () => separate.health(store),
         ]) {
-          expect((await failure(attempt)).retryable).toBe(true);
+          expect((await failure(attempt())).retryable).toBe(true);
         }
       } finally {
         await separate.close();
