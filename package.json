@@ -9,11 +9,13 @@
   "scripts": {
     "setup": "bash scripts/setup.sh",
     "migrate": "tsx scripts/migrate.ts",
+    "start": "tsx src/http/main.ts",
     "demo": "tsx demo/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit && vitest run"
   },
   "dependencies": {
+    "@hono/node-server": "2.1.6",
     "hono": "4.13.17",
     "isolated-vm": "6.2.0",
     "pg": "8.23.1"

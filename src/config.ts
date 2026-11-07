@@ -3,6 +3,15 @@ import { fileURLToPath } from 'node:url';
 export interface Config {
   appDatabaseUrl: string;
   dataDatabaseUrl: string;
+  /** POSTGRES_PORT, for the default store connection. */
+  postgresPort: number;
+  /** Password of the sw_data role, for the default store credentials. */
+  dataDbPassword: string;
+  /** AES-256 key (32 bytes) that encrypts stored store credentials. */
+  encryptionKey: Buffer;
+  port: number;
+  /** Defaults to loopback: internal routes have no auth. */
+  host: string;
   /** Undefined until a key is set. Code that calls the LLM should fail with a clear error. */
   fireworksApiKey: string | undefined;
   fireworksModel: string;
@@ -27,6 +36,11 @@ export function loadConfig(): Config {
   return {
     appDatabaseUrl: url('sw_app', required('SW_APP_DB_PASSWORD')),
     dataDatabaseUrl: url('sw_data', required('SW_DATA_DB_PASSWORD')),
+    postgresPort: Number(port),
+    dataDbPassword: required('SW_DATA_DB_PASSWORD'),
+    encryptionKey: parseEncryptionKey(required('SW_ENCRYPTION_KEY')),
+    port: Number(process.env.PORT || 3000),
+    host: process.env.HOST || '127.0.0.1',
     fireworksApiKey: process.env.FIREWORKS_API_KEY || undefined,
     fireworksModel: process.env.FIREWORKS_MODEL || DEFAULT_FIREWORKS_MODEL,
   };
@@ -36,4 +50,10 @@ function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`${name} is not set. Run npm run setup to create it in .env.`);
   return value;
+}
+
+function parseEncryptionKey(value: string): Buffer {
+  const key = Buffer.from(value, 'base64');
+  if (key.length !== 32) throw new Error('SW_ENCRYPTION_KEY must be 32 bytes, base64 encoded.');
+  return key;
 }

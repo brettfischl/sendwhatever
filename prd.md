@@ -1161,3 +1161,16 @@ API keys are stored only as hashes, so an existing key can't be shown again. Cre
 - **Event explorer:** look up an event to see its payload, outcome, and any quarantine reason.
 
 **Later:** an audit log of key changes, credential reveals, and super admin views; LLM usage and cost per account, which also requires the generator to record tokens; alerts; adapter rollback; and super admin actions taken on an account's behalf.
+
+---
+
+## 20. Demo Console
+
+A UI for showing the platform off, separate from the admin interface (§19) and part of the existing demo site. It runs locally and isn't a customer-facing product. It has two modes:
+
+- **Arbitrary JSON:** edit any JSON, choose the method and optional path and headers, send it to `/ingest`, and see the request and response.
+- **Webhook examples:** preset Shopify webhooks, sent with realistic headers to `/ingest/shopify?key=…`, in two guided flows: a product creation flow, and an order creation to refund flow. Payloads are based on Shopify's documented webhook shapes, using fictional data.
+
+Both modes sit beside a **live tables view**, so viewers can watch tables, columns, and rows appear as events are processed. It reads through the store's read-only login, and shows each event's progress from the application database, using a local-only connection.
+
+The console also works against the built-in stub, without tables, so it can be built and demonstrated before the full pipeline runs.

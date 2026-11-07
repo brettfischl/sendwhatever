@@ -14,8 +14,16 @@ import type { Job, QuarantineEntry } from './queue.js';
 /** What should happen to a job once its work has stopped. */
 export type JobDecision =
   | { kind: 'delete' }
-  | { kind: 'retry'; detail: string }
+  /** `entries` are stores that have already failed for good, recorded now rather than at the end. */
+  | { kind: 'retry'; detail: string; eventId: string; entries: QuarantineEntry[] }
   | { kind: 'quarantine'; eventId: string; entries: QuarantineEntry[] };
+
+/**
+ * How far past the maximum age a job with earlier attempts is given up on without another. A retrying
+ * job normally settles within a backoff, so this mostly catches events that keep killing workers, with
+ * room for a deploy or backlog to delay that last attempt.
+ */
+const GIVE_UP_GRACE_MS = 60 * 60 * 1000;
 
 export type JobHandler = (context: WorkerContext, job: Job) => Promise<JobDecision>;
 
@@ -54,10 +62,7 @@ export const handleIngest: JobHandler = async (context, job) => {
   const { maxAgeMs, backoffMaxMs, leaseMs } = context.settings;
   const expired = job.ageMs >= maxAgeMs;
 
-  // A retrying job runs again within a backoff of the maximum age, and that attempt settles it. Being
-  // later still with attempts behind it means one never finished. If the event itself kills workers,
-  // this is what stops it doing so forever.
-  if (job.attempts > 1 && job.ageMs >= maxAgeMs + backoffMaxMs + leaseMs) {
+  if (job.attempts > 1 && job.ageMs >= maxAgeMs + backoffMaxMs + leaseMs + GIVE_UP_GRACE_MS) {
     return {
       kind: 'quarantine',
       eventId,
@@ -65,7 +70,7 @@ export const handleIngest: JobHandler = async (context, job) => {
         {
           storeId: null,
           reason: 'write_error',
-          detail: `Past the maximum age after ${job.attempts - 1} attempts, and the last one never finished`,
+          detail: `Given up without another attempt: past the maximum age after ${job.attempts - 1} attempts. A worker may have died on this event.`,
         },
       ],
     };
@@ -79,7 +84,12 @@ export const handleIngest: JobHandler = async (context, job) => {
   }
 
   if (writes.transient.length > 0 && !expired) {
-    return { kind: 'retry', detail: writes.transient.map(({ detail }) => detail).join('; ') };
+    return {
+      kind: 'retry',
+      detail: writes.transient.map(({ detail }) => detail).join('; '),
+      eventId,
+      entries: writes.permanent,
+    };
   }
 
   const entries: QuarantineEntry[] = [
