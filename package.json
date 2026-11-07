@@ -10,7 +10,7 @@
     "setup": "bash scripts/setup.sh",
     "migrate": "tsx scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "tsc --noEmit && vitest run"
   },
   "dependencies": {
     "isolated-vm": "6.2.0",
