@@ -1,0 +1,31 @@
+# Production override for the droplet (PRD §21.4). The box's .env sets
+# COMPOSE_FILE=docker-compose.yml:deploy/docker-compose.deploy.yml, so plain `docker compose` uses it.
+services:
+  postgres:
+    restart: unless-stopped
+    # Added to the base file's 127.0.0.1 port. Public on purpose: customers connect with their
+    # read-only login, over TLS only, and pg_hba refuses the platform roles from outside.
+    ports:
+      - "0.0.0.0:5432:5432"
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/sendwhatever/server.crt
+      - -c
+      - ssl_key_file=/etc/sendwhatever/server.key
+      - -c
+      - hba_file=/etc/sendwhatever/pg_hba.conf
+    volumes:
+      - /etc/sendwhatever/postgres:/etc/sendwhatever:ro
+
+# Pinned, because pg_hba.conf trusts this network's gateway: connections to the 127.0.0.1 port go
+# through docker-proxy and arrive from it. Connections to the public port keep their real source
+# address. Check both after any Docker change (deploy/README.md).
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+          gateway: 172.30.0.1
