@@ -72,6 +72,13 @@ export async function createAccount(
 
   const client = await deps.appDb.connect();
   let broken = false;
+  // The pool only listens to idle clients, and this one is held through a slow provision. Without this,
+  // losing the connection would be an unhandled 'error' event that crashes the process. The next query
+  // on it rejects instead.
+  const onError = () => {
+    broken = true;
+  };
+  client.on('error', onError);
   try {
     // One session-level lock for the whole flow, so concurrent requests for a slug run one at a
     // time, and a retry never provisions while another call is mid-provision (that would rotate
@@ -94,6 +101,7 @@ export async function createAccount(
     if (!(error instanceof AccountError)) broken = true;
     throw error;
   } finally {
+    client.removeListener('error', onError);
     client.release(broken ? true : undefined);
   }
 }
