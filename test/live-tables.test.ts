@@ -15,6 +15,7 @@ import { RequestLog } from '../demo/ingest-client.js';
 import { createDemoServer, SiteEvents } from '../demo/server.js';
 import { createTablesSource, type EventView, type TablesResponse, type TableView, type TablesSource } from '../demo/tables.js';
 import { Webinar } from '../demo/webinar.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 });
 
@@ -132,7 +133,7 @@ afterAll(async () => {
   });
   await admin.connect();
   for (const { id, store } of accounts) {
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(store.namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, store.namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(store.namespace))}`);
     await appDb.query('DELETE FROM adapter_attempts WHERE account_id = $1', [id]);
     await appDb.query('DELETE FROM queue WHERE account_id = $1', [id]);

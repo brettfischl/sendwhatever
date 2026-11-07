@@ -18,6 +18,7 @@ import { createApp } from '../src/http/app.js';
 import { decryptJson } from '../src/secrets.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 import { DEFAULT_SETTINGS, processNextJob, startWorker, type WorkerContext } from '../src/worker/index.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 
@@ -162,7 +163,7 @@ afterAll(async () => {
     await db.query('DELETE FROM account_stores WHERE account_id = $1', [id]);
     await db.query('DELETE FROM api_keys WHERE account_id = $1', [id]);
     await db.query('DELETE FROM accounts WHERE id = $1', [id]);
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(login.database)} WITH (FORCE)`);
+    await dropDatabase(admin, login.database);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(login.user)}`);
   }
   await admin.end();
