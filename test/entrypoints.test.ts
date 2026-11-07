@@ -36,12 +36,12 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-async function waitFor<T>(what: string, check: () => Promise<T | undefined>, describeState = () => ''): Promise<T> {
+async function waitFor<T>(what: string, check: () => Promise<T | undefined>, run?: Running): Promise<T> {
   const deadline = Date.now() + 60_000;
   for (;;) {
     const value = await check();
     if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}\n${describeState()}`);
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}\n${run?.output() ?? ''}`);
     await sleep(100);
   }
 }
@@ -73,38 +73,44 @@ function npmRun(script: string, workerAccountId: string, port: number): Running 
 
 async function startDev(workerAccountId: string = randomUUID()): Promise<Running> {
   const dev = npmRun('dev', workerAccountId, await freePort());
-  await waitFor(
-    'the worker to start',
-    async () => (dev.output().includes('sendwhatever worker started') ? true : undefined),
-    dev.output,
-  );
-  await waitFor(
-    'the server to answer',
-    async () => {
-      try {
-        return (await fetch(`http://127.0.0.1:${dev.port}/healthz`)).ok ? true : undefined;
-      } catch {
-        return undefined;
-      }
-    },
-    dev.output,
-  );
+  await waitForStart(dev, 'sendwhatever worker started');
+  await waitForStart(dev, 'sendwhatever listening');
   return dev;
 }
 
-function groupIsAlive(group: number): boolean {
+/** Fails straight away if the command dies, rather than at the deadline with the reason hidden. */
+async function waitForStart(run: Running, line: string): Promise<void> {
+  await waitFor(
+    `"${line}"`,
+    async () => {
+      if (run.output().includes(line)) return true;
+      if (run.command.exitCode !== null) throw new Error(`Exited with ${run.command.exitCode}\n${run.output()}`);
+      return undefined;
+    },
+    run,
+  );
+}
+
+/** A negative id means a process group. */
+function isAlive(id: number): boolean {
   try {
-    process.kill(-group, 0);
+    process.kill(id, 0);
     return true;
   } catch {
     return false;
   }
 }
 
+/** npm's group, plus the server and worker, which `npm run dev` puts in groups of their own. */
+function everyId(run: Running): number[] {
+  const pids = [...run.output().matchAll(/started with pid (\d+)/g)].map((match) => Number(match[1]));
+  return [-run.group, ...pids];
+}
+
 /** Expects npm to exit with `code` and to leave nothing it started behind. */
 async function expectAllStopped(run: Running, code: number): Promise<void> {
   expect(await run.exited, run.output()).toBe(code);
-  await waitFor('every process to stop', async () => (groupIsAlive(run.group) ? undefined : true), run.output);
+  await waitFor('every process to stop', async () => (everyId(run).some(isAlive) ? undefined : true), run);
   running.delete(run);
 }
 
@@ -156,7 +162,7 @@ async function quarantined(eventId: string) {
 
 afterEach(async () => {
   for (const run of running) {
-    if (groupIsAlive(run.group)) process.kill(-run.group, 'SIGKILL');
+    for (const id of everyId(run)) if (isAlive(id)) process.kill(id, 'SIGKILL');
   }
   running.clear();
 });
@@ -201,7 +207,7 @@ describe('npm run dev', () => {
     // The worker can only be told about an account that exists, so this takes two runs.
     const first = await startDev();
     const account = await createAccount(first.port);
-    process.kill(-first.group, 'SIGINT'); // What Ctrl-C does: every process gets it.
+    process.kill(-first.group, 'SIGINT'); // What Ctrl-C does: all of npm's group gets it.
     await expectAllStopped(first, 0);
 
     const dev = await startDev(account.account_id);
@@ -211,7 +217,7 @@ describe('npm run dev', () => {
     await waitFor(
       'the unknown shape to reach quarantine',
       async () => ((await quarantined(unknown)).length > 0 ? true : undefined),
-      dev.output,
+      dev,
     );
     expect(await quarantined(unknown)).toEqual([{ reason: 'unknown_fingerprint', store_id: null }]);
     expect(await jobsLeft(account.account_id)).toBe(0);
@@ -232,7 +238,7 @@ describe('npm run dev', () => {
     await waitFor(
       'the job to finish',
       async () => ((await jobsLeft(account.account_id)) === 0 ? true : undefined),
-      dev.output,
+      dev,
     );
     expect(await quarantined(known)).toEqual([]);
 
@@ -265,11 +271,7 @@ describe('npm run dev', () => {
 describe('npm run worker', () => {
   it('runs alone and stops cleanly', async () => {
     const worker = npmRun('worker', randomUUID(), await freePort());
-    await waitFor(
-      'the worker to start',
-      async () => (worker.output().includes('sendwhatever worker started') ? true : undefined),
-      worker.output,
-    );
+    await waitForStart(worker, 'sendwhatever worker started');
 
     process.kill(worker.group, 'SIGTERM');
 

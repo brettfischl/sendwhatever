@@ -1,4 +1,8 @@
 // Runs the server and worker together. If either one exits, the other is stopped too.
+//
+// Each child gets its own process group, so Ctrl-C reaches it once, from here. Otherwise it would also
+// get the signal from the terminal, as would any sandbox process running an adapter, and that job
+// couldn't finish.
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -10,7 +14,7 @@ const children = [
   { name: 'server', script: 'src/http/main.ts' },
   { name: 'worker', script: 'src/worker/main.ts' },
 ].map(({ name, script }) => {
-  const child = spawn(process.execPath, ['--import', 'tsx', script], { cwd: ROOT, stdio: 'inherit' });
+  const child = spawn(process.execPath, ['--import', 'tsx', script], { cwd: ROOT, stdio: 'inherit', detached: true });
   console.log(`[dev] ${name} started with pid ${child.pid}`);
   return { name, process: child, running: true };
 });
@@ -18,7 +22,7 @@ const children = [
 let stopping = false;
 let exitCode = 0;
 
-/** Repeats are ignored: one Ctrl-C can arrive several times, and the children each get it just once here. */
+/** Repeats are ignored, since one Ctrl-C can arrive here several times. */
 function stopAll(signal: NodeJS.Signals): void {
   if (stopping) return;
   stopping = true;
@@ -43,3 +47,5 @@ for (const child of children) {
 
 process.on('SIGINT', () => stopAll('SIGINT'));
 process.on('SIGTERM', () => stopAll('SIGTERM'));
+// A closed terminal. The children are in other process groups, so it can't reach them directly.
+process.on('SIGHUP', () => stopAll('SIGTERM'));
