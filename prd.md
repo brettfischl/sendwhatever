@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-Build a platform that accepts arbitrary JSON payloads sent to per-account endpoints, classifies their structure, and writes them into per-account storage. When an unrecognized payload structure arrives, the system quarantines it and provides a workflow for an AI (or human operator) to author a new data adapter. Once the adapter is approved, all matching quarantined payloads are replayed through it.
+Build a platform that accepts arbitrary JSON payloads sent to per-account endpoints, classifies their structure, and writes them into per-account storage. When an unrecognized payload structure arrives, the system quarantines it, and a continuously running LLM process writes a new data adapter for it. Once the adapter passes validation, it is activated and all matching quarantined payloads are replayed through it, so the delay for a new shape is essentially the time it takes to generate the adapter. A human operator can step in at any point.
 
 The platform exposes two consumption paths for each account:
 1. **Direct adapter-driven ingestion** — raw `{ type, data }` JSON payloads are classified and written automatically.
@@ -26,8 +26,8 @@ Every accepted payload is kept in an append-only ingress event log. Normalized t
 
 - Accept open-ended JSON payloads in a constrained envelope: `{ "type": string, "data": object|array }`.
 - Write recognized payload shapes into normalized relational tables per account.
-- Quarantine unrecognized or malformed payloads instead of failing the request.
-- Support AI/human adapter generation against quarantined samples.
+- Quarantine unrecognized or malformed JSON payloads instead of failing the request. Only a body that isn't valid JSON is rejected.
+- Generate adapters continuously with an LLM against quarantined samples, with human override.
 - Replay quarantined payloads through new adapters transactionally.
 - Provide a clean intermediate object contract so adapters reason about shape, not SQL or any specific data store.
 - Keep all platform state in Postgres, independent of where account data lives.
@@ -39,7 +39,6 @@ Every accepted payload is kept in an append-only ingress event log. Normalized t
 - Authentication or authorization.
 - Billing, usage metering, or rate limiting.
 - Multi-region replication or edge distribution.
-- Full AI adapter generation implementation (the interface and workflow are defined; the LLM integration is out of scope).
 - Strict foreign-key constraints or schema validation beyond column existence and logical type.
 - Real-time streaming or subscriptions.
 - WebSocket protocol support.
@@ -131,19 +130,21 @@ The write in step 10 and the delete in step 11 are not atomic. If a worker dies 
 1. Steps 1–6 above are the same.
 2. No active adapter matches.
 3. A `quarantine` row referencing the event is inserted with `reason = 'unknown_fingerprint'`, and the queue job is deleted in the same transaction.
-4. A background or on-demand process samples quarantined rows for that `(type, fingerprint)`.
-5. AI/human writes an adapter that normalizes the shape into the intermediate object format.
-6. Adapter is inserted with `active = false`, tested against the sample.
-7. On approval, adapter is set `active = true` (deactivating any earlier version for the same `(type, fingerprint)` in the same transaction) and a `replay` job is enqueued.
+4. The Adapter Generator (§12.1), which runs continuously, picks up the new shape and samples quarantined rows for that `(type, fingerprint)`.
+5. The LLM writes an adapter that normalizes the shape into the intermediate object format.
+6. Adapter is inserted with `active = false` and validated against the sample.
+7. If validation passes, adapter is set `active = true` (deactivating any earlier version for the same `(type, fingerprint)` in the same transaction) and a `replay` job is enqueued.
 8. The worker pages through matching unreleased rows in batches, reading each payload from `events`. Each event is written through the storage backend, then marked released and logged in `replay_log` in one application database transaction.
 
 A worker can look up an adapter just before activation and quarantine just after the replay finishes, stranding the row. A periodic sweep enqueues a replay for any active adapter that has matching `unknown_fingerprint` rows.
 
 ### 5.3 Malformed Payload Path
 
-1. Payload cannot be parsed as `{ type, data }` or `type` is missing/not a string.
+1. Payload is valid JSON but doesn't match `{ type, data }`: `type` is missing/not a string, or `data` is not an object or array.
 2. In one transaction, Ingestion Service appends it to `events` with no type or fingerprint and inserts a `quarantine` row with `reason = 'malformed'`. There is nothing for a worker to do, so no queue job is created.
 3. Malformed rows are not auto-replayed; they require operator inspection.
+
+A body that isn't valid JSON, such as `{ messages: [ msg: broken]}`, never reaches this path. The Ingestion Service rejects it with `400` and stores nothing.
 
 ### 5.4 Replay to a Different Store
 
@@ -189,6 +190,23 @@ Rules:
 - `data` must be an object or array. If it is an array, each element is treated as a row of type `type`.
 - Additional top-level keys are ignored by the platform but may be logged.
 
+### 6.1 Experiment: No Envelope
+
+We want to test how well the LLM does without the `{ type, data }` convention, accepting any JSON object or array as the payload.
+
+`type` currently gives the generator a table name and keeps apart shapes that look alike. Without it, a user `{ id, name }` and a product `{ id, name }` share a fingerprint, so one adapter would have to handle both.
+
+**Run it offline first.** The event log makes this possible without production changes: strip `type` from logged events, run the generator on them, and compare the results to the known types. Measure:
+- First-attempt validation pass rate, against enveloped events.
+- Events routed to the wrong table.
+- Whether similar shapes get consistent table names.
+- Generation time.
+
+**If it holds up**, it becomes a per-account setting, which requires:
+- Fingerprinting the whole body.
+- Making `type` optional on `events` and `adapters`, with adapters required to set `table`.
+- A new rule for what `malformed` means, since only JSON scalars would still fail the envelope check.
+
 ---
 
 ## 7. Structural Fingerprint
@@ -198,7 +216,7 @@ The fingerprint is a stable hash of the shape of `data`.
 Algorithm (v1):
 1. Recursively traverse `data`.
 2. For objects: sort keys alphabetically; output `{key: <type>, ...}`.
-3. For arrays: output `[<element-type>]`.
+3. For arrays: compute the shape of each element, remove duplicates, sort by serialized form, and output `[<shape>, ...]`.
 4. For primitives: output the JSON type name (`string`, `number`, `boolean`, `null`).
 5. Serialize deterministically and hash with SHA-256 (truncated to first 16 chars for storage).
 
@@ -215,6 +233,14 @@ Fingerprint shape:
 ```
 
 This groups functionally identical shapes together even when values differ.
+
+Array length and order don't affect the fingerprint, but a mixed array gets its own. `[{"msg":"hi"},{"msg":"hello!"}]` has the same fingerprint as `[{"msg":"hi"}]`, while `[{"msg":"hi"},{"msg":5}]` has the shape:
+
+```json
+[{"msg":"number"},{"msg":"string"}]
+```
+
+An event with an unexpected item therefore lands in quarantine as `unknown_fingerprint`, ready for an adapter written for that exact shape.
 
 ---
 
@@ -237,7 +263,7 @@ interface IntermediateRow {
 
 Rules:
 - `table` is optional. If omitted, the platform uses the payload `type`.
-- `rows` is required. Each row represents one record in the table.
+- `rows` is required. Each row represents one record in the table. One ingress event can produce any number of rows: `{ "messages": [{ "msg": "hi" }, { "msg": "hello!" }] }` can become two `messages` rows.
 - `id` is optional on each row, including child rows. If missing, the platform injects a UUIDv5 derived from `(event_id, table, row path)`, so reprocessing the same event produces the same IDs.
 - An adapter-supplied `id` is treated as the record's identity: the event latest in the log wins, and its row replaces the earlier one in full.
 - `children` is optional. Each key becomes a child table named `{parent_table}_{key}` (or uses the adapter hint if provided).
@@ -305,8 +331,8 @@ The platform uses a lazy, additive schema strategy, defined in logical types so 
   - `number` → `number`
   - `string` → `string`
   - `boolean` → `boolean`
-  - object or array → `json`
-- Existing columns are never modified or removed by the platform.
+- Column values must be scalars. There is no JSON column type, because the output is meant to be a clean relational database: nested data becomes child tables (§8), and an adapter that returns an object or array as a column value fails with `adapter_error`.
+- Existing columns are never modified or removed by the platform. This is enforced in code (see **Non-destructive by construction** below).
 - Foreign keys are not enforced on any backend; the platform relies on convention (`{parent_table}_id`).
 
 `number` is one logical type with no integer/float split, so `100` followed by `100.5` is not a conflict.
@@ -314,6 +340,8 @@ The platform uses a lazy, additive schema strategy, defined in logical types so 
 **Column registry.** `data_columns` in the application database records each column's logical type, per store. It lets the platform detect conflicts the same way on every backend, without relying on store-specific errors or type coercion. SQLite, for example, would silently store a string in a numeric column, while Postgres would reject it.
 
 **Type conflicts.** A non-null value whose logical type differs from the registered type sends the whole event to quarantine against that store with `reason = 'schema_conflict'`. Nothing is coerced and nothing from that event is written to that store.
+
+**Non-destructive by construction.** LLM-written adapters cannot issue a `DROP`, because they emit no SQL and have no database access. They return intermediate objects, and the platform derives every schema change from those. `SchemaChange` (§11.1) can only express creating a table or adding a column, and backends generate no other DDL. The conformance suite (§11.5) verifies this. Any future path where LLM output reaches a store as SQL must first pass a SQL parser with an allowlist of statements, rejecting `DROP`, `TRUNCATE`, `DELETE`, and destructive `ALTER`. Text matching on adapter code isn't used, because it can't catch a constructed statement and would flag a harmless field named `drop`.
 
 **Identifiers.** Table and column names come from client payloads and adapter output, so they are untrusted:
 - They must match `^[a-z][a-z0-9_]*$` and be at most 63 characters, the Postgres limit. Nothing is truncated, since truncated names can collide. A leading underscore is reserved for platform columns. Output that breaks these rules is an `adapter_error`.
@@ -439,17 +467,33 @@ CREATE TABLE replay_log (
   attempted_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE adapter_attempts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id),
+  type TEXT NOT NULL,
+  fingerprint TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+  adapter_id UUID REFERENCES adapters(id),
+  detail TEXT,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  finished_at TIMESTAMPTZ
+);
+
+-- At most one generation in progress per shape
+CREATE UNIQUE INDEX adapter_attempts_one_running
+  ON adapter_attempts (account_id, type, fingerprint) WHERE status = 'running';
+
 CREATE TABLE data_columns (
   store_id UUID NOT NULL REFERENCES account_stores(id),
   table_name TEXT NOT NULL,
   column_name TEXT NOT NULL,
-  logical_type TEXT NOT NULL CHECK (logical_type IN ('string', 'number', 'boolean', 'json')),
+  logical_type TEXT NOT NULL CHECK (logical_type IN ('string', 'number', 'boolean')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (store_id, table_name, column_name)
 );
 ```
 
-`events.body` is `BYTEA`, not `JSONB`, because a malformed payload may not be valid JSON and `JSONB` rejects `\u0000` even in valid JSON. Keeping the exact bytes also means a replay sees exactly what was received.
+`events.body` is `BYTEA`, not `JSONB`, because `JSONB` rejects `\u0000` even in valid JSON and doesn't preserve key order or duplicate keys. Keeping the exact bytes also means a replay sees exactly what was received.
 
 ### 10.1 Queue Behavior
 
@@ -495,6 +539,12 @@ Out of scope for this PRD, and documented so the MVP doesn't rule it out. `event
 - **Pruning:** a separate implementation can move older events out of `events` into a backup store to limit its size, partitioned by account and time.
 - **Deletion requests:** the affected events are removed from `events` directly. For pruned events, the account and time partitions narrow down where to find them in long-term storage.
 
+That work will need to handle:
+
+- **Derived rows:** removing an event doesn't remove what it produced in storage backends, and there is no direct reference between the two. One event can produce many rows across several tables, and with adapter-supplied IDs one row can be written by many events. `_event_seq` identifies only a row's last writer. Rebuilding into a new store (§5.4) without the deleted event handles all of these cases, including restoring a row an earlier event had written. If rebuilds prove too slow for this, a lineage table mapping events to rows is the alternative, at the cost of one more entry per derived row.
+- **Rebuilds after pruning:** a rebuild reads from `events`, so once events are pruned it must also read the backup store, or it will silently produce an incomplete store.
+- **Foreign keys:** `quarantine` and open `queue` rows reference `events(id)`, so they must be dealt with before an event can be pruned or deleted.
+
 ---
 
 ## 11. Storage Backends
@@ -504,7 +554,7 @@ Out of scope for this PRD, and documented so the MVP doesn't rule it out. `event
 Every data store implements one interface. The pipeline above it knows nothing about the store.
 
 ```typescript
-type LogicalType = 'string' | 'number' | 'boolean' | 'json';
+type LogicalType = 'string' | 'number' | 'boolean';
 
 interface StoreConfig {
   namespace: string;                          // from account_stores; never from the slug
@@ -565,7 +615,6 @@ No distributed transaction spans the application database and a backend, and a s
 | `string` | `TEXT` | `TEXT` | `Nullable(String)` |
 | `number` | `NUMERIC` | `NUMERIC` | `Nullable(Float64)` |
 | `boolean` | `BOOLEAN` | `INTEGER` | `Nullable(Bool)` |
-| `json` | `JSONB` | `TEXT` | `Nullable(String)` |
 | `_event_seq` | `BIGINT` | `INTEGER` | `Int64` |
 | Idempotent write | `INSERT ... ON CONFLICT (id) DO UPDATE ... WHERE` incoming `_event_seq` is not lower | Same as Postgres | `ReplacingMergeTree(_event_seq)`, ordered by `id` |
 | `atomicWrites` | true | true | false |
@@ -595,7 +644,7 @@ The backend is part of the account object in the application database, set when 
 
 ### 11.5 Conformance Suite
 
-A single test suite, run against every backend, covers idempotent provisioning and schema changes, repeated and out-of-order writes, reserved-word identifiers, all logical types and nulls, adding columns to populated tables, and error classification. Passing it is the definition of a supported backend.
+A single test suite, run against every backend, covers idempotent provisioning and schema changes, additive-only DDL, repeated and out-of-order writes, reserved-word identifiers, all logical types and nulls, adding columns to populated tables, and error classification. Passing it is the definition of a supported backend.
 
 ---
 
@@ -605,8 +654,9 @@ Adapters are stored as code strings in the application database's `adapters` tab
 
 MVP approach:
 - Adapters are JavaScript functions stored as text.
-- The worker runs them in a restricted VM or function constructor with no access to network, filesystem, or globals other than a provided `payload` argument, and with an execution timeout.
+- The worker runs them in an isolated sandbox (e.g., isolated-vm, WebAssembly, or a separate process) with no access to network, filesystem, or globals other than a provided `payload` argument, and with an execution timeout.
 - The function must return an `IntermediateObject`.
+- Adapters should normalize values to consistent types, such as casting `5` to `"5"` for a text column. The platform never coerces values (§9), so this is where mixed types get resolved.
 
 Example adapter code:
 
@@ -635,7 +685,36 @@ function adapt(payload) {
 }
 ```
 
-Security note: In production, adapters should run in a proper sandbox (e.g., isolated-vm, WebAssembly, or a separate process). For MVP, a basic VM wrapper is acceptable with the understanding that adapter code is trusted/audited before activation.
+Security note: Adapter code is written by an LLM from client-supplied payloads and activated without human review, so it must be treated as untrusted from the MVP onward. A payload can contain text aimed at steering the LLM, which makes a basic VM wrapper insufficient. Sample payloads are passed to the LLM as data, never as instructions.
+
+### 12.1 Adapter Generator
+
+A continuously running process that turns quarantined shapes into active adapters.
+
+1. It polls for `(account_id, type, fingerprint)` shapes with open quarantine rows and no generation in progress, and records a `running` row in `adapter_attempts`. An attempt left `running` past a timeout is treated as failed.
+2. It samples rows for the shape and asks the LLM for an adapter, including the shape's registered columns (`data_columns`) so that new adapters reuse existing tables and types.
+3. It validates the adapter against the sample, using the same checks as `POST /adapters/:id/test`.
+4. If validation passes, the adapter is activated and its replay enqueued (§5.2). If it fails, the LLM retries with the errors, with backoff between attempts. After a configurable number of failures, the shape waits for an operator.
+
+**Which rows it reads:** `unknown_fingerprint`, `adapter_error`, and `schema_conflict`, where a new adapter can fix the problem. `malformed` and `write_error` rows are left to operators.
+
+**Non-destructive prompting.** The generator's prompt instructs the LLM to evolve schemas only by adding:
+- Reuse existing tables, columns, and types where they fit.
+- Add new columns or tables for anything new, and never repurpose or stop writing an existing column.
+- Never discard a field. Every field gets a clearly named column or child table, with no catch-all columns and no JSON blobs. When deriving a value, such as a full name, also keep the original fields.
+- Normalize nested data: objects and arrays of objects become child tables, arrays of primitives become child tables with a `value` column, and maps with arbitrary keys become child tables with `key` and `value` columns.
+
+Prompts are guidance, so the rules that matter are also enforced in code, by the gate below and the schema layer (§9).
+
+**Validation gate.** An adapter is activated only if, across the sample, it:
+- Runs without errors or timeouts, and returns a valid intermediate object with valid identifiers.
+- Causes no type conflicts with registered columns.
+- Carries every field value in the payload through to the output, allowing for casts like `5` to `"5"`, so an adapter can't pass while silently losing data.
+- If it replaces an earlier version for the same shape, still writes every column that version wrote. Writes replace whole rows (§11.2), so an omitted column would be overwritten with `NULL`.
+
+**Mistakes are recoverable.** A bad adapter that passes the gate writes wrong rows, not lost data. The original payloads remain in the event log, so a corrected adapter and a rebuild (§5.4) repair the account.
+
+**Limits.** Generation concurrency is capped per account, so one account sending many new shapes can't starve others or run up unbounded LLM cost.
 
 ---
 
@@ -646,6 +725,7 @@ Security note: In production, adapters should run in a proper sandbox (e.g., iso
 `POST /ingest`
 - Accepts `{ type, data }` JSON.
 - Returns `202 Accepted` once the payload is committed to the event log, and queued if well formed.
+- Returns `400` if the body isn't valid JSON. Nothing is stored.
 - Returns `503` if the application database is unavailable, and the client should retry.
 - Response body:
   - `status`: `queued`, `malformed`
@@ -656,7 +736,7 @@ Security note: In production, adapters should run in a proper sandbox (e.g., iso
 - Lists quarantined payloads, optionally filtered by `type`, `fingerprint`, or `reason`.
 
 `POST /adapters`
-- Creates a new adapter (initially `active = false`).
+- Creates a new adapter (initially `active = false`). The generator normally does this; the route is the operator override, along with `activate`.
 - Body: `type`, `fingerprint`, `code`.
 
 `POST /adapters/:id/activate`
@@ -753,10 +833,13 @@ curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
 |----------|----------|
 | Known type + fingerprint | Write via adapter |
 | Known type, unknown fingerprint | Quarantine with `unknown_fingerprint` |
-| Malformed payload | Quarantine with `malformed` |
+| Body isn't valid JSON | Reject with `400`; nothing stored |
+| Valid JSON that doesn't match the envelope | Quarantine with `malformed` |
 | Adapter throws or times out | Quarantine with `adapter_error` |
 | Adapter returns invalid intermediate object or identifier | Quarantine with `adapter_error` |
 | Value conflicts with registered column type | Quarantine with `schema_conflict` |
+| Generated adapter fails validation | Not activated; LLM retries with the errors, then the shape waits for an operator |
+| LLM provider unavailable | Generator retries with backoff; events stay safely in quarantine |
 | Application database unavailable at ingest | Return `503`; client retries |
 | Storage backend unavailable or times out | Job stays queued with backoff; `write_error` after maximum age |
 | Backend permanently rejects a write (e.g., NUL byte in Postgres `TEXT`, column limit reached) | Quarantine with `write_error` |
@@ -780,9 +863,11 @@ curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
 
 ## 17. Rollout
 
-1. **Postgres backend (MVP):** application database, event log, queue and workers, `StorageBackend` interface, Postgres implementation, rebuilds between Postgres stores, conformance suite.
+1. **Postgres backend (MVP):** application database, event log, queue and workers, Adapter Generator, `StorageBackend` interface, Postgres implementation, rebuilds between Postgres stores, conformance suite.
 2. **sqld backend:** the first test of the interface against a second store, and of a rebuild across backends. Treat the interface as unstable until this ships.
 3. **ClickHouse backend:** the first backend with `atomicWrites: false` and eventual idempotency. Further backends follow the same path.
+
+**Stretch goal: grader LLM.** A second LLM reviews each adapter that passes the validation gate, before activation. It judges what code checks can't, such as whether fields landed in sensible columns and whether table names fit the account's existing schema. It adds cost and some latency per new shape.
 
 ---
 
@@ -790,7 +875,8 @@ curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
 
 - Can ingest arbitrary `{ type, data }` payloads into per-account namespaces on the Postgres backend.
 - Can quarantine unrecognized shapes without data loss.
-- Can author, test, and activate adapters that normalize shapes into relational tables.
+- An unknown shape reaches relational tables with no human involvement, delayed only by adapter generation and replay.
+- Can run the no-envelope experiment offline against the event log and report the results (§6.1).
 - Can replay quarantined rows transactionally after adapter activation, with repeated or interrupted replays producing no duplicate rows.
 - Every accepted payload is retained in the event log, including malformed ones.
 - Can rebuild an account into a new store from the event log and switch to it atomically, with no accepted events missing.
