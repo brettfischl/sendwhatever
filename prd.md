@@ -204,7 +204,7 @@ Third-party tools (Stripe, Shopify, GitHub, …) send their own formats and usua
 
 **Core:**
 - **Key in the URL.** Since most providers can't send `Authorization`, the API key may be passed as `?key=` instead (§13.4). It is removed before the request is logged, and Caddy's access logs must not record query strings.
-- **Request context.** `events.request` stores the method, path, raw query string, and headers. Obvious auth is stripped first: the `Authorization`, `Proxy-Authorization`, `Cookie`, and `X-Api-Key` headers, and the `key` query parameter. Adapters receive it as `payload.request`, and the LLM sees it in samples.
+- **Request context.** `events.request` stores `{ method, path, query, headers }`: the path as received, the raw query string without the leading `?`, and headers as single strings with lowercase names, joining repeated headers with `, `. Obvious auth is stripped first: the `Authorization`, `Proxy-Authorization`, `Cookie`, and `X-Api-Key` headers, and the `key` query parameter. Adapters receive it as `payload.request`, and the LLM sees it in samples.
 - **Duplicate deliveries.** Providers retry, so delivery is at least once. A known delivery header (`X-GitHub-Delivery`, `X-Shopify-Webhook-Id`, …) is used as the `Idempotency-Key` when none is sent. Keys apply per `(source, op)`, so two providers on different paths can't collide, and are limited to 255 bytes; a longer key gets `400`.
 
 **If time allows:**
@@ -290,10 +290,10 @@ Rules:
   - A child of a parent with an adapter-supplied `id` derives from `(parent id, table, position)`, so a repeat of the parent updates its children instead of adding more.
   - A shorter list never removes anything. If a later event has fewer children, the extra rows stay current, because the event may be a partial update. Removing a child takes an explicit delete: a `DELETE` request for it, or a `_deleted: true` child row (below).
   - Every other row, and any child table with `append: true`, derives from `(event_id, table, row path)`.
-- An adapter-supplied `id` is treated as the record's identity, and writes to it merge: columns in the write are updated, and columns absent from it keep their values. An explicit `null` clears a column. When events conflict on a column, the one latest in the log wins (§11.2).
-- `_deleted: true` marks the record deleted by setting `_deleted_at`, and any fields included on the row are written too, so nothing in the event is lost. A write later in the log for the same `id` restores it; a delayed earlier event does not (§11.2). Rows are never physically removed. This works on child rows too, so an adapter can turn `{ "id": "order_1", "items": [{ "id": "1", "deleted": true }] }` into a `_deleted: true` row for item 1. Deletes are always explicit, and the platform never infers one from a missing row.
+- An adapter-supplied `id` is treated as the record's identity, and writes to it merge: columns in the write are updated, and columns absent from it keep their values. An explicit `null` clears a column, and so does a column set to `undefined`; only a missing key keeps the stored value. On `id`, `_deleted`, and `children`, `undefined` means the key is omitted. When events conflict on a column, the one latest in the log wins (§11.2).
+- `_deleted: true` marks the record deleted by setting `_deleted_at` to the deleting event's `received_at`, so replays match, and any fields included on the row are written too, so nothing in the event is lost. A write later in the log for the same `id` restores it; a delayed earlier event does not (§11.2). Rows are never physically removed. This works on child rows too, so an adapter can turn `{ "id": "order_1", "items": [{ "id": "1", "deleted": true }] }` into a `_deleted: true` row for item 1. Deletes are always explicit, and the platform never infers one from a missing row.
 - Returning an array writes several top-level tables from one event, such as an order and the customer embedded in it. An entity with its own identity belongs in its own table, referenced by a column like `customer_id`, rather than repeated as a child of each parent.
-- Column values are strings, numbers, booleans, or `null`, plus objects or arrays at declared opaque paths (§9). A `timestamp` column is declared in `column_types`, and its values must be ISO 8601 strings with a timezone.
+- Column values are strings, finite numbers, booleans, or `null`, plus objects or arrays at declared opaque paths (§9). `NaN` and `Infinity` fail with `adapter_error`, because JSON would turn them into `null` and clear the column. A `timestamp` column is declared in `column_types`, and its values must be ISO 8601 strings with a timezone.
 - `children` is reserved, as are injected foreign key names. An adapter must rename payload fields that collide with them, and a collision fails with `adapter_error`.
 - `children` is optional. Each key becomes a child table named `{parent_table}_{key}` (or uses the adapter hint if provided).
 - The platform injects `{parent_table}_id` as a foreign key column on every child row.
@@ -653,10 +653,17 @@ type SchemaChange =
   | { kind: 'add_column'; table: string; column: string; type: LogicalType }
   | { kind: 'add_index'; table: string; column: string };
 
+interface TableRow {
+  id: string;
+  _event_seq: string;                         // events.seq as decimal text; compare it in SQL
+  _deleted_at?: string;                       // the deleting event's received_at (§11.2)
+  [column: string]: unknown;                  // an absent key keeps the stored value; null clears it
+}
+
 interface TableRows {
   table: string;
-  columns: Record<string, LogicalType>;       // the columns these rows use
-  rows: Record<string, unknown>[];            // every row has id and _event_seq; an absent key keeps the stored value
+  columns: Record<string, LogicalType>;       // the columns these rows use, not counting platform columns
+  rows: TableRow[];
 }
 
 interface StorageBackend {
@@ -682,10 +689,11 @@ class StorageError extends Error {
 - `write` receives all rows for one event and must be idempotent on `id`: writing the same row twice leaves one logical row.
 - `write` merges into existing rows, so a store's final state doesn't depend on the order workers ran in or on when a quarantined event is released:
   - Each included column is updated only if the write's `_event_seq` is at least that column's entry in `_column_seq`; other columns are left alone. Out-of-order partial updates therefore all land, and a late event never overrides a newer value.
-  - The row keeps the higher `_event_seq`. Deletes (§8) compare it, and raise it to the deleting event's `seq`, so only a write at or above that `seq` can clear `_deleted_at`.
-  - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns. A rebuild, which runs in order, corrects anything missed.
+  - The row keeps the higher `_event_seq`. Deletes (§8) compare it, and raise it to the deleting event's `seq`.
+  - `_deleted_at` follows its own rule, and only a write at or above the row's `_event_seq` can change it. Such a write sets it if the row includes it, and clears it if not, which is the one exception to an absent key keeping its value. A lower write never touches it, so a delayed delete can't mark a newer row deleted, and a delayed write can't restore a newer delete.
+  - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns other than `_deleted_at`. A rebuild, which runs in order, corrects anything missed.
 - `provision` must also create read-only credentials limited to that store's namespace, and they must keep working for tables and columns added later.
-- `write` must classify every failure as retryable or permanent through `StorageError`.
+- `applySchema` and `write` run for each event, and must classify every failure as retryable or permanent through `StorageError`. A worker treats any other error as retryable.
 - Backends do not validate identifiers or types, since the platform has already done so, but must quote identifiers and bind values as parameters.
 
 **Transactional replay.** The event log is committed in Postgres before anything is processed, so a replay always has a complete, unchanged source to read from. Deterministic IDs (§8) and `_event_seq` make every replay converge on the same rows, however often it runs or wherever it is interrupted. On top of that:
@@ -754,8 +762,8 @@ MVP approach:
 - The worker runs them in `isolated-vm` with no access to network, filesystem, or globals other than a provided `payload` argument, and with an execution timeout.
 - `Date.now()`, `new Date()` without arguments, and `Math.random()` are removed from the sandbox. Replays depend on an adapter producing the same output for the same event.
 - Integers too large for a JavaScript number are passed to adapters as strings, so long numeric IDs aren't rounded.
-- `payload` is `{ data, request }`, where `data` is the parsed body and `request` is the logged method, path, query string, and headers (§6.2).
-- The function must return an `IntermediateObject` or an array of them.
+- `payload` is `{ data, request }`, where `data` is the parsed body and `request` is the logged `{ method, path, query, headers }` (§6.2).
+- The function must return an `IntermediateObject` or an array of them. A column set to `undefined` must survive the sandbox boundary, because it clears the column (§8), and serializing with `JSON.stringify` would silently drop it.
 - Adapters should normalize values to consistent types, such as casting `5` to `"5"` for a text column. The platform never coerces values (§9), so this is where mixed types get resolved.
 
 Example adapter code:
@@ -771,7 +779,8 @@ function adapt(payload) {
   function normalize(item) {
     return {
       id: item.id,
-      email: item.email,
+      // Leave out a missing field: setting it to undefined would clear the stored value (§8).
+      ...('email' in item ? { email: item.email } : {}),
       children: item.profile ? {
         profile: {
           rows: [{
@@ -810,7 +819,7 @@ A configurable cap limits generations per shape, and the shape then waits for an
 - Normalize nested data: objects and arrays of objects become child tables, and arrays of primitives become child tables with a `value` column.
 - Declare an opaque path only for a field whose keys truly vary. Store it as a child table with `key` and `value` columns when its values are uniform, or as a named `json` column when it is truly free-form. JSON is never a place to put data that could be modeled.
 - Use a stable `id` from the payload when events describe the same real-world record, so they merge into one row. Omit it when each event is a new record.
-- Pass `null` through only when the source means to clear a value.
+- Pass `null` through only when the source means to clear a value. Leave out any field the event doesn't include: `email: item.email` on a partial update would set `undefined` and clear the stored email.
 - Give child rows a natural `id` where one exists, such as a SKU. Set `append: true` for lists where each event adds new items, such as messages.
 - Declare date and time fields as `timestamp`, and normalize them to ISO 8601 with a timezone.
 - Give an embedded entity with its own identity, such as a customer inside an order, its own table.
