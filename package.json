@@ -9,6 +9,7 @@
   "scripts": {
     "setup": "bash scripts/setup.sh",
     "migrate": "tsx scripts/migrate.ts",
+    "demo": "tsx demo/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit && vitest run"
   },

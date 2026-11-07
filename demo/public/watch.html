@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Watch · Beacon Live</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <div class="site">
+        <nav class="topbar"><a href="/" class="brand"><span class="brand-dot"></span>Beacon Live</a></nav>
+        <main>
+          <div class="watch-head">
+            <h1 id="session-title">Loading…</h1>
+            <p class="muted"><span id="viewer-name"></span> <button id="cancel-registration" type="button" class="link" hidden>Cancel my registration</button></p>
+          </div>
+          <div class="watch">
+            <section id="stage" class="stage" aria-label="Video player (simulated)">
+              <div class="stage-top">
+                <span class="live-pill">Live</span>
+                <span id="stage-viewers"></span>
+              </div>
+              <div class="stage-slide">
+                <h2 id="stage-title"></h2>
+                <p id="stage-speaker"></p>
+                <button id="go-live" type="button" class="primary" hidden>Go live</button>
+              </div>
+              <div class="stage-bottom">
+                <span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+                <span id="stage-timecode">00:00:00</span>
+              </div>
+            </section>
+            <section class="card chat">
+              <h2>Live comments</h2>
+              <p id="comments-empty" class="muted">No comments yet.</p>
+              <ul id="comments" class="comments"></ul>
+              <form id="comment-form" class="chat-form">
+                <input name="body" required maxlength="2000" placeholder="Say something" aria-label="Comment" autocomplete="off" />
+                <button name="send" type="submit" class="primary">Send</button>
+              </form>
+            </section>
+          </div>
+        </main>
+      </div>
+    <aside class="log" aria-label="Request log">
+      <header>
+        <div class="log-heading">
+          <h2>Requests to ingest</h2>
+          <span id="log-count" class="log-count"></span>
+          <button id="log-clear" type="button" class="link">Clear</button>
+        </div>
+        <div id="log-target" class="log-target"></div>
+      </header>
+      <p id="log-empty" class="log-empty">Nothing sent yet. Each request and its response appears here.</p>
+      <div id="log-list"></div>
+    </aside>
+    <div id="toast" class="toast" role="alert" hidden></div>
+    </div>
+    <script type="module" src="/assets/watch.js"></script>
+  </body>
+</html>
