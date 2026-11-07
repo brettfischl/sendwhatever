@@ -32,6 +32,8 @@ async function login(email: string) {
   return { cookie: `sw_admin=${/sw_admin=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')![1]}` };
 }
 
+/** Blank out ticking time text ("12s ago", "oldest 10m 5s") so two requests a moment apart compare equal. */
+const steady = (html: string) => html.replace(/just now|\d+[smh] ago|\d+h \d+m|\d+m \d+s|\b\d+s\b/g, '~');
 const get = (path: string, fragment = false) =>
   app.request(path, { headers: { cookie: session.cookie, ...(fragment ? { 'x-admin-fragment': '1' } : {}) } });
 const page = async (path: string, fragment = false) => {
@@ -306,7 +308,7 @@ describe('filters', () => {
     expect(fragment).toContain(`data-event="${ids.queued}"`);
     expect(fragment).toMatch(/<option value="shopify" selected="">/);
     expect(fragment).toMatch(/<option value="queued" selected="">/);
-    expect(await page(path)).toContain(fragment);
+    expect(steady(await page(path))).toContain(steady(fragment));
     // The refresh script refetches location.href, query string included.
     expect(await page(path)).toContain('fetch(location.href');
   });
