@@ -287,10 +287,11 @@ Rules:
 - `table` is required at the top level, since there is no type to default to.
 - `rows` is required. Each row represents one record in the table. One ingress event can produce any number of rows: `{ "messages": [{ "msg": "hi" }, { "msg": "hello!" }] }` can become two `messages` rows.
 - `id` is optional on each row, including child rows. If missing, the platform injects a UUIDv5, so reprocessing the same event produces the same IDs:
-  - A child of a parent with an adapter-supplied `id` derives from `(parent id, table, position)`, so a repeat of the parent updates its children instead of adding more.
+  - A child of a parent with a stable `id` derives from `(parent id, table, position)`, so a repeat of the parent updates its children instead of adding more. A parent's `id` is stable if the adapter supplied it, or if it was itself derived this way, so grandchildren stay stable too.
   - A shorter list never removes anything. If a later event has fewer children, the extra rows stay current, because the event may be a partial update. Removing a child takes an explicit delete: a `DELETE` request for it, or a `_deleted: true` child row (below).
   - Every other row, and any child table with `append: true`, derives from `(event_id, table, row path)`.
 - An adapter-supplied `id` is treated as the record's identity, and writes to it merge: columns in the write are updated, and columns absent from it keep their values. An explicit `null` clears a column, and so does a column set to `undefined`, which the write planner converts to `null`; only a missing key keeps the stored value. On `id`, `_deleted`, and `children`, `undefined` means the key is omitted. When events conflict on a column, the one latest in the log wins (§11.2).
+- An adapter-supplied `id` must be a string, and `_deleted` may only be `true`. Anything else fails with `adapter_error`, because the platform never coerces, so adapters must cast numeric IDs and must not pass a payload's own flag straight through.
 - `_deleted: true` marks the record deleted by setting `_deleted_at` to the deleting event's `received_at`, so replays match, and any fields included on the row are written too, so nothing in the event is lost. A write later in the log for the same `id` restores it; a delayed earlier event does not (§11.2). Rows are never physically removed. This works on child rows too, so an adapter can turn `{ "id": "order_1", "items": [{ "id": "1", "deleted": true }] }` into a `_deleted: true` row for item 1. Deletes are always explicit, and the platform never infers one from a missing row.
 - Returning an array writes several top-level tables from one event, such as an order and the customer embedded in it. An entity with its own identity belongs in its own table, referenced by a column like `customer_id`, rather than repeated as a child of each parent.
 - Column values are strings, finite numbers, booleans, or `null`, plus objects or arrays at declared opaque paths (§9). `NaN` and `Infinity` fail with `adapter_error`, because JSON would turn them into `null` and clear the column. A `timestamp` column is declared in `column_types`, and its values must be ISO 8601 strings with a timezone.
@@ -351,14 +352,14 @@ The platform then:
 
 The platform uses a lazy, additive schema strategy, defined in logical types so it behaves the same on every storage backend.
 
-- Tables are created on first write if they do not exist. Every table has an `id` primary key and platform-managed columns: `_event_seq` (the highest `events.seq` that has written the row), `_column_seq` (the same, per column, §11.2), and `_deleted_at` (set when the record is marked deleted, §8).
+- Tables are created on first write if they do not exist. Every table has an `id` primary key and platform-managed columns: `_event_seq` (the highest `events.seq` that has written the row) and `_deleted_at` (set when the record is marked deleted, §8). Per-column ordering (§11.2) adds `_column_seq`, which isn't in the MVP.
 - Columns are added on first non-null value if they do not exist. A value that is always `null` creates no column.
 - Column types are inferred from the first non-null value seen, unless the adapter declares them:
   - `number` → `number`
   - `string` → `string`
   - `boolean` → `boolean`
   - string declared in `column_types` → `timestamp`
-  - object or array at a declared opaque path (§7.1) → `json`
+  - any non-null value at a declared opaque path (§7.1) → `json`, even a scalar, since the contents of that path can vary. A column's location in the output matches a declared path by its ending, so `metadata` matches `data.object.metadata`, and a renamed field fails with `adapter_error`.
 - The output is meant to be a clean relational database, so nested data becomes child tables (§8) unless it is truly free-form. An adapter that returns an object or array as a column value anywhere other than a declared opaque path fails with `adapter_error`.
 - Existing columns are never modified or removed by the platform. This is enforced in code (see **Non-destructive by construction** below).
 - Foreign keys are not enforced on any backend, because events can arrive out of order; the platform relies on convention (`{parent_table}_id`).
@@ -662,7 +663,7 @@ interface TableRow {
 
 interface TableRows {
   table: string;
-  columns: Record<string, LogicalType>;       // the columns these rows use, not counting platform columns
+  columns: Record<string, LogicalType>;       // every data column in rows, or write() throws; not platform columns
   rows: TableRow[];
 }
 
@@ -685,13 +686,14 @@ class StorageError extends Error {
 
 ### 11.2 Backend Requirements
 
-- `provision` and `applySchema` must be idempotent.
+- `provision` and `applySchema` must be idempotent. A repeat `provision` may rotate the read-only password, since Postgres can't return an existing one, so callers only call it before a store goes active and serialize those calls. `applySchema` may commit each change separately, so a retry finishes what's left.
+- A row's data keys must all be listed in `columns`. An undeclared key makes `write` throw a permanent `StorageError`, whatever its value, so a clear can't be silently lost.
 - `write` receives all rows for one event and must be idempotent on `id`: writing the same row twice leaves one logical row.
 - `write` merges into existing rows, so a store's final state doesn't depend on the order workers ran in or on when a quarantined event is released:
   - Each included column is updated only if the write's `_event_seq` is at least that column's entry in `_column_seq`; other columns are left alone. Out-of-order partial updates therefore all land, and a late event never overrides a newer value.
   - The row keeps the higher `_event_seq`. Deletes (§8) compare it, and raise it to the deleting event's `seq`.
   - `_deleted_at` follows its own rule, and only a write at or above the row's `_event_seq` can change it. Such a write sets it if the row includes it, and clears it if not, which is the one exception to an absent key keeping its value. A lower write never touches it, so a delayed delete can't mark a newer row deleted, and a delayed write can't restore a newer delete.
-  - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns other than `_deleted_at`. A rebuild, which runs in order, corrects anything missed.
+  - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns other than `_deleted_at`. A rebuild, which runs in order, corrects anything missed. One known gap: if a newer event clears a column that doesn't exist yet, the clear is dropped (§9), and a delayed older event can then set that column and keep its value until a rebuild.
 - `provision` must also create read-only credentials limited to that store's namespace, and they must keep working for tables and columns added later.
 - `applySchema` and `write` run for each event, and must classify every failure as retryable or permanent through `StorageError`. A worker treats any other error as retryable.
 - Backends do not validate identifiers or types, since the platform has already done so, but must quote identifiers and bind values as parameters.
@@ -824,7 +826,7 @@ A configurable cap limits generations per shape, and the shape then waits for an
 - Never discard a field. Every field gets a clearly named column or child table, with no catch-all columns. When deriving a value, such as a full name, also keep the original fields.
 - Normalize nested data: objects and arrays of objects become child tables, and arrays of primitives become child tables with a `value` column.
 - Declare an opaque path only for a field whose keys truly vary. Store it as a child table with `key` and `value` columns when its values are uniform, or as a named `json` column when it is truly free-form. JSON is never a place to put data that could be modeled.
-- Use a stable `id` from the payload when events describe the same real-world record, so they merge into one row. Omit it when each event is a new record.
+- Use a stable `id` from the payload when events describe the same real-world record, so they merge into one row, and cast it to a string. Omit it when each event is a new record.
 - Pass `null` through only when the source means to clear a value. Leave out any field the event doesn't include: `email: item.email` on a partial update would set `undefined` and clear the stored email.
 - Give child rows a natural `id` where one exists, such as a SKU. Set `append: true` for lists where each event adds new items, such as messages.
 - Declare date and time fields as `timestamp`, and normalize them to ISO 8601 with a timezone.
@@ -928,9 +930,11 @@ Postgres 16 or later, with two separate databases, even when they share a server
 
 Each has its own role, and the `sw_data` role has no access to `sw_app`. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
 
-**Direct customer access.** Customers connect straight to `sw_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a statement timeout so heavy queries can't starve ingestion. `sw_app` is not reachable from outside.
+**Direct customer access.** Customers connect straight to `sw_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a default statement timeout and a limit of 10 connections so heavy use is less likely to starve ingestion. `sw_app` is not reachable from outside.
 
-Customers query the raw tables, including the platform columns `_event_seq`, `_column_seq`, and `_deleted_at`. Soft-deleted rows are visible, so queries for current records filter on `_deleted_at IS NULL`.
+MVP limits: a customer can turn the statement timeout off for their own session, and can see other stores' schema and table names through `pg_catalog`, though not their rows.
+
+Customers query the raw tables, including the platform columns `_event_seq` and `_deleted_at`. Soft-deleted rows are visible, so queries for current records filter on `_deleted_at IS NULL`.
 
 ### 14.2 Caddy Routing
 
