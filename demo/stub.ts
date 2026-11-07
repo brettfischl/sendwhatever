@@ -96,7 +96,8 @@ async function handle(
     }
   }
 
-  const scope = `${firstSegment} ${method === 'DELETE' ? 'delete' : 'write'} ${idempotencyKey}`;
+  const source = decodeURIComponent(firstSegment); // Valid, as isValidSegment checked.
+  const scope = `${source} ${method === 'DELETE' ? 'delete' : 'write'} ${idempotencyKey}`;
   const original = idempotencyKey === undefined ? undefined : accepted.get(scope);
   if (original) {
     respond(res, 202, original);
@@ -105,8 +106,8 @@ async function handle(
 
   const event_id = randomUUID();
   onEvent({ event_id, method, path, headers: req.headers, body });
-  // Only a DELETE may have no body. A scalar is valid JSON, but malformed (PRD §5.3).
-  const wellFormed = typeof body === 'object' && (body !== null || method === 'DELETE');
+  // Only a DELETE gets here with no body. A scalar, null included, is valid JSON but malformed (PRD §5.3).
+  const wellFormed = text === '' || (typeof body === 'object' && body !== null);
   const result = { status: wellFormed ? 'queued' : 'malformed', event_id };
   if (idempotencyKey !== undefined) accepted.set(scope, result);
   respond(res, 202, result);

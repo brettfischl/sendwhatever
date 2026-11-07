@@ -9,7 +9,7 @@
 
 import { api, h, showError } from './common.js';
 import { mount as mountArbitrary } from './console-arbitrary.js';
-import { highlightJson } from './console-format.js';
+import { highlightJson, MAX_HIGHLIGHT_CHARS } from './console-format.js';
 import { mount as mountTables } from './console-tables.js';
 import { mount as mountWebhooks } from './console-webhooks.js';
 
@@ -46,15 +46,21 @@ function startTabs() {
 }
 
 function renderTarget({ mode, url, accountSlug }) {
-  document.querySelector('#console-target').replaceChildren(
+  const parts = [
     h('span', { className: `badge badge-${mode}` }, mode === 'stub' ? 'stub' : 'live ingest'),
     h('code', {}, url),
-    accountSlug ? h('code', {}, `account: ${accountSlug}`) : null,
-  );
+  ];
+  if (accountSlug) parts.push(h('code', {}, `account: ${accountSlug}`));
+  document.querySelector('#console-target').replaceChildren(...parts);
 }
 
 function jsonText(value) {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+}
+
+/** Coloring makes a node per token, which a big body can't afford. */
+function colored(text) {
+  return text.length > MAX_HIGHLIGHT_CHARS ? text : highlightJson(text);
 }
 
 function codeBlock(...children) {
@@ -80,7 +86,7 @@ function showExchange(entry) {
       ` ${entry.url}\n`,
       ...headerLines(entry.headers),
       entry.rawBody === undefined ? h('span', { className: 'exchange-note' }, '\n(no body)') : '\n',
-      entry.rawBody === undefined ? null : highlightJson(entry.rawBody),
+      entry.rawBody === undefined ? null : colored(entry.rawBody),
     ),
     h(
       'p',
@@ -106,7 +112,7 @@ function showExchange(entry) {
             codeBlock(...headerLines(headers)),
           )
         : '',
-      codeBlock(highlightJson(jsonText(body))),
+      codeBlock(colored(jsonText(body) ?? '')),
     );
   }
   flash();

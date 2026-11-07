@@ -52,29 +52,77 @@ export function checkBody(text, method) {
   return { state: 'valid', message: Array.isArray(parsed) ? 'Valid JSON array' : 'Valid JSON object' };
 }
 
-/** Browsers word this differently, and only some give a line and column. */
+/**
+ * Browsers word this differently, and V8 often gives no position at all, so the wording is theirs
+ * and the location is ours.
+ */
 function describeParseError(error, text) {
   const message = error.message
     .replace(/^JSON\.parse: /, '')
+    .replace(/, (\.\.\.)?".*$/s, '')
     .replace(/ (in JSON )?at (position|line) .*$/, '')
     .replace(/ of the JSON data$/, '');
-  const lineColumn = /line (\d+) column (\d+)/.exec(error.message);
-  const position = /position (\d+)/.exec(error.message);
-  let offset = text.length;
-  if (position) offset = Number(position[1]);
-  else if (lineColumn) offset = offsetOf(text, Number(lineColumn[1]), Number(lineColumn[2]));
+  const offset = firstErrorOffset(text);
   const before = text.slice(0, offset).split('\n');
-  return {
-    message,
-    offset,
-    line: before.length,
-    column: before.at(-1).length + 1,
-  };
+  return { message, offset, line: before.length, column: before.at(-1).length + 1 };
 }
 
-function offsetOf(text, line, column) {
-  const lines = text.split('\n').slice(0, line - 1);
-  return lines.reduce((sum, current) => sum + current.length + 1, 0) + column - 1;
+const JSON_STRING = /"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/y;
+const JSON_SCALAR = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/y;
+
+/** Where JSON.parse's complaint is, found by walking the text. Only called on text that failed to parse. */
+function firstErrorOffset(text) {
+  let i = 0;
+  const skipSpace = () => {
+    while (i < text.length && ' \t\n\r'.includes(text[i])) i += 1;
+  };
+  const consume = (pattern) => {
+    pattern.lastIndex = i;
+    const match = pattern.exec(text);
+    if (!match) throw i;
+    i += match[0].length;
+  };
+  const expect = (character) => {
+    if (text[i] !== character) throw i;
+    i += 1;
+  };
+  const list = (close, item) => {
+    i += 1;
+    skipSpace();
+    if (text[i] === close) {
+      i += 1;
+      return;
+    }
+    for (;;) {
+      item();
+      skipSpace();
+      if (text[i] !== ',') break;
+      i += 1;
+      skipSpace();
+    }
+    expect(close);
+  };
+  const value = () => {
+    skipSpace();
+    if (text[i] === '{') {
+      list('}', () => {
+        consume(JSON_STRING);
+        skipSpace();
+        expect(':');
+        value();
+      });
+    } else if (text[i] === '[') list(']', value);
+    else if (text[i] === '"') consume(JSON_STRING);
+    else consume(JSON_SCALAR);
+  };
+  try {
+    value();
+    skipSpace();
+    return i;
+  } catch (stoppedAt) {
+    // Anything but an offset means the walk itself gave out, as on extremely deep nesting.
+    return typeof stoppedAt === 'number' ? stoppedAt : text.length;
+  }
 }
 
 /**

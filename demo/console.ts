@@ -108,7 +108,8 @@ export function createRawIngestClient(options: IngestClientOptions): SendRaw {
   return async function sendRaw(request) {
     const url = buildUrl(baseUrl, request.path);
     const inUrl = request.auth === 'key';
-    const separator = url.search ? '&' : '?';
+    // url.search is empty for a bare trailing ?, which url.href keeps.
+    const separator = url.search ? '&' : url.href.endsWith('?') ? '' : '?';
     const urlWith = (key: string) => (inUrl ? `${url.href}${separator}key=${key}` : url.href);
     const visibleHeaders: Record<string, string> = {
       ...request.headers,
@@ -148,9 +149,9 @@ export function createRawIngestClient(options: IngestClientOptions): SendRaw {
       return finish({
         response: {
           status: response.status,
-          statusText: response.statusText,
+          statusText: scrub(response.statusText),
           headers: Object.fromEntries(
-            [...response.headers].map(([name, value]) => [name, scrub(value)]),
+            [...response.headers].map(([name, value]) => [scrub(name), scrub(value)]),
           ),
           body: parseResponse(scrub(text)),
         },

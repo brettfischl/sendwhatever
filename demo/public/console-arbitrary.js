@@ -86,6 +86,8 @@ export function mount(slot, { target, send }) {
 
   let check = { state: 'valid', message: '' };
   let sending = false;
+  let gutterCount = 0;
+  let gutterErrorLine;
 
   function syncScroll() {
     const offset = `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
@@ -95,6 +97,10 @@ export function mount(slot, { target, send }) {
 
   function renderGutter(text) {
     const count = text.split('\n').length;
+    // Rebuilding is only cheap for short text, and most keystrokes change neither of these.
+    if (count === gutterCount && check.line === gutterErrorLine) return;
+    gutterCount = count;
+    gutterErrorLine = check.line;
     const lines = [];
     for (let line = 1; line <= count; line += 1) {
       lines.push(h('div', { className: line === check.line ? 'gutter-error' : '' }, String(line)));
@@ -136,9 +142,8 @@ export function mount(slot, { target, send }) {
    * but that command takes seconds on a few KB of multi-line text.
    */
   function insertShortText(text) {
-    if (!document.execCommand('insertText', false, text)) {
-      editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, 'end');
-    }
+    if (document.execCommand('insertText', false, text)) return; // Which fires input, so refresh runs.
+    editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, 'end');
     refresh();
   }
 
@@ -168,11 +173,18 @@ export function mount(slot, { target, send }) {
 
   function readHeaders() {
     const values = {};
+    const seen = new Set();
     for (const row of headerRows.children) {
-      const [name, value] = row.querySelectorAll('input');
+      const [nameInput, valueInput] = row.querySelectorAll('input');
+      const name = nameInput.value.trim();
       // Name, not value, decides whether a row counts: a header can have an empty value.
-      if (name.value.trim()) values[name.value.trim()] = value.value;
-      else if (value.value) throw new Error(`The header with the value "${value.value}" has no name`);
+      if (!name) {
+        if (valueInput.value) throw new Error(`The header with the value "${valueInput.value}" has no name`);
+        continue;
+      }
+      if (seen.has(name.toLowerCase())) throw new Error(`The header ${name} appears more than once`);
+      seen.add(name.toLowerCase());
+      values[name] = valueInput.value;
     }
     return values;
   }
@@ -238,9 +250,9 @@ export function mount(slot, { target, send }) {
     ),
   );
 
-  find('#locked-headers').replaceChildren(
+  find('#locked-headers').append(
     h('div', {}, h('code', {}, 'Authorization: Bearer ••••••••')),
-    target.accountSlug ? h('div', {}, h('code', {}, `X-Account-Slug: ${target.accountSlug}`)) : null,
+    ...(target.accountSlug ? [h('div', {}, h('code', {}, `X-Account-Slug: ${target.accountSlug}`))] : []),
     h('p', {}, 'Added by the demo server, so the key never reaches this browser.'),
   );
 

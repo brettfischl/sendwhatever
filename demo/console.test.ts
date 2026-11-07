@@ -121,6 +121,12 @@ describe('POST /api/console/send', () => {
     expect(JSON.stringify(log.entries)).not.toContain('sw_live');
   });
 
+  it('builds a working URL from a bare trailing question mark', async () => {
+    const { body } = await consoleSend({ method: 'POST', path: 'a?', body: '{}', auth: 'key' });
+    expect(body.response.status).toBe(202);
+    expect(body.url).toBe(`${stub.url}/a?key=••••••••`);
+  });
+
   it('reports an unreachable ingest as an entry, not a failure', async () => {
     const gone = await startStub();
     await gone.close();
@@ -135,7 +141,11 @@ describe('POST /api/console/send', () => {
     const echoing = new RequestLog();
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (input: string) =>
-      new Response(`bad url ${input}`, { status: 404, headers: { 'x-echo': API_KEY } })) as typeof fetch;
+      new Response(`bad url ${input}`, {
+        status: 404,
+        statusText: `Bad key ${API_KEY}`,
+        headers: { 'x-echo': API_KEY },
+      })) as typeof fetch;
     try {
       const sendRaw = createRawIngestClient({ url: stub.url, apiKey: API_KEY, log: echoing });
       const entry = await sendRaw({ label: 'x', method: 'POST', path: '', headers: {}, body: '{}', auth: 'key' });
@@ -212,6 +222,23 @@ describe('the stub, for console requests', () => {
     expect(await send('/shopify', { 'Idempotency-Key': 'w1' })).toBe(shopify);
   });
 
+  it('treats differently encoded sources as the same source', async () => {
+    const send = async (path: string) => {
+      const response = await direct(path, { Authorization: 'Bearer k', 'Idempotency-Key': 'enc' });
+      return ((await response.json()) as { event_id: string }).event_id;
+    };
+    expect(await send('/%61')).toBe(await send('/a'));
+  });
+
+  it('calls a null DELETE body malformed, but no body fine', async () => {
+    const del = async (body?: string) => {
+      const response = await fetch(stub.url, { method: 'DELETE', headers: { Authorization: 'Bearer k' }, body });
+      return ((await response.json()) as { status: string }).status;
+    };
+    expect(await del('null')).toBe('malformed');
+    expect(await del()).toBe('queued');
+  });
+
   it('refuses an over-long key', async () => {
     const response = await direct('', { Authorization: 'Bearer k', 'Idempotency-Key': 'x'.repeat(256) });
     expect(response.status).toBe(400);
@@ -238,6 +265,21 @@ describe('checkBody', () => {
     const check = checkBody('{\n  "a": 1,\n}', 'POST');
     expect(check).toMatchObject({ state: 'invalid', line: 3, column: 1 });
     expect(check.offset).toBe(12);
+  });
+
+  it.each([
+    ['a bad literal', '{\n  "a": 1,\n  "b": tru,\n  "c": 3\n}', 3, 8],
+    ['a trailing comma in a list', '[1,2,]', 1, 6],
+    ['a bare word', 'x', 1, 1],
+    ['text after the value', '{"a":1}\n  oops', 2, 3],
+    ['a missing colon', '{"a" 1}', 1, 6],
+    ['an unquoted key', '{\n  a: 1\n}', 2, 3],
+    ['a leading zero', '[01]', 1, 3],
+    ['a line break in a string', '["a\nb"]', 1, 2],
+  ])('locates %s, which V8 words with no position', (_, text, line, column) => {
+    const check = checkBody(text, 'POST');
+    expect(check).toMatchObject({ state: 'invalid', line, column });
+    expect(check.message).not.toContain('is not valid JSON');
   });
 
   it('points at the end when the text stops early', () => {
