@@ -276,7 +276,7 @@ describe('op = delete', () => {
   });
 
   it('rejects a row with no id', async () => {
-    const code = `function adapt(p) { return { table: 'user', rows: [{ source_id: p.data.id, _deleted: true }] }; }`;
+    const code = `function adapt(p) { return { table: 'user', rows: [{ source_id: String(p.data.id), _deleted: true }] }; }`;
     expect(codes(await deleteGate(code))).toEqual(['delete_row']);
   });
 
@@ -308,7 +308,7 @@ describe('op = delete', () => {
   });
 
   it('does not apply to a write adapter', async () => {
-    const code = `function adapt(p) { return { table: 'user', rows: [{ source_id: p.data.id }] }; }`;
+    const code = `function adapt(p) { return { table: 'user', rows: [{ source_id: String(p.data.id) }] }; }`;
     expect((await gate(code, { samples: [sample({ id: 5 })] })).ok).toBe(true);
   });
 });
@@ -528,5 +528,72 @@ describe('a date-time in a column not declared timestamp', () => {
     });
     expect(result.failures.map(({ code, eventId }) => [code, eventId])).toEqual([['undeclared_timestamp', 'e2']]);
     expect(result.failures[0]?.detail.length).toBeLessThan(300);
+  });
+});
+
+describe('a number in an ID-like column', () => {
+  const run = (output: string, input: Partial<GateInput> = {}, data: unknown = { v: 5 }) =>
+    gate(`function adapt(p) { const v = p.data.v; return ${output}; }`, { samples: [sample(data)], ...input });
+
+  it('rejects one ending in _id, and says to cast it', async () => {
+    const result = await run(`{ table: 't', rows: [{ product_id: v }] }`);
+    expect(codes(result)).toEqual(['numeric_id']);
+    expect(result.failures[0]?.detail).toContain('t.product_id');
+    expect(result.failures[0]?.detail).toContain('String(');
+  });
+
+  it('rejects one in a child table, a grandchild, or a later top-level table', async () => {
+    const child = `{ table: 't', rows: [{ id: 'a', children: { c: { rows: [{ product_id: v }] } } }] }`;
+    const grandchild = `{ table: 't', rows: [{ id: 'a', children: { c: { rows: [{ id: 'b', children: { d: { rows: [{ product_id: v }] } } }] } } }] }`;
+    const later = `[{ table: 'a', rows: [] }, { table: 'b', rows: [{ product_id: v }] }]`;
+    for (const output of [child, grandchild, later]) expect(codes(await run(output))).toEqual(['numeric_id']);
+  });
+
+  it('rejects a numeric id at any level, through the planner', async () => {
+    const top = `{ table: 't', rows: [{ id: v }] }`;
+    const child = `{ table: 't', rows: [{ id: 'a', children: { c: { rows: [{ id: v }] } } }] }`;
+    for (const output of [top, child]) {
+      const result = await run(output);
+      expect(codes(result)).toEqual(['invalid_output']);
+      expect(result.failures[0]?.detail).toContain('id must be a non-empty string');
+    }
+  });
+
+  it('passes the ID cast to a string', async () => {
+    expect((await run(`{ table: 't', rows: [{ id: String(v), product_id: String(v) }] }`)).ok).toBe(true);
+    expect((await run(`{ table: 't', rows: [{ product_id: String(v) }] }`)).ok).toBe(true);
+  });
+
+  it('passes an injected foreign key, and a null ID', async () => {
+    expect((await run(`{ table: 'order', rows: [{ id: String(v), children: { c: { rows: [{ x: 1 }] } } }] }`)).ok).toBe(true);
+    expect((await run(`{ table: 't', rows: [{ a: v, product_id: null }] }`)).ok).toBe(true);
+  });
+
+  it.each(['paid', 'grid', 'id_number', 'identity', 'valid'])('leaves alone the column %s', async (column) => {
+    expect((await run(`{ table: 't', rows: [{ ${column}: v }] }`)).ok).toBe(true);
+  });
+
+  it('does not apply to a json column at an opaque path', async () => {
+    const result = await gate(`function adapt(p) { return { table: 't', rows: [{ meta_id: p.data.meta_id }] }; }`, {
+      samples: [sample({ meta_id: 5 })],
+    }, { opaquePaths: ['meta_id'] });
+    expect(result.ok).toBe(true);
+  });
+
+  it('catches the sweep case: an ID that passes through and later grows past 2^53', async () => {
+    const samples = [
+      { eventId: 'small', body: '{"product_id":5}', request: REQUEST },
+      { eventId: 'big', body: '{"product_id":12345678901234567890}', request: REQUEST },
+    ];
+    const passesThrough = `function adapt(p) { return { table: 't', rows: [{ product_id: p.data.product_id }] }; }`;
+    expect(codes(await gate(passesThrough, { samples }))).toContain('numeric_id');
+    const casts = `function adapt(p) { return { table: 't', rows: [{ product_id: String(p.data.product_id) }] }; }`;
+    expect((await gate(casts, { samples })).ok).toBe(true);
+  });
+
+  it('has no way to pass on a column already registered as number', async () => {
+    const registries = registry('t', { product_id: 'number' });
+    expect(codes(await run(`{ table: 't', rows: [{ product_id: v }] }`, { registries }))).toEqual(['numeric_id']);
+    expect(codes(await run(`{ table: 't', rows: [{ product_id: String(v) }] }`, { registries }))).toEqual(['type_conflict']);
   });
 });

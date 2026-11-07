@@ -20,6 +20,8 @@ export type GateFailureCode =
   /** Rejected by the write planner: structure, identifiers, reserved names, or timestamps. */
   | 'invalid_output'
   | 'type_conflict'
+  /** A column named like `product_id` holds a number. A numeric `id` is `invalid_output`, from the planner. */
+  | 'numeric_id'
   /** A string column holds an ISO 8601 date-time, and isn't declared `timestamp`. */
   | 'undeclared_timestamp'
   /** `op = delete`, and a top-level row lacks `_deleted: true` or an `id`, or there are no rows. */
@@ -164,6 +166,7 @@ async function checkSample(
 
   const failures: GateFailure[] = [
     ...checkTypes(planned.plan, registries, seenAcrossSamples),
+    ...checkNumericIds(planned.plan),
     ...checkUndeclaredTimestamps(planned.plan, registries),
     ...(adapter.op === 'delete' ? checkDeleteRows(first.output) : []),
     ...checkCarry(sample, planned.plan, adapter.opaquePaths),
@@ -228,6 +231,23 @@ function checkTypes(
     }
   }
   return failures;
+}
+
+/**
+ * The sandbox turns integers above 2^53 into strings (§12), so a passed-through ID registers as
+ * `number` and then quarantines as a `schema_conflict` once its value grows. Injected foreign keys are
+ * always strings, so they never trip this.
+ */
+function checkNumericIds(plan: WritePlan): GateFailure[] {
+  return plan.tables.flatMap(({ table, columns }) =>
+    Object.entries(columns)
+      .filter(([column, type]) => type === 'number' && column.endsWith('_id'))
+      .map(([column]): GateFailure => ({
+        code: 'numeric_id',
+        detail: `${table}.${column} holds a number. Cast it to a string with String(...), because an ID can grow past ` +
+          "what a number can hold, and a column's type can never change later.",
+      })),
+  );
 }
 
 /**
