@@ -59,17 +59,30 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, '')} MB`;
 }
 
+export interface RenderedBody {
+  text: string;
+  truncated: boolean;
+  /** True when the text is JSON re-serialized for display, so it may differ from the bytes sent. */
+  reformatted: boolean;
+}
+
 /** The body as text: pretty-printed JSON when it parses, else UTF-8, cut to PAYLOAD_LIMIT bytes. */
-export function renderBody(body: Buffer): { text: string; truncated: boolean } {
+export function renderBody(body: Buffer): RenderedBody {
   if (body.length > PAYLOAD_LIMIT) {
-    // Not pretty-printed: the cut would usually leave invalid JSON anyway, and this shows the bytes as sent.
-    return { text: new TextDecoder('utf-8').decode(body.subarray(0, PAYLOAD_LIMIT)), truncated: true };
+    // Truncated bodies are not pretty-printed (the cut would usually leave invalid JSON anyway), so this
+    // branch shows the first PAYLOAD_LIMIT bytes as sent.
+    return {
+      text: new TextDecoder('utf-8').decode(body.subarray(0, PAYLOAD_LIMIT)),
+      truncated: true,
+      reformatted: false,
+    };
   }
   const text = new TextDecoder('utf-8').decode(body);
   try {
-    return { text: JSON.stringify(JSON.parse(text), null, 2), truncated: false };
+    // Not as sent: JSON.parse/stringify loses precision on large integers and drops duplicate keys.
+    return { text: JSON.stringify(JSON.parse(text), null, 2), truncated: false, reformatted: true };
   } catch {
-    return { text, truncated: false };
+    return { text, truncated: false, reformatted: false };
   }
 }
 
@@ -216,7 +229,7 @@ export const PayloadPage: FC<{
   account: AccountAccess;
   eventId: string;
   size: number;
-  body: { text: string; truncated: boolean };
+  body: RenderedBody;
   request: { method: string; path: string; query: string; headers: [string, string][] };
 }> = ({ user, csrf, account, eventId, size, body, request }) => (
   <Layout title={`Payload ${eventId.slice(0, 8)}`} user={user} csrf={csrf}>
@@ -269,7 +282,12 @@ export const PayloadPage: FC<{
       <p class="muted">{size.toLocaleString('en-US')} bytes</p>
       {body.truncated && (
         <p class="notice" data-truncated>
-          Truncated: showing {formatBytes(PAYLOAD_LIMIT)} of {formatBytes(size)}
+          Truncated: showing the first {PAYLOAD_LIMIT.toLocaleString('en-US')} of {size.toLocaleString('en-US')} bytes
+        </p>
+      )}
+      {body.reformatted && (
+        <p class="muted" data-reformatted>
+          Reformatted as JSON for display; large numbers and duplicate keys may differ from what was sent.
         </p>
       )}
       <pre class="body" data-body>

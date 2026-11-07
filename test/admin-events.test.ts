@@ -3,6 +3,7 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { createApp } from '../src/http/app.js';
+import { PAYLOAD_LIMIT } from '../src/admin/pages/events.js';
 import { createUser } from '../src/admin/users.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 
@@ -360,9 +361,46 @@ describe('payload view', () => {
 
   it('truncates a body over 100 KB with a notice', async () => {
     const html = await (await payload(ev.big!)).text();
-    expect(html).toContain('Truncated: showing 100 KB of 150 KB');
+    expect(html).toContain('Truncated: showing the first 102,400 of 153,600 bytes');
     const body = section(html, 'data-body', '</pre>').trim();
     expect(body).toBe('a'.repeat(100 * 1024));
+  });
+
+  it('shows a body of exactly 102400 bytes in full, with no truncation notice', async () => {
+    const id = await addEvent(a, { source: 'edge', body: Buffer.alloc(PAYLOAD_LIMIT, 'a') });
+    const html = await (await payload(id)).text();
+    expect(html).not.toContain('data-truncated');
+    expect(section(html, 'data-body', '</pre>').trim()).toBe('a'.repeat(PAYLOAD_LIMIT));
+  });
+
+  it('truncates a body of 102401 bytes with the exact byte counts', async () => {
+    const id = await addEvent(a, { source: 'edge', body: Buffer.alloc(PAYLOAD_LIMIT + 1, 'a') });
+    const html = await (await payload(id)).text();
+    expect(html).toContain('data-truncated');
+    expect(html).toContain('Truncated: showing the first 102,400 of 102,401 bytes');
+    expect(section(html, 'data-body', '</pre>').trim()).toBe('a'.repeat(PAYLOAD_LIMIT));
+  });
+
+  it('notes reformatting only for a JSON body that was pretty-printed', async () => {
+    const json = await (await payload(ev.secret!)).text();
+    expect(json).toContain('data-reformatted');
+    expect(json).toContain('Reformatted as JSON for display');
+    expect(await (await payload(ev.rawHtml!)).text()).not.toContain('data-reformatted');
+    expect(await (await payload(ev.big!)).text()).not.toContain('data-reformatted');
+  });
+
+  it('refuses a cross-origin POST with 403, even with a valid session and CSRF token', async () => {
+    const res = await app.request(`${path(ev.secret!)}/payload`, {
+      method: 'POST',
+      headers: {
+        ...member.headers,
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: 'https://evil.example',
+      },
+      body: new URLSearchParams({ _csrf: member.csrf }).toString(),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain(BODY_SECRET);
   });
 
   it('refuses a missing or wrong CSRF token with 403', async () => {
