@@ -104,7 +104,7 @@ const AccountCreatedPage: FC<{ user: SessionUser; csrf: string; created: Created
     <section class="card">
       <h1>Account {created.slug} created</h1>
       <p class="error">
-        Copy these now. The API key and database password are shown once and cannot be shown again.
+        The API key is shown once and cannot be shown again, so copy it now. Members of the account can reveal the read-only database login later on its Credentials page.
       </p>
       <h2>API key</h2>
       <p>
