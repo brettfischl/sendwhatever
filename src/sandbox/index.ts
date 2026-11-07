@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import type { AdapterRequest } from '../contracts/index.js';
 
 const CHILD_PATH = fileURLToPath(new URL('./child.mjs', import.meta.url));
+/** Wall-clock, so it has to leave room for a busy machine: timing out sends a healthy event to quarantine (§12). */
+const DEFAULT_TIMEOUT_MS = 5000;
 const MAX_DETAIL_LENGTH = 2000;
 const MAX_STDERR_LENGTH = 16_384;
 /** Sent by the child once it has loaded and received the run, before any adapter code. */
@@ -62,7 +64,7 @@ export class SandboxUnavailableError extends Error {
  * the promise rejects with `SandboxUnavailableError` only when the sandbox itself can't run.
  */
 export async function runAdapter(run: AdapterRun, limits: SandboxLimits = {}): Promise<SandboxResult> {
-  const timeoutMs = limits.timeoutMs ?? 1000;
+  const timeoutMs = limits.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const memoryLimitMb = limits.memoryLimitMb ?? 128;
   const killGraceMs = limits.killGraceMs ?? 1000;
   const startupTimeoutMs = limits.startupTimeoutMs ?? 30_000;

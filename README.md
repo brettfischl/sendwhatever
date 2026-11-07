@@ -18,6 +18,9 @@ Set `FIREWORKS_API_KEY` in `.env` yourself. Nothing needs it yet. `FIREWORKS_MOD
 
 | Command | What it does |
 | --- | --- |
+| `npm run dev` | Runs the server and worker together (see below) |
+| `npm start` | Runs just the server |
+| `npm run worker` | Runs just the worker |
 | `npm run demo` | Runs the demo webinar site (see below) |
 | `npm run migrate` | Applies new migrations to `sw_app` |
 | `npm test` | Type-checks, then runs the tests (Postgres must be running) |
@@ -30,6 +33,37 @@ If you delete `.env` but keep the volume, the new passwords won't match the exis
 If you set up before the move to Postgres 18, run `docker compose down -v` and then `npm run setup`. That deletes this checkout's local data.
 
 If port 5433 is taken, for example by another worktree, change `POSTGRES_PORT` in `.env`.
+
+## Running the service
+
+With Postgres up and migrations applied (`npm run setup` does both), run the server and worker with one command:
+
+```bash
+npm run dev
+```
+
+Ctrl-C stops both. If either one exits by itself, the other is stopped too and the command exits with an error. On shutdown the worker stops claiming jobs and lets running ones finish, for up to 30 seconds. A job cut off at that limit runs again once its lease expires. With `npm run worker` on its own, Ctrl-C also reaches any adapter running at that moment, so that job runs again after a short wait instead of finishing. SIGTERM doesn't have this problem.
+
+Stop this before running `npm test`. It uses the same queue as the tests, so it would take their jobs.
+
+`npm start`, `npm run worker` and `npm run dev` use `node --import tsx` rather than the `tsx` command. Under load, that wrapper kills a process with SIGKILL if it doesn't confirm a signal within about 60 ms, which would skip the clean shutdown.
+
+To try it, create an account, then send it a payload. The first response is the only time you see the API key, and it also holds the read-only database login:
+
+```bash
+curl -X POST localhost:3000/accounts -H 'content-type: application/json' -d '{"slug":"demo"}'
+
+curl -X POST localhost:3000/ingest -H 'X-Account-Slug: demo' -H 'Authorization: Bearer YOUR_API_KEY' \
+  -H 'content-type: application/json' -d '{"id":"c1","name":"Ada"}'
+```
+
+The worker processes the event within a second. Nothing writes adapters yet, so a new shape lands in the `quarantine` table with the reason `unknown_fingerprint`. Once an active row in `adapters` matches the shape, its events reach tables in the account's own database.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `PORT` | `3000` | Port for the server. |
+| `HOST` | `127.0.0.1` | Address for the server. Internal routes have no auth, so think before exposing it. |
+| `WORKER_ACCOUNT_ID` | every account | Limits the worker to one account's jobs. `test/entrypoints.test.ts` uses it, because test files share a queue. |
 
 ## Demo site
 
@@ -52,6 +86,7 @@ INGEST_URL=http://localhost:3000/ingest INGEST_API_KEY=your-key ACCOUNT_SLUG=you
 | `ACCOUNT_SLUG` | `demo` | Sent as `X-Account-Slug`, as in development without Caddy. Set it empty to leave the header out when a subdomain names the account. |
 | `DEMO_PORT` | `3100` | Port for the site. |
 | `DEMO_HOST` | `127.0.0.1` | Address for the site. It has no login, so think before exposing it. |
+| `DEMO_APP_DATABASE_URL` | none | Turns on the live tables panel against a real service: a `postgres://` URL for `sw_app` on localhost, used read-only for event progress and to find the store. It needs `SW_ENCRYPTION_KEY` to open the store's read-only login, and `DEMO_HOST` must stay on loopback, or the demo won't start. |
 
 The panel on every page shows each request and its response. The site's own data lives in memory and is gone on restart. If ingest rejects a request or can't be reached, the action still happens on the site and the panel shows the failure.
 
@@ -84,7 +119,8 @@ http://127.0.0.1:3100/console is for showing the platform off (PRD §20). Arbitr
 | `src/fingerprint/` | Structural fingerprint |
 | `src/config.ts` | Loads config from `.env` |
 | `demo/` | Fake webinar site that writes to `/ingest` |
-| `scripts/` | Setup and migration entry points |
+| `src/http/main.ts`, `src/worker/main.ts` | Server and worker entry points |
+| `scripts/` | Setup, migration, and `npm run dev` entry points |
 | `test/` | Integration tests |
 | `docker/postgres/init/` | Creates the roles and databases when the volume is first created |
 

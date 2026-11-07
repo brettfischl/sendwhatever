@@ -4,8 +4,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createRawIngestClient } from './console.js';
 import { RequestLog } from './ingest-client.js';
 // @ts-expect-error A plain browser module, with no types.
+import { createFlowRun, SHAPE_NOTES, stepRequest } from './public/console-flows.js';
+// @ts-expect-error A plain browser module, with no types.
 import { checkBody, formatJson } from './public/console-format.js';
 import { createDemoServer, SiteEvents } from './server.js';
+import { orderFlow, productFlow, shopifyFlows } from './shopify/index.js';
 import { startStub, type Stub, type StubEvent } from './stub.js';
 import type { Webinar } from './webinar.js';
 
@@ -185,7 +188,7 @@ describe('POST /api/console/send', () => {
   });
 
   it('serves the page and its assets', async () => {
-    for (const path of ['/console', '/assets/console.js', '/assets/console.css', '/assets/console-tables.js']) {
+    for (const path of ['/console', '/assets/console.js', '/assets/console.css', '/assets/console-flows.js', '/assets/console-tables.js']) {
       expect((await fetch(`${base}${path}`)).status, path).toBe(200);
     }
   });
@@ -308,5 +311,243 @@ describe('formatJson', () => {
     const once = formatJson('[{"a":1}]');
     expect(formatJson(once)).toBe(once);
     expect(formatJson(' 42 ')).toBe('42');
+  });
+});
+
+describe('the guided flows', () => {
+  const getFlows = async () => (await (await fetch(`${base}/api/console/flows`)).json()) as any[];
+  const webhookId = (step: { headers: { 'X-Shopify-Webhook-Id': string } }) => step.headers['X-Shopify-Webhook-Id'];
+  const sendThroughServer = async (request: object) => {
+    const { status, body } = await consoleSend(request);
+    if (status !== 201) throw new Error(body.error);
+    return body;
+  };
+  /** A run of the flow at `index`, sending through the demo server to the stub. */
+  const startRun = async (index: number, options: object = {}) => {
+    const reload = async (id: string) => (await getFlows()).find((flow) => flow.id === id);
+    return createFlowRun({ flow: (await getFlows())[index], send: sendThroughServer, reload, ...options });
+  };
+  const accepted = (event_id: string) => ({ response: { status: 202, body: { status: 'queued', event_id } } });
+
+  it('serves the fixtures, with new delivery IDs each time and the same data', async () => {
+    const [first, second] = [await getFlows(), await getFlows()];
+    expect(first.map((flow) => flow.steps.map((step: any) => step.topic))).toEqual([
+      ['products/create', 'products/update'],
+      ['orders/create', 'orders/paid', 'refunds/create'],
+    ]);
+    first.forEach((flow, f) =>
+      flow.steps.forEach((step: any, s: number) => {
+        expect(webhookId(step)).not.toBe(webhookId(second[f].steps[s]));
+        expect(webhookId(step)).not.toBe(webhookId(shopifyFlows[f]!.steps[s]!));
+        expect(step.body).toEqual(second[f].steps[s].body);
+      }),
+    );
+  });
+
+  it('has a note for every topic', () => {
+    for (const flow of shopifyFlows) {
+      for (const step of flow.steps) expect(SHAPE_NOTES[step.topic], step.topic).toBeTruthy();
+    }
+  });
+
+  it('builds the request from a step, adding Content-Type only if it is missing', () => {
+    const [step] = productFlow.steps;
+    const request = stepRequest(step);
+    expect(request).toMatchObject({ method: 'POST', path: 'shopify', auth: 'key', headers: step.headers });
+    expect(JSON.parse(request.body)).toEqual(step.body);
+
+    const { 'Content-Type': _, ...others } = step.headers;
+    expect(stepRequest({ ...step, headers: others }).headers['Content-Type']).toBe('application/json');
+    const lower = stepRequest({ ...step, headers: { ...others, 'content-type': 'text/plain' } }).headers;
+    expect(lower['content-type']).toBe('text/plain');
+    expect(lower['Content-Type']).toBeUndefined();
+  });
+
+  it('sends the order flow in order, one step at a time, with its headers and the key in the URL', async () => {
+    const run = await startRun(1);
+    expect(run.stepStatus(0)).toBe('next');
+    expect(run.stepStatus(1)).toBe('later');
+
+    for (const index of [0, 1, 2]) {
+      expect(run.state.next).toBe(index);
+      await run.sendNext();
+      expect(run.stepStatus(index)).toBe('delivered');
+      expect(received).toHaveLength(index + 1);
+    }
+    expect(run.isDone()).toBe(true);
+    await run.sendNext();
+
+    expect(received.map((event) => event.headers['x-shopify-topic'])).toEqual(orderFlow.steps.map((step) => step.topic));
+    received.forEach((event, index) => {
+      const step = run.state.flow.steps[index];
+      expect(event.path).toBe('/ingest/shopify');
+      expect(event.body).toEqual(step.body);
+      expect(event.headers.authorization).toBeUndefined();
+      expect(event.headers['content-type']).toBe('application/json');
+      expect(event.headers['x-shopify-webhook-id']).toBe(webhookId(step));
+      expect(event.headers['x-shopify-hmac-sha256']).toBe(step.headers['X-Shopify-Hmac-Sha256']);
+      expect(run.state.outcomes[index].eventId).toBe(event.event_id);
+    });
+    for (const entry of log.entries) {
+      expect(entry.url).toMatch(/\/ingest\/shopify\?key=•+$/);
+      expect(entry.headers.Authorization).toBeUndefined();
+    }
+  });
+
+  it('counts a run after a reset as new deliveries', async () => {
+    const run = await startRun(0);
+    await run.sendNext();
+    const firstEvent = run.state.outcomes[0].eventId;
+
+    await run.reset();
+    expect(run.state.next).toBe(0);
+    expect(run.state.outcomes).toEqual([]);
+    await run.sendNext();
+
+    expect(received).toHaveLength(2);
+    expect(run.state.outcomes[0].eventId).not.toBe(firstEvent);
+    expect(received[0]!.headers['x-shopify-webhook-id']).not.toBe(received[1]!.headers['x-shopify-webhook-id']);
+  });
+
+  it('gets the original event_id back for the same delivery, without moving the flow on', async () => {
+    const run = await startRun(0);
+    await run.resend();
+    expect(received).toHaveLength(0);
+
+    await run.sendNext();
+    await run.resend();
+    await run.resend();
+
+    expect(received).toHaveLength(1);
+    expect(run.state.next).toBe(1);
+    expect(run.state.resends[0]).toMatchObject({ kind: 'same', count: 2 });
+    expect(log.entries).toHaveLength(3);
+  });
+
+  it('says so if the same delivery comes back with another event_id or fails', async () => {
+    const replies = [accepted('first'), accepted('second')];
+    const run = createFlowRun({ flow: productFlow, send: async () => replies.shift(), reload: async () => productFlow });
+    await run.sendNext();
+    await run.resend();
+    expect(run.state.resends[0]).toMatchObject({ kind: 'different', eventId: 'second' });
+
+    replies.push({ response: { status: 503, body: { error: 'down' } } } as any);
+    await run.resend();
+    expect(run.state.resends[0]).toMatchObject({ kind: 'fail', count: 2, summary: 'Ingest answered 503. down' });
+    expect(run.state.next).toBe(1);
+  });
+
+  it('auto-plays to the end with a visible pause between steps, and none after the last', async () => {
+    const pauses: number[] = [];
+    const sent: string[] = [];
+    let lastResume: number | null = null;
+    const run = createFlowRun({
+      flow: orderFlow,
+      pauseMs: 5,
+      reload: async () => orderFlow,
+      send: async (request: { headers: Record<string, string> }) => {
+        sent.push(request.headers['X-Shopify-Topic']!);
+        return accepted('id');
+      },
+      onChange: () => {
+        const { resumesAt } = run.state;
+        if (resumesAt !== null && resumesAt !== lastResume) pauses.push(sent.length);
+        lastResume = resumesAt;
+      },
+    });
+    await run.play();
+    expect(sent).toEqual(orderFlow.steps.map((step) => step.topic));
+    expect(pauses).toEqual([1, 2]);
+    expect(run.state.playing).toBe(false);
+    expect(run.state.resumesAt).toBeNull();
+  });
+
+  it('stops auto-play on request, during the pause, and when it may not continue', async () => {
+    const send = async () => accepted('id');
+    const stopped = createFlowRun({
+      flow: orderFlow,
+      pauseMs: 60_000,
+      send,
+      reload: async () => orderFlow,
+      onChange: () => {
+        if (stopped.state.resumesAt !== null && stopped.state.playing) stopped.stop();
+      },
+    });
+    await stopped.play();
+    expect(stopped.state.next).toBe(1);
+    expect(stopped.state.playing).toBe(false);
+
+    let allowed = true;
+    const hidden = createFlowRun({ flow: orderFlow, pauseMs: 1, send, reload: async () => orderFlow, canContinue: () => allowed });
+    const playing = hidden.play();
+    allowed = false;
+    await playing;
+    expect(hidden.state.next).toBe(1);
+  });
+
+  it('stops auto-play at a failure, keeps that step next, and retries the same delivery', async () => {
+    const ids: string[] = [];
+    const replies: any[] = [
+      accepted('one'),
+      { response: { status: 500, body: { error: 'boom' } } },
+      accepted('two'),
+    ];
+    const run = createFlowRun({
+      flow: orderFlow,
+      pauseMs: 1,
+      reload: async () => orderFlow,
+      send: async (request: { headers: Record<string, string> }) => {
+        ids.push(request.headers['X-Shopify-Webhook-Id']!);
+        return replies.shift();
+      },
+    });
+    await run.play();
+    expect(run.state.playing).toBe(false);
+    expect(run.state.next).toBe(1);
+    expect(run.stepStatus(1)).toBe('failed');
+    expect(run.state.outcomes[1].summary).toBe('Ingest answered 500. boom');
+
+    await run.sendNext();
+    expect(run.stepStatus(1)).toBe('delivered');
+    expect(ids[2]).toBe(ids[1]);
+  });
+
+  it('reports a refused request, no response, a redirect, a reply with no event_id, and a malformed body as failures', async () => {
+    const results: any[] = [
+      () => Promise.reject(new Error('reserved header')),
+      () => Promise.resolve({ error: 'connection refused' }),
+      () => Promise.resolve({ response: { status: 302, body: '' } }),
+      () => Promise.resolve({ response: { status: 200, body: '<html>a proxy</html>' } }),
+      () => Promise.resolve({ response: { status: 202, body: { status: 'malformed', event_id: 'id' } } }),
+    ];
+    const run = createFlowRun({ flow: productFlow, send: () => results.shift()(), reload: async () => productFlow });
+    const summaries = [];
+    for (let i = 0; i < 5; i += 1) {
+      await run.sendNext();
+      summaries.push(run.state.outcomes[0].summary);
+    }
+    expect(summaries).toEqual([
+      'Not sent. reserved header',
+      'No response from ingest. connection refused',
+      'Ingest answered 302.',
+      'Ingest answered 200 with no event_id, so this may not be ingest.',
+      'Ingest answered 202, but logged the body as malformed.',
+    ]);
+    expect(run.state.next).toBe(0);
+  });
+
+  it('keeps the run as it was if starting over fails', async () => {
+    const run = createFlowRun({
+      flow: productFlow,
+      send: async () => accepted('id'),
+      reload: async () => {
+        throw new Error('server gone');
+      },
+    });
+    await run.sendNext();
+    await run.reset();
+    expect(run.state.next).toBe(1);
+    expect(run.state.problem).toBe("Couldn't start over. server gone");
+    expect(run.state.busy).toBeNull();
   });
 });

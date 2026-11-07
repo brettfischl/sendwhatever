@@ -54,10 +54,16 @@ async function registry(): Promise<string[]> {
   return result.rows.map((row) => row.entry);
 }
 
-/** True if the promise settles within a moment. */
-async function settlesSoon(promise: Promise<unknown>): Promise<boolean> {
-  const timer = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 150));
-  return Promise.race([promise.then(() => true), timer]);
+/**
+ * True if the promise settles in time. To show that something finishes, allow plenty of time: on a busy
+ * machine a few round trips can take seconds, and these checks only need to beat the 30-second lock wait.
+ */
+async function settlesWithin(ms: number, promise: Promise<unknown>): Promise<boolean> {
+  let timeout: NodeJS.Timeout | undefined;
+  const timer = new Promise<boolean>((resolve) => {
+    timeout = setTimeout(() => resolve(false), ms);
+  });
+  return Promise.race([promise.then(() => true), timer]).finally(() => clearTimeout(timeout));
 }
 
 beforeAll(async () => {
@@ -430,7 +436,7 @@ describe('applyPlanSchema', () => {
       const input = plan({ table: 't', rows: [{ x: 1 }] });
       await expect(applyPlanSchema(pool, backend, target, input)).rejects.toThrow();
       backend.during = async () => undefined;
-      expect(await settlesSoon(applyPlanSchema(pool, backend, target, input))).toBe(true);
+      expect(await settlesWithin(10_000, applyPlanSchema(pool, backend, target, input))).toBe(true);
       expect(pool.idleCount).toBe(pool.totalCount);
     });
   });
@@ -453,7 +459,7 @@ describe('applyPlanSchema', () => {
 
       const release = await holdLock();
       try {
-        expect(await settlesSoon(applyPlanSchema(pool, backend, target, input))).toBe(true);
+        expect(await settlesWithin(10_000, applyPlanSchema(pool, backend, target, input))).toBe(true);
       } finally {
         await release();
       }
@@ -464,7 +470,7 @@ describe('applyPlanSchema', () => {
       const release = await holdLock();
       const pending = applyPlanSchema(pool, backend, target, plan({ table: 't', rows: [{ x: 1 }] }));
       try {
-        expect(await settlesSoon(pending)).toBe(false);
+        expect(await settlesWithin(150, pending)).toBe(false);
         expect(backend.calls).toEqual([]);
       } finally {
         await release();

@@ -557,6 +557,13 @@ describe('reserved names', () => {
     },
   );
 
+  it.each(['xmin', 'xmax', 'cmin', 'cmax', 'ctid', 'tableoid'])('rejects the Postgres system column %s', (column) => {
+    const result = failure(one({ [column]: 'x' }));
+    expect(result.reason).toBe('adapter_error');
+    expect(result.detail).toContain('reserved');
+    expect(failure(one({ [column]: null })).reason).toBe('adapter_error');
+  });
+
   it('rejects a child column that collides with the injected foreign key', () => {
     const result = failure({
       table: 'user',
