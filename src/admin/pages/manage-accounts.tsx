@@ -123,7 +123,7 @@ const AccountCreatedPage: FC<{ user: SessionUser; csrf: string; created: Created
           User <code>{String(created.database.user)}</code>
         </li>
         <li>
-          Password <code>{String(created.database.password)}</code>
+          Password <CopyBlock value={String(created.database.password)} label="password" />
         </li>
       </ul>
       <p>

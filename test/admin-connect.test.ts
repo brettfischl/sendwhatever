@@ -188,6 +188,7 @@ describe('credentials', () => {
     const { user, password, database } = acct.database;
     expect(html).toContain(String(user));
     expect(html).toContain(String(password));
+    expect(html).toContain('aria-label="Copy password"');
     expect(html).toContain(
       `postgres://${user}:${encodeURIComponent(String(password))}@localhost:${config.postgresPort}/${database}`,
     );
@@ -217,6 +218,8 @@ describe('credentials', () => {
     const html = await page.text();
     expect(html).not.toContain('Create API key');
     expect(html).not.toContain('Reveal login');
+    expect(html).toContain('requires account membership');
+    expect(html).toContain(`href="/admin/manage/accounts/${acct.accountId}"`);
 
     const { rows } = await appDb.query<{ id: string }>(
       'SELECT id FROM api_keys WHERE account_id = $1 LIMIT 1',

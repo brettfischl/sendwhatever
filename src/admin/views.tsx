@@ -17,10 +17,10 @@ pre { margin: 0 0 0.6rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .copy:hover { border-color: var(--accent); }
 .copy code { flex: 1; min-width: 0; white-space: pre-wrap; }
 .copy-hint { flex: none; font-size: 0.82rem; font-weight: 600; color: var(--accent); user-select: none; }
-.topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.8rem 1.5rem; background: var(--card); border-bottom: 1px solid var(--line); }
+.topbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; padding: 0.8rem 1.5rem; background: var(--card); border-bottom: 1px solid var(--line); }
 .brand { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--ink); font-weight: 700; text-decoration: none; }
 .brand-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 22%, transparent); }
-.who { display: flex; align-items: center; gap: 0.75rem; font-size: 0.9rem; color: var(--muted); }
+.who { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; min-width: 0; overflow-wrap: anywhere; font-size: 0.9rem; color: var(--muted); }
 .who form { margin: 0; }
 main { padding: 1.25rem 1.5rem 3rem; display: grid; gap: 1rem; max-width: 1000px; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 1.1rem 1.25rem; min-width: 0; }
@@ -37,6 +37,8 @@ ul.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
 ul.list li > code { min-width: 0; text-align: right; }
 ul.list li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.55rem 0; border-top: 1px solid var(--line); }
 ul.list li:first-child { border-top: 0; }
+ul.list li:has(> .copy) { flex-wrap: wrap; gap: 0.35rem 1rem; }
+ul.list li > .copy { flex: 1 1 16rem; width: auto; min-width: 0; margin: 0; }
 .tag { background: var(--paper); border: 1px solid var(--line); border-radius: 99px; padding: 0.05rem 0.6rem; font-size: 0.82rem; color: var(--muted); }
 .tag.active { color: var(--ok); }
 .tag.provisioning { color: var(--warn); }
