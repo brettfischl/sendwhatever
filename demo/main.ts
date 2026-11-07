@@ -4,6 +4,7 @@ import { createRawIngestClient } from './console.js';
 import { createIngestClient, RequestLog } from './ingest-client.js';
 import { createDemoServer, SiteEvents } from './server.js';
 import { startStub } from './stub.js';
+import { tablesSourceFromEnv } from './tables.js';
 import { Webinar } from './webinar.js';
 
 const STUB_API_KEY = 'stub-key';
@@ -34,6 +35,11 @@ const server = createDemoServer(
     webinar,
     log,
     target: { mode: stub ? 'stub' : 'real', url: ingestUrl, accountSlug: config.accountSlug },
+    tables: tablesSourceFromEnv({
+      mode: stub ? 'stub' : 'real',
+      host: config.host,
+      accountSlug: config.accountSlug,
+    }),
     consoleSend: createRawIngestClient(clientOptions),
   },
   events,
