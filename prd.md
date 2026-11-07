@@ -721,8 +721,8 @@ The backend is part of the account object in the application database, set when 
   "slug": "account-123",
   "storage": {
     "backend": "postgres",
-    "connection": { "host": "pg-data", "port": 5432, "database": "omni_data" },
-    "credentials": { "user": "omni_data", "password": "..." }
+    "connection": { "host": "pg-data", "port": 5432, "database": "sw_data" },
+    "credentials": { "user": "sw_data", "password": "..." }
   }
 }
 ```
@@ -900,12 +900,12 @@ Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. W
 
 Postgres 16 or later, with two separate databases, even when they share a server in development:
 
-- `omni_app`: the application database.
-- `omni_data`: the Postgres storage backend, with one schema per store.
+- `sw_app`: the application database.
+- `sw_data`: the Postgres storage backend, with one schema per store.
 
-Each has its own role, and the `omni_data` role has no access to `omni_app`. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
+Each has its own role, and the `sw_data` role has no access to `sw_app`. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
 
-**Direct customer access.** Customers connect straight to `omni_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a statement timeout so heavy queries can't starve ingestion. `omni_app` is not reachable from outside. The `_event_seq` column is visible to customers in the MVP.
+**Direct customer access.** Customers connect straight to `sw_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a statement timeout so heavy queries can't starve ingestion. `sw_app` is not reachable from outside. The `_event_seq` column is visible to customers in the MVP.
 
 ### 14.2 Caddy Routing
 
