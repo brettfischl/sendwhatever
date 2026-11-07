@@ -82,7 +82,7 @@ Each action sends one request, with no envelope and no path unless noted:
 | `test/` | Integration tests |
 | `docker/postgres/init/` | Creates the roles and databases when the volume is first created |
 
-Any process that loads `isolated-vm` must run with `node --no-node-snapshot`, as its docs require on Node 20 and later. `vitest.config.ts` already sets this for tests.
+Any process that loads `isolated-vm` must run with `node --no-node-snapshot`, as its docs require on Node 20 and later. `vitest.config.ts` already sets this for tests, and `src/sandbox` sets it on the child process it runs adapters in, so its callers don't need it.
 
 Put unit tests next to the code as `src/**/*.test.ts`.
 
