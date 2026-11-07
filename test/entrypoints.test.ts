@@ -9,6 +9,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { fingerprint } from '../src/fingerprint/index.js';
 import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
@@ -179,7 +180,7 @@ afterAll(async () => {
   const ids = [accounts];
   for (const id of accounts) {
     const namespace = `acct_${id.replaceAll('-', '')}_1`;
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
   }
   await admin.end();
