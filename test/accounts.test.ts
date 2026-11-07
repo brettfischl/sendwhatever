@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { createServer, type AddressInfo } from 'node:net';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
@@ -415,6 +416,41 @@ describe('app-wide behavior', () => {
     });
     expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ error: 'body too large' });
+  });
+
+  it('answers 503 when the database accepts a connection but never responds', async () => {
+    const silent = createServer(() => {});
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', resolve));
+    const { port } = silent.address() as AddressInfo;
+    const hung = new pg.Pool({
+      host: '127.0.0.1',
+      port,
+      user: 'nobody',
+      database: 'none',
+      password: 'none',
+      connectionTimeoutMillis: 200,
+    });
+    hung.on('error', () => {});
+    try {
+      const res = await createApp({ appDb: hung, backend, config }).request('/healthz');
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'database unavailable' });
+    } finally {
+      await hung.end();
+      silent.close();
+    }
+  });
+
+  it('answers 503 when every connection in the pool stays busy', async () => {
+    const full = new pg.Pool({ connectionString: config.appDatabaseUrl, max: 1, connectionTimeoutMillis: 200 });
+    const holder = await full.connect();
+    try {
+      const res = await createApp({ appDb: full, backend, config }).request('/healthz');
+      expect(res.status).toBe(503);
+    } finally {
+      holder.release();
+      await full.end();
+    }
   });
 
   it('answers unknown paths with a JSON 404', async () => {
