@@ -19,6 +19,12 @@ const TABLE_MARKER_COLUMN = 'id';
 
 const PLATFORM_COLUMNS = new Set(['id', '_event_seq', '_deleted_at']);
 
+/**
+ * How long a worker waits for a store's schema lock. Each waiter holds a pooled connection, so
+ * without a limit a hung backend could use up the pool and stall other stores too.
+ */
+const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
+
 export type RegisteredColumns = Map<string, Map<string, LogicalType>>;
 
 export interface SchemaTarget {
@@ -31,7 +37,7 @@ export interface SchemaTarget {
  * `tables` is ready for `StorageBackend.write`.
  *
  * Other failures are thrown, and a worker treats them as retryable: a `StorageError` with
- * `retryable: true`, or an error from the application database.
+ * `retryable: true`, or an error from the application database, including a lock timeout.
  */
 export type SchemaResult =
   | { ok: true; tables: TableRows[] }
@@ -156,6 +162,7 @@ export async function applyPlanSchema(
   backend: Pick<StorageBackend, 'applySchema'>,
   { storeId, store }: SchemaTarget,
   plan: WritePlan,
+  { lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS }: { lockTimeoutMs?: number } = {},
 ): Promise<SchemaResult> {
   const tableNames = plan.tables.map(({ table }) => table);
 
@@ -168,6 +175,8 @@ export async function applyPlanSchema(
     let brokenConnection: Error | undefined;
     try {
       await client.query('BEGIN');
+      // Like SET LOCAL, but it can take a bound value. It ends with the transaction.
+      await client.query(`SELECT set_config('lock_timeout', $1, true)`, [`${lockTimeoutMs}ms`]);
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
         schemaLockName(storeId),
       ]);

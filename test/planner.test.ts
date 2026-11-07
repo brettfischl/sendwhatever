@@ -188,16 +188,72 @@ describe('deterministic IDs', () => {
     expect(onlyRow(first, 'p_c').p_id).toBe(onlyRow(first, 'p').id);
   });
 
-  it('treats a child of a position-derived parent as event-derived, per the §8 wording', () => {
+  it('updates every level on a resend of order -> items -> tax, adding no rows', () => {
+    const output = {
+      table: 'order',
+      rows: [
+        {
+          id: 'order_1',
+          children: {
+            items: {
+              rows: [
+                { sku: 'a', children: { tax: { rows: [{ rate: 5 }, { rate: 6 }] } } },
+                { sku: 'b', children: { tax: { rows: [{ rate: 7 }] } } },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const first = plan(output);
+    const resend = plan(output, { eventId: 'other-event', eventSeq: '2' });
+    const ids = (result: WritePlan, table: string) => rowsOf(result, table).map((row) => row.id);
+
+    expect(ids(resend, 'order_items')).toEqual(ids(first, 'order_items'));
+    expect(ids(resend, 'order_items_tax')).toEqual(ids(first, 'order_items_tax'));
+    expect(new Set(ids(first, 'order_items_tax')).size).toBe(3);
+    expect(rowsOf(first, 'order_items_tax').map((row) => row.order_items_id)).toEqual([
+      ids(first, 'order_items')[0],
+      ids(first, 'order_items')[0],
+      ids(first, 'order_items')[1],
+    ]);
+  });
+
+  it('stays stable through a child with a supplied id', () => {
     const output = {
       table: 'a',
-      rows: [{ id: '1', children: { b: { rows: [{ children: { c: { rows: [{ x: 1 }] } } }] } } }],
+      rows: [{ children: { b: { rows: [{ id: 'b1', children: { c: { rows: [{ x: 1 }] } } }] } } }],
+    };
+    const next = plan(output, { eventId: 'other-event' });
+    expect(onlyRow(plan(output), 'a_b_c').id).toBe(onlyRow(next, 'a_b_c').id);
+  });
+
+  it('keeps descendants event-derived below a top-level row with no id', () => {
+    const output = {
+      table: 'a',
+      rows: [{ children: { b: { rows: [{ children: { c: { rows: [{ x: 1 }] } } }] } } }],
     };
     const first = plan(output);
     const next = plan(output, { eventId: 'other-event' });
-    expect(onlyRow(first, 'a_b').id).toBe(onlyRow(next, 'a_b').id);
+    expect(onlyRow(first, 'a_b').id).not.toBe(onlyRow(next, 'a_b').id);
     expect(onlyRow(first, 'a_b_c').id).not.toBe(onlyRow(next, 'a_b_c').id);
-    expect(onlyRow(first, 'a_b_c').a_b_id).toBe(onlyRow(next, 'a_b_c').a_b_id);
+  });
+
+  it('keeps descendants event-derived below an append child', () => {
+    const output = {
+      table: 'a',
+      rows: [
+        {
+          id: '1',
+          children: { b: { append: true, rows: [{ children: { c: { rows: [{ x: 1 }] } } }] } },
+        },
+      ],
+    };
+    const first = plan(output);
+    const next = plan(output, { eventId: 'other-event' });
+    expect(onlyRow(first, 'a_b').id).not.toBe(onlyRow(next, 'a_b').id);
+    expect(onlyRow(first, 'a_b_c').id).not.toBe(onlyRow(next, 'a_b_c').id);
+    expect(onlyRow(plan(output), 'a_b_c').id).toBe(onlyRow(first, 'a_b_c').id);
   });
 
   it('keeps rows at different paths apart when they share a table', () => {
@@ -701,9 +757,44 @@ describe('opaque paths', () => {
     ).toBe('json');
   });
 
-  it('types a scalar at a declared path by its own type', () => {
-    const result = plan(one({ metadata: 'text' }), { opaquePaths: ['metadata'] });
-    expect(tableOf(result, 't').columns).toEqual({ metadata: 'string' });
+  it.each([
+    ['a string', 'text'],
+    ['a number', 5],
+    ['a boolean', false],
+  ])('types %s at a declared path as json', (_description, value) => {
+    const result = plan(one({ metadata: value }), { opaquePaths: ['metadata'] });
+    expect(tableOf(result, 't').columns).toEqual({ metadata: 'json' });
+    expect(onlyRow(result, 't').metadata).toBe(value);
+  });
+
+  it('has no conflict between a scalar and an object at a declared path in one event', () => {
+    const result = plan(
+      { table: 't', rows: [{ metadata: 'text' }, { metadata: { a: 1 } }] },
+      { opaquePaths: ['metadata'] },
+    );
+    expect(tableOf(result, 't').columns).toEqual({ metadata: 'json' });
+  });
+
+  it('creates nothing for a null at a declared path', () => {
+    const result = plan(one({ metadata: null }), { opaquePaths: ['metadata'] });
+    expect(tableOf(result, 't').columns).toEqual({});
+  });
+
+  it('treats a declared path as json even if column_types says timestamp', () => {
+    const result = plan(
+      { table: 't', column_types: { metadata: 'timestamp' }, rows: [{ metadata: 'not a date' }] },
+      { opaquePaths: ['metadata'] },
+    );
+    expect(tableOf(result, 't').columns).toEqual({ metadata: 'json' });
+    expect(result.changes.some((change) => change.kind === 'add_index')).toBe(false);
+  });
+
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['a function', () => 1],
+  ])('rejects %s as a scalar at a declared path', (_name, value) => {
+    expect(failure(one({ metadata: value }), { opaquePaths: ['metadata'] }).reason).toBe('adapter_error');
   });
 
   it.each([

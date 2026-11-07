@@ -116,7 +116,8 @@ interface TableDraft {
 interface ParentRow {
   table: string;
   id: string;
-  idIsSupplied: boolean;
+  /** The adapter supplied the id, or it derives from a stable parent and a position (§8). */
+  idIsStable: boolean;
 }
 
 /** Where an object sits in the output. */
@@ -153,7 +154,7 @@ class Planner {
     }
 
     // §8 defines append only for child tables, so a top-level one has no effect.
-    const positional = parent !== undefined && parent.idIsSupplied && append !== true;
+    const positional = parent !== undefined && parent.idIsStable && append !== true;
 
     const foreignKey = parent && `${parent.table}_id`;
     if (foreignKey !== undefined) assertIdentifier(foreignKey, 'Foreign key');
@@ -184,7 +185,8 @@ class Planner {
       });
       this.addRow(draft, planned);
 
-      this.planChildren(row.children, table, id, row.id !== undefined, rowPath, location.keys);
+      const idIsStable = row.id !== undefined || positional;
+      this.planChildren(row.children, table, id, idIsStable, rowPath, location.keys);
     });
   }
 
@@ -264,14 +266,14 @@ class Planner {
     children: unknown,
     table: string,
     id: string,
-    idIsSupplied: boolean,
+    idIsStable: boolean,
     rowPath: (string | number)[],
     keys: string[],
   ): void {
     if (children === undefined) return;
     if (!isRecord(children)) throw adapterError(`children must be an object on table ${quote(table)}`);
 
-    const parent: ParentRow = { table, id, idIsSupplied };
+    const parent: ParentRow = { table, id, idIsStable };
     for (const [key, child] of Object.entries(children)) {
       const hint = isRecord(child) ? child.table : undefined;
       this.planObject(
@@ -293,6 +295,12 @@ class Planner {
     if (value === null) return null;
     const where = () => quote(`${table}.${column}`);
 
+    // The contents of an opaque path vary, so every value there is json, even a scalar (§9).
+    if (this.isOpaque(keys, column)) {
+      if (!isJson(value)) throw adapterError(`${where()} holds a value JSON can't represent exactly`);
+      return 'json';
+    }
+
     if (timestamps.has(column)) {
       if (typeof value !== 'string' || !isValidTimestamp(value)) {
         throw adapterError(`${where()} must be an ISO 8601 string with a timezone`);
@@ -309,11 +317,7 @@ class Planner {
         if (!Number.isFinite(value)) throw adapterError(`${where()} holds NaN or Infinity`);
         return 'number';
       case 'object':
-        if (!this.isOpaque(keys, column)) {
-          throw adapterError(`${where()} holds an object or array, but is not at a declared opaque path`);
-        }
-        if (!isJson(value)) throw adapterError(`${where()} holds a value JSON can't represent exactly`);
-        return 'json';
+        throw adapterError(`${where()} holds an object or array, but is not at a declared opaque path`);
       default:
         throw adapterError(`${where()} holds a ${typeof value}, which is not a column value`);
     }

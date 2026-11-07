@@ -34,12 +34,12 @@ class FakeBackend implements Pick<StorageBackend, 'applySchema'> {
   }
 }
 
-function plan(output: unknown): WritePlan {
+function plan(output: unknown, opaquePaths: string[] = []): WritePlan {
   const result = planWrite(output as AdapterResult, {
     eventId: randomUUID(),
     eventSeq: '1',
     receivedAt: '2026-11-07T12:00:00Z',
-    opaquePaths: [],
+    opaquePaths,
   });
   if (!result.ok) throw new Error(result.detail);
   return result.plan;
@@ -250,6 +250,20 @@ describe('applyPlanSchema', () => {
       expect(result).toMatchObject({ ok: false, reason: 'schema_conflict' });
     });
 
+    it('has no conflict when a scalar comes first at an opaque path, then an object', async () => {
+      const backend = new FakeBackend();
+      const opaque = ['metadata'];
+      await applyPlanSchema(pool, backend, target, plan({ table: 't', rows: [{ metadata: 'n/a' }] }, opaque));
+      const result = await applyPlanSchema(
+        pool,
+        backend,
+        target,
+        plan({ table: 't', rows: [{ metadata: { a: 1 } }] }, opaque),
+      );
+      expect(result.ok).toBe(true);
+      expect(await registry()).toEqual(['t.id:string', 't.metadata:json']);
+    });
+
     it('allows null against any registered type', async () => {
       const backend = new FakeBackend();
       await applyPlanSchema(pool, backend, target, plan({ table: 't', rows: [{ x: 1 }] }));
@@ -456,6 +470,25 @@ describe('applyPlanSchema', () => {
         await release();
       }
       expect((await pending).ok).toBe(true);
+    });
+
+    it('throws on a lock timeout, so the job stays queued, and leaves nothing behind', async () => {
+      const backend = new FakeBackend();
+      const input = plan({ table: 't', rows: [{ x: 1 }] });
+      const release = await holdLock();
+      try {
+        await expect(
+          applyPlanSchema(pool, backend, target, input, { lockTimeoutMs: 50 }),
+        ).rejects.toMatchObject({ code: '55P03' });
+        expect(backend.calls).toEqual([]);
+        expect(await registry()).toEqual([]);
+      } finally {
+        await release();
+      }
+
+      expect((await applyPlanSchema(pool, backend, target, input)).ok).toBe(true);
+      const setting = await pool.query<{ lock_timeout: string }>('SHOW lock_timeout');
+      expect(setting.rows[0]!.lock_timeout).toBe('0');
     });
 
     it('applies once when workers race to add the same column', async () => {
