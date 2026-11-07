@@ -17,6 +17,7 @@ import {
 } from './sessions.js';
 import { connectPage } from './pages/connect.js';
 import { createKey, credentialsPage, revealLogin, revokeKey } from './pages/credentials.js';
+import { eventPayloadRoute, eventRoute } from './pages/events.js';
 import { pipelineRoute } from './pages/pipeline.js';
 import { schemaRoute } from './pages/schema.js';
 import { swaggerAsset, tableDocsRoute, tableSpecRoute } from './pages/table-docs.js';
@@ -231,6 +232,8 @@ adminRoutes.get('/accounts/:accountId/schema/:table/docs', tableDocsRoute);
 adminRoutes.get('/assets/swagger/:file', swaggerAsset);
 adminRoutes.get('/accounts/:accountId/traffic', trafficRoute);
 adminRoutes.get('/accounts/:accountId/pipeline', pipelineRoute);
+adminRoutes.get('/accounts/:accountId/events/:eventId', eventRoute);
+adminRoutes.post('/accounts/:accountId/events/:eventId/payload', eventPayloadRoute);
 adminRoutes.route('/manage/accounts', manageAccountRoutes);
 adminRoutes.route('/manage/users', manageUserRoutes);
 

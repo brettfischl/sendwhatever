@@ -6,13 +6,18 @@ export const FRAGMENT_HEADER = 'x-admin-fragment';
 
 export const isFragmentRequest = (c: Context) => c.req.header(FRAGMENT_HEADER) === '1';
 
-// Refetches this page every 5s and swaps the region's contents. It pauses while the tab is hidden
-// and stops for good on anything but a 200, so an expired session (a redirect) doesn't loop.
-const SCRIPT = `(function () {
+export const DEFAULT_REFRESH_MS = 5000;
+
+// Refetches this page (query string included, so filters stay) every few seconds and swaps the
+// region's contents. It pauses while the tab is hidden or someone is using a form field inside the
+// region, and stops for good on anything but a 200, so an expired session (a redirect) doesn't loop.
+const script = (intervalMs: number) => `(function () {
   var el = document.currentScript.previousElementSibling;
   var busy = false;
   var timer = setInterval(async function () {
     if (document.hidden || busy) return;
+    var focused = document.activeElement;
+    if (focused && focused !== el && el.contains(focused) && /^(INPUT|SELECT|TEXTAREA)$/.test(focused.tagName)) return;
     busy = true;
     try {
       var res = await fetch(location.href, { headers: { 'X-Admin-Fragment': '1' }, redirect: 'manual', credentials: 'same-origin' });
@@ -23,13 +28,18 @@ const SCRIPT = `(function () {
     } finally {
       busy = false;
     }
-  }, 5000);
+  }, ${intervalMs});
 })();`;
 
 /** Wraps the part of a page that refreshes itself. Use at most once per page. */
-export const LiveRegion: FC<PropsWithChildren> = ({ children }) => (
-  <>
-    <div data-live-region>{children}</div>
-    <script dangerouslySetInnerHTML={{ __html: SCRIPT }} />
-  </>
-);
+export const LiveRegion: FC<PropsWithChildren<{ interval?: number }>> = ({ children, interval }) => {
+  const ms = interval !== undefined && Number.isInteger(interval) && interval > 0 ? interval : DEFAULT_REFRESH_MS;
+  return (
+    <>
+      <div data-live-region data-live-interval={String(ms)}>
+        {children}
+      </div>
+      <script dangerouslySetInnerHTML={{ __html: script(ms) }} />
+    </>
+  );
+};

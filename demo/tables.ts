@@ -5,6 +5,7 @@
 // which customers can't reach, so it's only allowed when the demo server itself stays on loopback.
 import type { IncomingMessage } from 'node:http';
 import pg from 'pg';
+import { listRecentEvents, type EventView } from '../src/pipeline/status.js';
 import { decryptJson } from '../src/secrets.js';
 import { HttpError } from './http.js';
 
@@ -15,7 +16,6 @@ const RECENT_ROWS = 5;
 const RECENT_EVENTS = 12;
 /** A payload can hold a megabyte in one value, and every viewer polls. */
 const MAX_VALUE_LENGTH = 200;
-const MAX_DETAIL_LENGTH = 300;
 
 const CONNECT_TIMEOUT_MS = 3_000;
 const STATEMENT_TIMEOUT_MS = 5_000;
@@ -26,9 +26,6 @@ const POOL_MAX_CONNECTIONS = 2;
 const CLIENT_TIMEOUT_MARGIN_MS = 1_000;
 
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
-
-/** Quarantine reasons the adapter generator works on (§12.1). The others are left to operators. */
-const GENERATOR_REASONS = new Set(['unknown_fingerprint', 'adapter_error', 'schema_conflict']);
 
 export type PanelState =
   /** The demo is sending to the built-in stub, which stores nothing. */
@@ -73,25 +70,8 @@ export type TablesResponse =
   | PanelNotice
   | { state: 'ready'; database: string; tables: TableView[]; omittedTables: number };
 
-export type EventStatus = 'queued' | 'adapter_generating' | 'waiting' | 'quarantined' | 'written';
-
-export interface EventView {
-  id: string;
-  seq: string;
-  source: string;
-  op: string;
-  fingerprint: string | null;
-  receivedAt: string;
-  status: EventStatus;
-  /** Claims so far, while queued. The queue can't tell a running job from one in backoff. */
-  attempts: number | null;
-  /** Open quarantine rows. An event can have one per store (§10). */
-  quarantine: { reason: string; detail: string | null }[];
-  /** Why the last generation for this shape failed, if it did. */
-  adapterFailure: string | null;
-  /** It reached `written` through a replay, after being quarantined. */
-  replayed: boolean;
-}
+// Event statuses are shared with the admin's Pipeline page, so both use one definition.
+export type { EventStatus, EventView } from '../src/pipeline/status.js';
 
 export type EventsResponse = PanelNotice | { state: 'ready'; events: EventView[] };
 
@@ -388,85 +368,10 @@ function shorten(value: string | null): string | null {
   return value !== null && value.length > MAX_VALUE_LENGTH ? `${value.slice(0, MAX_VALUE_LENGTH)}…` : value;
 }
 
-interface EventRow {
-  id: string;
-  seq: string;
-  source: string;
-  op: string;
-  fingerprint: string | null;
-  received_at: Date;
-  attempts: number | null;
-  quarantine: { reason: string; detail: string | null }[];
-  replayed: boolean;
-  attempt_status: string | null;
-  attempt_detail: string | null;
-}
-
-/**
- * One statement, so one snapshot. An event and its job commit together (§5.1), and a job is deleted in
- * the same transaction that quarantines it (§5.2), so no event can be seen between those states.
- *
- * Never reads `body` or `request`, which hold what the client sent. `adapter_attempts` is matched on
- * the event's own fingerprint.
- */
+/** The account's latest events. An account that doesn't exist (yet) has none. */
 async function readEvents(appDb: pg.Pool, accountSlug: string): Promise<EventView[]> {
-  const { rows } = await appDb.query<EventRow>(
-    `SELECT e.id, e.seq::text AS seq, e.source, e.op, e.fingerprint, e.received_at,
-       j.attempts,
-       COALESCE(q.open, '[]') AS quarantine,
-       COALESCE(q.replayed, false) AS replayed,
-       a.status AS attempt_status, left(a.detail, $3) AS attempt_detail
-     FROM (
-       SELECT e.id, e.seq, e.account_id, e.source, e.op, e.fingerprint, e.received_at
-       FROM events e JOIN accounts acct ON acct.id = e.account_id
-       WHERE acct.slug = $1
-       ORDER BY e.seq DESC
-       LIMIT $2
-     ) e
-     LEFT JOIN queue j ON j.kind = 'ingest' AND j.event_id = e.id
-     LEFT JOIN LATERAL (
-       SELECT
-         jsonb_agg(jsonb_build_object('reason', r.reason, 'detail', left(r.detail, $3)) ORDER BY r.quarantined_at)
-           FILTER (WHERE r.released_at IS NULL) AS open,
-         bool_or(r.released_by_adapter_id IS NOT NULL) AS replayed
-       FROM quarantine r
-       WHERE r.account_id = e.account_id AND r.event_id = e.id
-     ) q ON true
-     LEFT JOIN LATERAL (
-       SELECT t.status, t.detail FROM adapter_attempts t
-       WHERE t.account_id = e.account_id AND t.source = e.source AND t.op = e.op AND t.fingerprint = e.fingerprint
-       ORDER BY t.started_at DESC
-       LIMIT 1
-     ) a ON true
-     ORDER BY e.seq DESC`,
-    [accountSlug, RECENT_EVENTS, MAX_DETAIL_LENGTH],
-  );
-
-  return rows.map((row) => ({
-    id: row.id,
-    seq: row.seq,
-    source: row.source,
-    op: row.op,
-    fingerprint: row.fingerprint,
-    receivedAt: row.received_at.toISOString(),
-    status: eventStatus(row),
-    attempts: row.attempts,
-    quarantine: row.quarantine,
-    adapterFailure: row.attempt_status === 'failed' ? row.attempt_detail : null,
-    replayed: row.replayed && row.quarantine.length === 0,
-  }));
-}
-
-/**
- * `written` means the job is gone and no quarantine row is open. That's all the schema records: a job
- * whose adapter returned no rows finishes the same way (§10.1), so it can also mean "nothing to write".
- */
-function eventStatus(row: Pick<EventRow, 'attempts' | 'quarantine' | 'attempt_status'>): EventStatus {
-  if (row.attempts !== null) return 'queued';
-  if (row.quarantine.length === 0) return 'written';
-  const reasons = row.quarantine.map(({ reason }) => reason);
-  if (row.attempt_status === 'running' && reasons.some((reason) => GENERATOR_REASONS.has(reason))) {
-    return 'adapter_generating';
-  }
-  return reasons.includes('unknown_fingerprint') ? 'waiting' : 'quarantined';
+  const { rows } = await appDb.query<{ id: string }>('SELECT id FROM accounts WHERE slug = $1', [accountSlug]);
+  const account = rows[0];
+  if (!account) return [];
+  return listRecentEvents(appDb, { accountId: account.id, limit: RECENT_EVENTS });
 }
