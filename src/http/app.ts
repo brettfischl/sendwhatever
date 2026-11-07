@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { adminRoutes } from '../admin/index.js';
 import { HttpError, type AppDeps, type AppEnv } from './deps.js';
 import { accountRoutes } from './routes/accounts.js';
 import { ingestRoutes } from './routes/ingest.js';
@@ -48,6 +49,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   // Mount each route module here, one line each.
   app.route('/accounts', accountRoutes);
   app.route('/ingest', ingestRoutes);
+  app.route('/admin', adminRoutes);
 
   app.notFound((c) => c.json({ error: 'not found' }, 404));
   app.onError((error, c) => {

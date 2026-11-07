@@ -1,6 +1,7 @@
 import { serve } from '@hono/node-server';
 import pg from 'pg';
 import { loadConfig } from '../config.js';
+import { ensureSuperAdmin } from '../admin/users.js';
 import { PostgresBackend } from '../storage/postgres/index.js';
 import { createApp } from './app.js';
 
@@ -8,6 +9,8 @@ const config = loadConfig();
 const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl });
 // An idle connection that drops would otherwise crash the process.
 appDb.on('error', (error) => console.error('app database pool error:', error.message));
+
+await ensureSuperAdmin(appDb, config.adminEmail, config.adminPassword);
 
 const app = createApp({ appDb, backend: new PostgresBackend(), config });
 const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
