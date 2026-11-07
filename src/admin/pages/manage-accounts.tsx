@@ -4,7 +4,7 @@ import { AccountError, createAccount, type CreatedAccount } from '../../accounts
 import { HttpError } from '../../http/deps.js';
 import type { AdminEnv } from '../index.js';
 import type { SessionUser } from '../sessions.js';
-import { Form, Layout } from '../views.js';
+import { CopyBlock, Form, Layout } from '../views.js';
 
 type Ctx = Context<AdminEnv>;
 type Status = 200 | 400 | 404 | 409 | 503;
@@ -107,9 +107,7 @@ const AccountCreatedPage: FC<{ user: SessionUser; csrf: string; created: Created
         The API key is shown once and cannot be shown again, so copy it now. Members of the account can reveal the read-only database login later on its Credentials page.
       </p>
       <h2>API key</h2>
-      <p>
-        <code>{created.apiKey}</code>
-      </p>
+      <CopyBlock value={created.apiKey} label="API key" />
       <h2>Read-only database login</h2>
       <ul class="list">
         <li>

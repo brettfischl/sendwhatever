@@ -1,7 +1,7 @@
 import type { Context, Handler } from 'hono';
 import { HttpError } from '../../http/deps.js';
 import { decryptJson, generateApiKey, hashApiKey } from '../../secrets.js';
-import { Form, Layout } from '../views.js';
+import { CopyBlock, Form, Layout } from '../views.js';
 import type { AdminEnv } from '../index.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -131,18 +131,7 @@ export const createKey: Handler<AdminEnv> = async (c) => {
       <section class="card">
         <h1>New API key</h1>
         <p class="error">Copy it now. It won't be shown again.</p>
-        <pre>
-          <code id="new-key">{key}</code>
-        </pre>
-        <p>
-          <button
-            type="button"
-            class="quiet"
-            onclick="navigator.clipboard.writeText(document.getElementById('new-key').textContent)"
-          >
-            Copy
-          </button>
-        </p>
+        <CopyBlock value={key} label="API key" />
         <p>
           <a href={`/admin/accounts/${account.id}/credentials`}>Back to credentials</a>
         </p>
@@ -201,8 +190,6 @@ const LoginDetails = ({ login }: { login: ReadLogin }) => (
       </li>
     </ul>
     <p>Connection string</p>
-    <pre>
-      <code>{connectionString(login, true)}</code>
-    </pre>
+    <CopyBlock value={connectionString(login, true)} label="connection string" />
   </>
 );
