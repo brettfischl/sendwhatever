@@ -107,11 +107,18 @@ export const credentialsPage: Handler<AdminEnv> = async (c) => {
       </section>
       <section class="card">
         <h2>Read-only database login</h2>
-        <p class="muted">Revealing the password is a deliberate action.</p>
-        {!account.readOnly && (
-          <Form action={`${base}/reveal`} csrf={csrf}>
-            <button type="submit">Reveal login</button>
-          </Form>
+        {account.readOnly ? (
+          <p class="muted">
+            Revealing this login requires account membership, and you aren't a member of {account.slug}.{' '}
+            <a href={`/admin/manage/accounts/${account.id}`}>Add yourself on its management page</a>.
+          </p>
+        ) : (
+          <>
+            <p class="muted">Revealing the password is a deliberate action.</p>
+            <Form action={`${base}/reveal`} csrf={csrf}>
+              <button type="submit">Reveal login</button>
+            </Form>
+          </>
         )}
       </section>
     </Layout>,
@@ -177,7 +184,7 @@ const LoginDetails = ({ login }: { login: ReadLogin }) => (
         User <code>{login.user}</code>
       </li>
       <li>
-        Password <code>{login.password}</code>
+        Password <CopyBlock value={login.password} label="password" />
       </li>
       <li>
         Database <code>{login.database}</code>

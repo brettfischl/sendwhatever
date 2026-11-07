@@ -378,6 +378,13 @@ describe('pages', () => {
     expect(response.headers.get('content-type')).toContain(type);
   });
 
+  it.each(['/', '/sessions/any', '/sessions/any/watch'])('links %s to the other demos', async (path) => {
+    const html = await (await fetch(`${base}${path}`)).text();
+    for (const href of ['/', '/console', '/console#webhooks']) {
+      expect(html).toContain(`href="${href}"`);
+    }
+  });
+
   it('serves nothing outside the fixed asset list', async () => {
     for (const path of ['/assets/../server.ts', '/assets/%2e%2e%2fserver.ts', '/assets/index.html', '/server.ts']) {
       expect((await fetch(`${base}${path}`)).status).toBe(404);
