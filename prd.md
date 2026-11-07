@@ -426,6 +426,8 @@ CREATE TABLE api_keys (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES accounts(id),
   key_hash TEXT NOT NULL UNIQUE,        -- the key itself is shown once and never stored
+  scope TEXT NOT NULL DEFAULT 'ingest'  -- 'ingest' or 'read' (§13.4)
+    CHECK (scope IN ('ingest', 'read')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   revoked_at TIMESTAMPTZ
 );
@@ -837,7 +839,7 @@ A configurable cap limits generations per shape, and the shape then waits for an
 - Give child rows a natural `id` where one exists, such as a SKU. Set `append: true` for lists where each event adds new items, such as messages.
 - Declare date and time fields as `timestamp`, and normalize them to ISO 8601 with a timezone.
 - Give an entity with its own identity one table, wherever it appears, keyed by the same `id`. A speaker sent directly and a speaker embedded in a session both go to `speakers`. Link many-to-many relationships through a join table, such as `session_speakers`, using array output, so one entity is never split across parent-specific child tables.
-- Choose table names from the content of the payload. Use the path and headers as hints when they are present, and don't rely on them being there.
+- Choose table names from the content of the payload. Use the path and headers as hints when they are present, and don't rely on them being there. Write each name as a fixed literal in the code, never computed from the request.
 - Use `payload.request` to tell event kinds apart. For `DELETE` requests, and events whose body or headers say a record was deleted, set `_deleted: true` on the same table and `id` the write adapter uses. Keep any fields the event includes. Look for per-item signals too, like `items: [{ "id": 1, "deleted": true }]`, and mark that child row the same way. Never treat a missing item as a delete.
 
 Prompts are guidance, so the rules that matter are also enforced in code, by the gate below and the schema layer (§9).
@@ -853,6 +855,7 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 - For `op = delete`, sets `_deleted: true` on every top-level row, with an `id`.
 - Carries every field value in the payload through to the output, allowing for casts like `5` to `"5"` and for a delete flag becoming `_deleted`, so an adapter can't pass while silently losing data.
 - If it replaces an earlier version for the same shape, still writes every column that version wrote, so a column can't quietly stop being populated.
+- Keeps its table names fixed when the request path changes, including child tables, so a table can't be named after a path segment such as the `shopify` in `/ingest/shopify`. The gate reruns it with every character after `/ingest` replaced by another of its kind, which keeps the segment count and each id's format. Literal names an adapter chooses between by path pass: they settle on the same fallback on a second altered path, where a computed name moves again. A run that fails only on an altered path also passes, since production never sends that adapter such a path. This doesn't judge a literal name, so `table: "shopify"` still passes.
 
 **Mistakes are recoverable.** A bad adapter that passes the gate writes wrong rows, not lost data. The original payloads remain in the event log, so a corrected adapter and a rebuild (§5.4) can repair the account once rebuilds exist.
 
@@ -926,6 +929,10 @@ These routes are internal only and not routed through Caddy, with the same token
 
 Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on any `/ingest` route, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain. Only a hash of each key is stored. User logins and roles apply only to the admin interface (§19).
 
+A key has one scope. An `ingest` key works only on `/ingest`, and a `read` key works only on `/tables`, only as `Authorization: Bearer <key>`. Ingest keys can be held by webhook providers, so they must never be able to read data.
+
+`GET /tables/:table` lists live rows ordered by `id`, with `limit` (default 100, at most 1000) and `after` for paging and `?column=value` equality filters, and `GET /tables/:table/:id` returns one. Both use the store's read-only login, leave out soft-deleted rows and platform columns, and only reach tables in the registry. Each table's OpenAPI document is generated from the registry and shown with Swagger UI in the admin, from the Schema page.
+
 ---
 
 ## 14. Infrastructure
@@ -947,13 +954,19 @@ Customers query the raw tables, including the platform columns `_event_seq` and 
 
 ### 14.2 Caddy Routing
 
-Caddy terminates TLS and routes subdomains to the platform services, passing the account slug as a header. Only `/ingest` routes and Custom API routes are public. Wildcard certificates require a DNS challenge provider.
+Caddy terminates TLS and routes subdomains to the platform services, passing the account slug as a header. Only `/ingest`, `/tables`, and Custom API routes are public. Wildcard certificates require a DNS challenge provider. The hackathon deployment uses fixed hostnames instead (§21.2).
 
 Example Caddyfile:
 
 ```
 *.api.example.com {
   handle /ingest* {
+    reverse_proxy ingestion:3000 {
+      header_up X-Account-Slug {http.request.host.labels.3}
+    }
+  }
+
+  handle /tables* {
     reverse_proxy ingestion:3000 {
       header_up X-Account-Slug {http.request.host.labels.3}
     }
@@ -967,7 +980,7 @@ Example Caddyfile:
 }
 ```
 
-`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` routes are forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly.
+`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` and `/tables` routes are forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly.
 
 ### 14.3 sqld Backend Deployment (Later)
 
@@ -1170,7 +1183,7 @@ API keys are stored only as hashes, so an existing key can't be shown again. Cre
 
 ## 20. Demo Console
 
-A UI for showing the platform off, separate from the admin interface (§19) and part of the existing demo site. It runs locally and isn't a customer-facing product. It has two modes:
+A UI for showing the platform off, separate from the admin interface (§19) and part of the existing demo site. It runs locally, or behind basic auth on the demo VPS (§21), and isn't a customer-facing product. It has two modes:
 
 - **Arbitrary JSON:** edit any JSON, choose the method and optional path and headers, send it to `/ingest`, and see the request and response.
 - **Webhook examples:** preset Shopify webhooks, sent with realistic headers to `/ingest/shopify?key=…`, in two guided flows: a product creation flow, and an order creation to refund flow. Payloads are based on Shopify's documented webhook shapes, using fictional data.
@@ -1178,3 +1191,47 @@ A UI for showing the platform off, separate from the admin interface (§19) and 
 Both modes sit beside a **live tables view**, so viewers can watch tables, columns, and rows appear as events are processed. It reads through the store's read-only login, and shows each event's progress from the application database, using a local-only connection.
 
 The console also works against the built-in stub, without tables, so it can be built and demonstrated before the full pipeline runs.
+
+## 21. Deployment
+
+One VPS runs everything for the hackathon demo. It's disposable: nothing on it needs to outlive the demo, and the local testbed stays the fallback if it fails.
+
+### 21.1 Host
+
+A DigitalOcean droplet with 2 GB of RAM and 2 GB of swap, running Ubuntu LTS, Node 22, Docker, and Caddy. Measured on the testbed, each Node service idles at about 110-150 MB and Postgres at about 210 MB, so the stack idles near 700 MB before any adapter runs, each of which starts a child process. A 512 MB droplet can't run it, and 1 GB leaves too little room for a demo.
+
+Services run from a git checkout of `develop` with `node --import tsx`, without `--watch`. `tsx` is a dev dependency, so installs include dev dependencies. Each of the server, worker, generator, and demo is a systemd unit with `Restart=always`. Postgres runs in Compose with a restart policy, and stays bound to `127.0.0.1`.
+
+Secrets are generated on the box and never copied from a development `.env`. `npm run setup` isn't used, and tests never run on the VPS, because the suite writes to the live `sw_app` and the worker and generator would process its rows. Bootstrap installs dependencies, starts Postgres, runs `npm run migrate`, and runs `npm run seed`.
+
+### 21.2 Routing
+
+Two hostnames, both TLS through Caddy. This replaces the wildcard subdomains in §14.2 for now, because wildcard certificates need a DNS challenge. Clients send `X-Account-Slug` as they do in development.
+
+- **`app.<domain>`:** a default-deny allowlist of `/ingest*`, `/admin*`, and the read API and docs routes. `/accounts`, `/adapters`, and `/quarantine` are never forwarded, and everything else returns `404`.
+- **`demo.<domain>`:** the demo site behind Caddy basic auth, because anyone who reaches it can send events that spend LLM credits, and read payloads. Caddy rewrites the upstream `Host` to the loopback address, which satisfies the tables panel's loopback check without changing it. `DEMO_HOST` and `DEMO_APP_DATABASE_URL` stay on loopback.
+
+Caddy access logs stay off, because webhook URLs can carry `?key=`. The cloud firewall allows only ports 22, 80, 443, and 5432 (§21.4). Use DigitalOcean's cloud firewall rather than `ufw`, since Docker's published ports bypass `ufw`.
+
+### 21.3 Code Changes
+
+- **Public addresses.** Add `PUBLIC_BASE_URL`, `PUBLIC_DB_HOST`, and `PUBLIC_DB_PORT`. The Connect page, Credentials page, and account-created page use them for what they show customers, and fall back to today's localhost values when unset. When `PUBLIC_DB_HOST` is set, the connection string also ends in `?sslmode=require`. A store's own `connection` stays on `localhost`, because that's how the services reach Postgres.
+- **CSRF behind TLS.** The admin's `csrf()` check compares `Origin` with the request URL, and behind Caddy the app is likely to see `http://` while the browser sends `https://`, which would reject the login form. When `PUBLIC_BASE_URL` is set, compare against it. Don't trust a client-supplied forwarded header for this. A test covers it, and the live login is checked after deploy.
+
+### 21.4 Direct SQL
+
+On at launch, as §14.1 describes, so customers connect to their store's database from the internet with the read-only login.
+
+- **Port.** Compose publishes port 5432 publicly, alongside the existing loopback port for the services, and the cloud firewall allows it.
+- **TLS.** Postgres runs with `ssl=on` and a self-signed certificate generated on the box. Connection strings shown to customers end in `?sslmode=require`, which encrypts the connection but doesn't verify the server's identity. That's acceptable for the demo; real certificates come later.
+- **`pg_hba` rules.** The services connect from Docker's bridge network. From anywhere else, `hostssl` is the only accepted connection type, and `sw_app`, `sw_data`, and `postgres` are rejected by name, as are the `sw_app`, `postgres`, and template databases. So a leaked platform password still can't be used from outside.
+
+Publishing the port without these rules would expose `sw_app` to the internet, so all three ship together. Verify from outside the VPS, because the source address Postgres sees depends on Docker's networking, and a rule that's wrong here could fail open.
+
+### 21.5 Known Limits
+
+No ingest rate limit and no login throttling, so the admin password must be long and random, and the Fireworks account needs a low spending cap. No backups beyond an optional droplet snapshot before the demo. Updates are manual: pull, install, migrate, restart, through `deploy/update.sh`.
+
+### 21.6 Done When
+
+From outside the VPS: the admin login works over HTTPS and copy buttons work; the Connect page shows the public endpoint; `curl` with the page's example reaches `/ingest`; `/accounts` returns `404`; the read-only login connects with `sslmode=require`, is refused without TLS, and can't reach another store; `sw_app`, `sw_data`, and `postgres` are refused from outside; the Shopify flows produce tables in the console behind basic auth; the services come back after a reboot.

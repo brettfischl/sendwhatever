@@ -21,6 +21,7 @@ import { createKey, credentialsPage, revealLogin, revokeKey } from './pages/cred
 import { eventPayloadRoute, eventRoute } from './pages/events.js';
 import { pipelineRoute } from './pages/pipeline.js';
 import { schemaRoute } from './pages/schema.js';
+import { swaggerAsset, tableDocsRoute, tableSpecRoute } from './pages/table-docs.js';
 import { trafficRoute } from './pages/traffic.js';
 import { hashPassword, verifyPassword } from './users.js';
 import { manageAccountRoutes } from './pages/manage-accounts.js';
@@ -241,6 +242,9 @@ adminRoutes.post('/accounts/:accountId/credentials/keys', createKey);
 adminRoutes.post('/accounts/:accountId/credentials/keys/:keyId/revoke', revokeKey);
 adminRoutes.post('/accounts/:accountId/credentials/reveal', revealLogin);
 adminRoutes.get('/accounts/:accountId/schema', schemaRoute);
+adminRoutes.get('/accounts/:accountId/schema/:table/openapi.json', tableSpecRoute);
+adminRoutes.get('/accounts/:accountId/schema/:table/docs', tableDocsRoute);
+adminRoutes.get('/assets/swagger/:file', swaggerAsset);
 adminRoutes.get('/accounts/:accountId/traffic', trafficRoute);
 adminRoutes.get('/accounts/:accountId/pipeline', pipelineRoute);
 adminRoutes.get('/accounts/:accountId/events/:eventId', eventRoute);

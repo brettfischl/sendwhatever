@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { runGate, type GateFailureCode, type GateInput, type GateOptions, type GateResult } from '../src/adapters/index.js';
 import type { AdapterRequest } from '../src/contracts/index.js';
 import type { RegisteredColumns } from '../src/planner/registry.js';
-import type { SandboxResult } from '../src/sandbox/index.js';
+import { runAdapter, type SandboxResult } from '../src/sandbox/index.js';
 
 // These spawn many sandbox processes, so a loaded machine mustn't turn a slow run into a failure.
 vi.setConfig({ testTimeout: 60_000 });
@@ -595,5 +595,159 @@ describe('a number in an ID-like column', () => {
     const registries = registry('t', { product_id: 'number' });
     expect(codes(await run(`{ table: 't', rows: [{ product_id: v }] }`, { registries }))).toEqual(['numeric_id']);
     expect(codes(await run(`{ table: 't', rows: [{ product_id: String(v) }] }`, { registries }))).toEqual(['type_conflict']);
+  });
+});
+
+describe('a table name that follows the request path', () => {
+  const at = (path: string, body: unknown = { id: 'x' }) => [sample(body, 'event-1', { ...REQUEST, path })];
+  const SEGS = `var segs = payload.request.path.split("/").filter(function (s) { return s.length > 0; });`;
+
+  /** The bug as generated: `segs[1]` names the table, and the fallback looks harmless. */
+  const FROM_PATH = `function adapt(payload) {
+    var path = payload.request.path;
+    var segs = path.split("/").filter(function (s) { return s.length > 0; });
+    var table = segs.length > 1 ? segs[1] : "products";
+    return { table: table, rows: [{ id: String(payload.data.id) }] };
+  }`;
+
+  it('rejects the generated Shopify adapter, naming both sets of tables and the fix', async () => {
+    const result = await gate(FROM_PATH, { samples: at('/ingest/shopify') });
+    expect(codes(result)).toEqual(['computed_table']);
+    expect(result.failures[0]).toMatchObject({ eventId: 'event-1' });
+    expect(result.failures[0]?.detail).toContain('this path writes shopify,');
+    expect(result.failures[0]?.detail).toContain('fixed string literal');
+  });
+
+  it.each([
+    ['a child that sets table', `{ table: 'p', rows: [{ id: 'x', children: { images: { table: segs[1] + '_images', rows: [{ id: 'i' }] } } }] }`],
+    ['a grandchild that sets table', `{ table: 'p', rows: [{ id: 'x', children: { a: { rows: [{ id: 'a', children: { b: { table: segs[1], rows: [{ id: 'b' }] } } }] } } }] }`],
+    ['a child key, which names the default table', `{ table: 'p', rows: [{ id: 'x', children: { [segs[1]]: { rows: [{ id: 'i' }] } } }] }`],
+    ['a later top-level table', `[{ table: 'p', rows: [{ id: 'x' }] }, { table: segs[1] + '_log', rows: [{ id: 'l' }] }]`],
+    ['a child with no rows on this sample, which the planner would skip', `{ table: 'p', rows: [{ id: 'x', children: { images: { table: segs[1] + '_images', rows: [] } } }] }`],
+    ['a top-level table with no rows on this sample', `[{ table: 'p', rows: [{ id: 'x' }] }, { table: segs[1], rows: [] }]`],
+    ['a later segment', `{ table: segs[2], rows: [{ id: 'x' }] }`],
+    ['a name reshaped from the path', `{ table: segs[1].slice(0, 3) + 's', rows: [{ id: 'x' }] }`],
+    ['a literal for this path, and the path otherwise', `{ table: segs[1] === 'shopify' ? 'products' : segs[1], rows: [{ id: 'x' }] }`],
+  ])('rejects %s', async (_name, output) => {
+    const code = `function adapt(payload) { ${SEGS} return ${output}; }`;
+    expect(codes(await gate(code, { samples: at('/ingest/shopify/products') }))).toContain('computed_table');
+  });
+
+  it('quotes only the tables that move, so a long list of fixed ones cannot hide them', async () => {
+    const fixed = ['a_1', 'a_2', 'a_3', 'a_4', 'a_5', 'a_6'].map((table) => `{ table: '${table}', rows: [{ id: 'x' }] }`).join(', ');
+    const code = `function adapt(payload) { ${SEGS} return [${fixed}, { table: 'z_' + segs[1], rows: [{ id: 'x' }] }]; }`;
+    const detail = (await gate(code, { samples: at('/ingest/shopify') })).failures[0]?.detail ?? '';
+    expect(detail).toContain('this path writes z_shopify, and a different one writes z_');
+    expect(detail).not.toContain('a_1');
+  });
+
+  it('leaves percent escapes intact, so an adapter that decodes the path still runs', async () => {
+    // Shifted, `%C3%A9` would be invalid UTF-8, the decode would throw, and the check would learn nothing.
+    const code = `function adapt(payload) { ${SEGS} return { table: decodeURIComponent(segs[1]).slice(0, 3), rows: [{ id: 'x' }] }; }`;
+    expect(codes(await gate(code, { samples: at('/ingest/caf%C3%A9') }))).toEqual(['computed_table']);
+  });
+
+  it('reports it beside other failures, so one retry can fix them all', async () => {
+    const code = `function adapt(payload) { ${SEGS} return { table: segs[1], rows: [{ other: 'y' }] }; }`;
+    expect(codes(await gate(code, { samples: at('/ingest/shopify') }))).toEqual(expect.arrayContaining(['computed_table', 'dropped_field']));
+  });
+
+  it('checks every sample', async () => {
+    const code = `function adapt(payload) { ${SEGS} return { table: segs.length > 2 ? segs[2] : 'p', rows: [{ id: 'x' }] }; }`;
+    const samples = [...at('/ingest/a'), sample({ id: 'x' }, 'event-2', { ...REQUEST, path: '/ingest/a/b' })];
+    const result = await gate(code, { samples });
+    expect(result.failures.map(({ code: failure, eventId }) => [failure, eventId])).toEqual([['computed_table', 'event-2']]);
+  });
+
+  it.each([
+    ['a table named like its path', '/ingest/sponsors', `{ table: 'sponsors', rows: [{ id: 'x' }] }`],
+    ['a literal on a bare path', '/ingest', `{ table: 'products', rows: [{ id: 'x' }] }`],
+    ['literals in nested tables', '/ingest/shopify', `[{ table: 'products', rows: [{ id: 'x', children: { images: { rows: [{ id: 'i' }] }, tags: { table: 'product_tags', rows: [] } } }] }]`],
+    ['a path used to choose a column', '/ingest/shopify/archive', `{ table: 'products', rows: [{ id: 'x', archived: segs[2] === 'archive' }] }`],
+    ['a segment copied into a column', '/ingest/shopify', `{ table: 'products', rows: [{ id: 'x', via: segs[1] }] }`],
+    ['a literal chosen by the path, landing on its fallback', '/ingest/hub/sponsors', `{ table: segs[2] === 'sponsors' ? 'sponsors' : 'speakers', rows: [{ id: 'x' }] }`],
+    ['an unknown path that yields no table', '/ingest/hub/sponsors', `{ table: ({ sponsors: 'sponsors' })[segs[2]], rows: [{ id: 'x' }] }`],
+  ])('passes %s', async (_name, path, output) => {
+    const code = `function adapt(payload) { ${SEGS} return ${output}; }`;
+    expect(await gate(code, { samples: at(path) })).toMatchObject({ ok: true, failures: [] });
+  });
+
+  it.each([
+    ['a number', '/ingest/speakers/123', /^\d+$/.source],
+    ['a UUID', '/ingest/speakers/6f2a0d10-1111-4b7a-8c01-aa0000000001', /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.source],
+    ['a prefixed id', '/ingest/speakers/spk_12', /^[a-z]+_\d+$/.source],
+  ])('passes an adapter that requires %s in the path, and throws otherwise', async (_name, path, format) => {
+    const code = `function adapt(payload) {
+      ${SEGS}
+      if (segs.length !== 3 || !new RegExp(${JSON.stringify(format)}).test(segs[2])) throw new Error('no id in the path');
+      return { table: 'speakers', rows: [{ id: segs[2] }] };
+    }`;
+    const samples = [sample(null, 'event-1', { ...REQUEST, method: 'DELETE', path })];
+    const runs: { path: string; ok: boolean }[] = [];
+    const result = await gate(code, { samples }, {}, {
+      run: async (input) => {
+        const outcome = await runAdapter(input, SLOW_MACHINE_LIMITS);
+        runs.push({ path: input.request.path, ok: outcome.ok });
+        return outcome;
+      },
+    });
+    expect(result).toMatchObject({ ok: true, failures: [] });
+    // Passing because the altered run threw would prove nothing about the path it was given.
+    expect(runs).toHaveLength(3);
+    const altered = runs.find((run) => run.path !== path)!;
+    expect(altered.ok).toBe(true);
+    expect(altered.path.split('/')).toHaveLength(path.split('/').length);
+    expect(altered.path).toMatch(/^\/ingest\/[a-z]/);
+  });
+
+  it('passes an adapter that throws only on the altered path, since that says nothing about its names', async () => {
+    const code = `function adapt(payload) {
+      ${SEGS}
+      if (segs[1] !== 'speakers') throw new Error('wrong source');
+      return { table: 'speakers', rows: [{ id: 'x' }] };
+    }`;
+    expect(await gate(code, { samples: at('/ingest/speakers') })).toMatchObject({ ok: true, failures: [] });
+  });
+
+  it('passes when the second altered path fails, with nothing to confirm the change', async () => {
+    let runs = 0;
+    const result = await gate('', { samples: at('/ingest/a', {}) }, {}, {
+      run: async () => {
+        runs += 1;
+        if (runs === 3) return { ok: true, output: { table: 'other', rows: [] } };
+        if (runs === 4) return { ok: false, kind: 'threw', detail: 'boom' };
+        return { ok: true, output: { table: 't', rows: [] } };
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(runs).toBe(4);
+  });
+
+  it('never runs an altered path on a bare /ingest, where there is nothing to change', async () => {
+    const paths: string[] = [];
+    await gate('', { samples: at('/ingest', {}) }, {}, {
+      run: async ({ request }) => {
+        paths.push(request.path);
+        return { ok: true, output: { table: 't', rows: [] } };
+      },
+    });
+    expect(paths).toEqual(['/ingest', '/ingest']);
+  });
+
+  it('keeps the rest of the request, and alters only the path', async () => {
+    const request = { method: 'PATCH', path: '/ingest/a', query: 'x=1', headers: { 'x-shopify-topic': 'orders/paid' } };
+    const seen: AdapterRequest[] = [];
+    await gate('', { samples: [sample({}, 'event-1', request)] }, {}, {
+      run: async ({ request: received }) => {
+        seen.push(received);
+        return { ok: true, output: { table: 't', rows: [] } };
+      },
+    });
+    expect(seen[2]).toEqual({ ...request, path: expect.not.stringMatching(/^\/ingest\/a$/) });
+  });
+
+  it('does not count a table the planner would have rejected as a computed name', async () => {
+    const code = `function adapt(payload) { return { table: 'Not Valid', rows: [{ id: 'x' }] }; }`;
+    expect(codes(await gate(code, { samples: at('/ingest/a') }))).toEqual(['invalid_output']);
   });
 });

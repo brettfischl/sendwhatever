@@ -7,7 +7,9 @@ import pg from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { assertSeedKeyLive, readSeedFile, type SeedFile } from '../demo/seed-file.js';
 import { ensureSeedAdmin, seedAccount } from '../scripts/seed-account.js';
+import { createApiKey } from '../src/accounts/api-keys.js';
 import { createUser } from '../src/admin/users.js';
+import { createApp } from '../src/http/app.js';
 import { loadConfig } from '../src/config.js';
 import { hashApiKey } from '../src/secrets.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
@@ -175,6 +177,29 @@ describe('seedAccount', () => {
 
     expect((await seedAccount(deps, options)).key).toBe('created');
     expect(saved().apiKey).not.toBe(leftover.apiKey);
+  });
+
+  it('a read key: ingest refuses it, the demo refuses it, and a re-run replaces it with an ingest key', async () => {
+    const { accountId } = await state();
+    const readKey = await createApiKey(appDb, accountId, 'read');
+    const ingest = await createApp(deps).request('/ingest', {
+      method: 'POST',
+      headers: { 'x-account-slug': slug, authorization: `Bearer ${readKey}`, 'content-type': 'application/json' },
+      body: '{"id":"read-key-check"}',
+    });
+    expect(ingest.status).toBe(401);
+
+    const withReadKey = { ...saved(), apiKey: readKey };
+    writeFileSync(file, JSON.stringify(withReadKey));
+    await expect(assertSeedKeyLive(withReadKey)).rejects.toThrow(/no longer works/);
+
+    expect((await seedAccount(deps, options)).key).toBe('created');
+    const fresh = saved();
+    expect(fresh.apiKey).not.toBe(readKey);
+    const { rows } = await appDb.query<{ scope: string }>('SELECT scope FROM api_keys WHERE key_hash = $1', [
+      hashApiKey(fresh.apiKey),
+    ]);
+    expect(rows[0]!.scope).toBe('ingest');
   });
 
   it('reports an unreachable database without showing its password', async () => {
