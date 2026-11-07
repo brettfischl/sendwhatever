@@ -101,13 +101,31 @@ bd close bd-42 --reason "Completed" --json
    - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
 5. **Complete**: `bd close <id> --reason "Done"`
 
-### Auto-Sync
+### Syncing Beads Between Machines
 
-bd automatically syncs with git:
+Beads does not sync automatically. Issues live in a Dolt database, pushed to the `refs/dolt/data` ref on this repo's GitHub remote. That ref is separate from every git branch, so `git push` and `git pull` do not sync issues, and syncing issues does not touch `develop` or `main`. The repo is public, so issue contents are public too.
 
-- Exports to `.beads/issues.jsonl` after changes (5s debounce)
-- Imports from JSONL when newer (e.g., after `git pull`)
-- No manual export/import needed!
+**First time on a machine:** after cloning, run `git config core.hooksPath .beads/hooks` and `bd bootstrap`.
+
+**Claiming work:** a claim is only visible to others once pushed, so always do all three steps together:
+
+```bash
+bd dolt pull
+bd update <id> --claim --json
+bd dolt push
+```
+
+Run `bd dolt push` after any other issue change too, such as closing an issue.
+
+**If `bd dolt push` is rejected:** someone else pushed first, so run `bd dolt pull`. If the pull reports a merge conflict, it rolls back and leaves your local changes in place. Run `bd show <id>` to see your own claim, not theirs. To recover, discard your local issue changes and take the remote state, then check who holds the issue and redo any other changes:
+
+```bash
+bd sql "CALL DOLT_FETCH('origin')"
+bd sql "CALL DOLT_RESET('--hard','origin/main')"
+bd show <id> --json
+```
+
+**One beads project at a time:** starting `bd` in one project stops the Dolt server of any other beads project on the same machine. The next `bd` command restarts it, so this is harmless between commands. Don't put the text of the server's process name in a shell command that also runs `bd`, because bd's cleanup matches on it and can kill that shell.
 
 ### Important Rules
 

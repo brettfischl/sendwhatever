@@ -52,3 +52,5 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+sync.git-remote: "git+ssh://git@github.com/brettfischl/sendwhatever.git"
