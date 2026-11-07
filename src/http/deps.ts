@@ -8,7 +8,10 @@ export interface AppDeps {
   /** The application database (sw_app). */
   appDb: pg.Pool;
   backend: StorageBackend;
-  config: Pick<Config, 'postgresPort' | 'dataDbPassword' | 'encryptionKey' | 'internalApiToken'>;
+  config: Pick<
+    Config,
+    'postgresPort' | 'dataDbPassword' | 'encryptionKey' | 'internalApiToken' | 'port'
+  >;
   /** Overrides how the validation gate runs, in tests. */
   gate?: SampleOptions;
 }
@@ -51,6 +54,7 @@ export function isConnectionError(error: unknown): boolean {
   if (errors?.some(isConnectionError)) return true;
   return (
     message === 'Connection terminated unexpectedly' ||
+    message === 'Client has encountered a connection error and is not queryable' ||
     message === 'timeout exceeded when trying to connect'
   );
 }

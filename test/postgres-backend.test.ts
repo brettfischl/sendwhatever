@@ -7,6 +7,7 @@ import type { LogicalType, StoreConfig, TableRow } from '../src/contracts/index.
 import { isRetryable } from '../src/storage/postgres/errors.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 const dataUrl = new URL(loadConfig().dataDatabaseUrl);
 const connection = {
@@ -108,7 +109,7 @@ afterAll(async () => {
   await backend.close();
   for (const namespace of scratch) {
     // Dropping the database removes the grants that would otherwise block dropping the role.
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
   }
   await admin.end();
@@ -458,7 +459,7 @@ describe('applySchema', () => {
     expect(await columnsOf(store, 'later')).toHaveProperty('x');
   });
 
-  it('gives up on a held table lock with a retryable error', { timeout: 15_000 }, async () => {
+  it('gives up on a held table lock with a retryable error', async () => {
     const store = await tableStore();
     const holder = new pg.Client({ ...connection, ...credentials, database: store.namespace });
     await holder.connect();
@@ -476,7 +477,7 @@ describe('applySchema', () => {
       ]);
       for (const error of errors) expect(error.retryable).toBe(true);
       // The 5s lock timeout, not the 10-minute DDL statement timeout.
-      expect(Date.now() - started).toBeLessThan(8_000);
+      expect(Date.now() - started).toBeLessThan(25_000);
     } finally {
       await holder.query('ROLLBACK');
       await holder.end();

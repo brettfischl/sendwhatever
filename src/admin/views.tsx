@@ -61,6 +61,7 @@ export const Layout: FC<PropsWithChildren<{ title: string; user?: SessionUser; c
               {user.email}
               {user.isSuperAdmin ? ' (super admin)' : ''}
             </span>
+            {user.isSuperAdmin && <a href="/admin/manage/accounts">Manage</a>}
             <Form action="/admin/logout" csrf={csrf}>
               <button class="quiet" type="submit">
                 Sign out
@@ -153,6 +154,12 @@ export const AccountHomePage: FC<{
         {readOnly && <span class="tag">read-only (super admin)</span>}
       </p>
       <ul class="account-nav">
+        <li>
+          <a href={`/admin/accounts/${account.id}/connect`}>Connect</a>
+        </li>
+        <li>
+          <a href={`/admin/accounts/${account.id}/credentials`}>Credentials</a>
+        </li>
         <li>
           <a href={`/admin/accounts/${account.id}/schema`}>Schema</a>
         </li>

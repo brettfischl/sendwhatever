@@ -124,9 +124,9 @@ function deliveryKey(req: IncomingMessage): string | undefined {
 
 /** PRD §6: at most 255 bytes, and it must percent-decode to valid UTF-8 with no NUL. */
 function isValidSegment(segment: string): boolean {
-  if (Buffer.byteLength(segment) > 255) return false;
   try {
-    return !decodeURIComponent(segment).includes('\0');
+    const source = decodeURIComponent(segment);
+    return Buffer.byteLength(source) <= 255 && !source.includes('\0');
   } catch {
     return false;
   }

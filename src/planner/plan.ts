@@ -47,6 +47,8 @@ export type PlanResult =
 /** The keys on a row that aren't columns. */
 const ROW_KEYS = new Set(['id', '_deleted', 'children']);
 const IDENTIFIER = /^[a-z][a-z0-9_]*$/;
+/** Postgres refuses these as column names (§9). Rejecting them here lets the gate catch it. */
+const SYSTEM_COLUMNS = new Set(['xmin', 'xmax', 'cmin', 'cmax', 'ctid', 'tableoid']);
 const MAX_IDENTIFIER_LENGTH = 63;
 
 /** A `timestamp` value: ISO 8601 with a required timezone. Calendar limits are checked separately. */
@@ -207,7 +209,7 @@ class Planner {
   }
 
   private assertColumnName(column: string, table: string, foreignKey: string | undefined): void {
-    if (ROW_KEYS.has(column)) {
+    if (ROW_KEYS.has(column) || SYSTEM_COLUMNS.has(column)) {
       throw adapterError(`Column ${quote(column)} on table ${quote(table)} is a reserved name`);
     }
     // A leading underscore, reserved for platform columns, fails this too.
