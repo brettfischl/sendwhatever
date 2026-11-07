@@ -6,7 +6,9 @@ import { PostgresBackend } from '../storage/postgres/index.js';
 import { createApp } from './app.js';
 
 const config = loadConfig();
-const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl });
+// Without a limit, a request waits forever on a database that doesn't answer or a pool in full use,
+// where §13.1 promises a 503.
+const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl, connectionTimeoutMillis: 5_000 });
 // An idle connection that drops would otherwise crash the process.
 appDb.on('error', (error) => console.error('app database pool error:', error.message));
 

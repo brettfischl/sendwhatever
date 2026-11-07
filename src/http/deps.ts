@@ -55,6 +55,7 @@ export function isConnectionError(error: unknown): boolean {
   return (
     message === 'Connection terminated unexpectedly' ||
     message === 'Client has encountered a connection error and is not queryable' ||
+    message === 'Connection terminated due to connection timeout' ||
     message === 'timeout exceeded when trying to connect'
   );
 }
