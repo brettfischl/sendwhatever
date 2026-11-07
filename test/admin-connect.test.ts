@@ -16,6 +16,8 @@ const config = loadConfig();
 const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl });
 const backend = new PostgresBackend({ idleTimeoutMs: 50 });
 const app = createApp({ appDb, backend, config });
+const PUBLIC = { publicBaseUrl: 'https://app.example.test', publicDbHost: 'db.example.test', publicDbPort: 5432 };
+const publicApp = createApp({ appDb, backend, config: { ...config, ...PUBLIC } });
 
 const tag = randomBytes(4).toString('hex');
 const PASSWORD = 'correct horse battery';
@@ -128,8 +130,60 @@ describe('connect page', () => {
     expect(html).toContain(
       `postgres://${acct.database.user}@localhost:${config.postgresPort}/${acct.database.database}`,
     );
+    expect(html).not.toContain('sslmode');
     expect(html).not.toContain(String(acct.database.password));
     expect(html).not.toContain(acct.apiKey);
+  });
+});
+
+describe('with public addresses set', () => {
+  it('shows the public endpoint and database address, with sslmode=require', async () => {
+    const res = await publicApp.request(`/admin/accounts/${acct.accountId}/connect`, {
+      headers: ownerSession.headers,
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('curl -X POST https://app.example.test/ingest');
+    expect(html).toContain(
+      `postgres://${acct.database.user}@db.example.test:5432/${acct.database.database}?sslmode=require`,
+    );
+    expect(html).not.toContain('http://localhost');
+    expect(html).not.toContain('@localhost');
+  });
+
+  it('reveals the login with the public address, and the store still connects on localhost', async () => {
+    const res = await publicApp.request(`/admin/accounts/${acct.accountId}/credentials/reveal`, {
+      method: 'POST',
+      headers: {
+        ...ownerSession.headers,
+        'content-type': 'application/x-www-form-urlencoded',
+        origin: PUBLIC.publicBaseUrl,
+      },
+      body: form({ _csrf: ownerSession.csrf }),
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const { user, password, database } = acct.database;
+    expect(html).toContain(
+      `postgres://${user}:${encodeURIComponent(String(password))}@db.example.test:5432/${database}?sslmode=require`,
+    );
+    expect(html).toContain('Host <code>db.example.test</code>');
+    expect(html).toContain('Port <code>5432</code>');
+    expect(html).toContain('SSL mode <code>require</code>');
+
+    // Only the display changed: the store's own connection is untouched.
+    const { rows } = await appDb.query<{ connection: { host: string; port: number } }>(
+      `SELECT connection FROM account_stores WHERE account_id = $1 AND status = 'active'`,
+      [acct.accountId],
+    );
+    expect(rows[0]!.connection).toMatchObject({ host: 'localhost', port: config.postgresPort });
+    // And ingest, which writes through that connection, still works through the public app.
+    const ingested = await publicApp.request('/ingest/orders', {
+      method: 'POST',
+      headers: { 'x-account-slug': acct.slug, authorization: `Bearer ${acct.apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ id: 2 }),
+    });
+    expect(ingested.status).toBe(202);
   });
 });
 
@@ -192,6 +246,8 @@ describe('credentials', () => {
     expect(html).toContain(
       `postgres://${user}:${encodeURIComponent(String(password))}@localhost:${config.postgresPort}/${database}`,
     );
+    expect(html).not.toContain('sslmode');
+    expect(html).not.toContain('SSL mode');
 
     const client = new pg.Client({
       host: 'localhost',

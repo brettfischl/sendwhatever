@@ -75,7 +75,15 @@ adminRoutes.use('*', contextStorage());
 adminRoutes.use('*', trimTrailingSlash());
 
 // Layer 1 of CSRF: reject cross-origin form posts, including the login form, which has no session.
-adminRoutes.use('*', csrf());
+// Behind the TLS proxy the request URL is http:// but the browser's Origin is https://, so with
+// PUBLIC_BASE_URL set, that's the only Origin allowed. Forwarded headers are never consulted (§21.3).
+// As before, a browser's Sec-Fetch-Site: same-origin also passes, without reaching the Origin check.
+adminRoutes.use(
+  '*',
+  csrf({
+    origin: (origin, c) => origin === (c.get('deps').config.publicBaseUrl ?? new URL(c.req.url).origin),
+  }),
+);
 
 // The stylesheet. Registered before the no-store and session middleware, so it's public and cached;
 // Layout links it with a content-hash query string, so a changed stylesheet gets a new URL.

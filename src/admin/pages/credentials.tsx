@@ -1,28 +1,27 @@
 import type { Context, Handler } from 'hono';
 import { HttpError } from '../../http/deps.js';
 import { decryptJson, generateApiKey, hashApiKey } from '../../secrets.js';
+import { publicDbAddress, type PublicDbAddress } from '../public-addresses.js';
 import { CopyBlock, Form, Layout } from '../views.js';
 import type { AdminEnv } from '../index.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export interface ReadLogin {
+export interface ReadLogin extends PublicDbAddress {
   user: string;
   password: string;
   database: string;
-  host: string;
-  port: number;
 }
 
 /**
  * The read-only login of the account's active store, or undefined when there isn't one yet.
- * Local mode only: the host is localhost and the port is the dev Postgres port.
+ * The host and port are the public ones customers connect to, not the store's own connection.
  */
 export async function loadReadLogin(c: Context<AdminEnv>): Promise<ReadLogin | undefined> {
   const { appDb, config } = c.get('deps');
   const row = (
-    await appDb.query<{ read_credentials: Buffer | null }>(
-      `SELECT read_credentials FROM account_stores
+    await appDb.query<{ read_credentials: Buffer | null; connection: { host: unknown; port: unknown } }>(
+      `SELECT read_credentials, connection FROM account_stores
         WHERE account_id = $1 AND status = 'active'`,
       [c.get('account')!.id],
     )
@@ -33,8 +32,7 @@ export async function loadReadLogin(c: Context<AdminEnv>): Promise<ReadLogin | u
     user: String(creds.user),
     password: String(creds.password),
     database: String(creds.database),
-    host: 'localhost',
-    port: config.postgresPort,
+    ...publicDbAddress(config, row.connection),
   };
 }
 
@@ -43,7 +41,8 @@ export function connectionString(login: ReadLogin, withPassword: boolean): strin
   const auth = withPassword
     ? `${encodeURIComponent(login.user)}:${encodeURIComponent(login.password)}`
     : encodeURIComponent(login.user);
-  return `postgres://${auth}@${login.host}:${login.port}/${encodeURIComponent(login.database)}`;
+  const ssl = login.requireSsl ? '?sslmode=require' : '';
+  return `postgres://${auth}@${login.host}:${login.port}/${encodeURIComponent(login.database)}${ssl}`;
 }
 
 interface KeyRow {
@@ -195,6 +194,11 @@ const LoginDetails = ({ login }: { login: ReadLogin }) => (
       <li>
         Port <code>{String(login.port)}</code>
       </li>
+      {login.requireSsl && (
+        <li>
+          SSL mode <code>require</code>
+        </li>
+      )}
     </ul>
     <p>Connection string</p>
     <CopyBlock value={connectionString(login, true)} label="connection string" />
