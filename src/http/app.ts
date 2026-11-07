@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { HttpError, type AppDeps, type AppEnv } from './deps.js';
 import { accountRoutes } from './routes/accounts.js';
+import { ingestRoutes } from './routes/ingest.js';
 
 export const MAX_BODY_BYTES = 25 * 1024 * 1024;
 
@@ -38,6 +39,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
 
   // Mount each route module here, one line each.
   app.route('/accounts', accountRoutes);
+  app.route('/ingest', ingestRoutes);
 
   app.notFound((c) => c.json({ error: 'not found' }, 404));
   app.onError((error, c) => {
