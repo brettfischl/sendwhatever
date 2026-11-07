@@ -15,11 +15,15 @@ ensure_var() {
 random_password() {
   node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
 }
+random_key() {
+  node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+}
 
 ensure_var POSTGRES_PORT 5433
 ensure_var POSTGRES_SUPERUSER_PASSWORD "$(random_password)"
 ensure_var SW_APP_DB_PASSWORD "$(random_password)"
 ensure_var SW_DATA_DB_PASSWORD "$(random_password)"
+ensure_var SW_ENCRYPTION_KEY "$(random_key)"
 ensure_var FIREWORKS_API_KEY ""
 
 npm ci
