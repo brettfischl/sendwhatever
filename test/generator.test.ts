@@ -345,6 +345,30 @@ describe('generating an adapter', () => {
     expect(stored.rows.map(({ code }) => code)).toEqual([userAdapter]);
   });
 
+  it('sends a table split into singular and plural back to the LLM, and stores only the corrected adapter', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await addQuarantined(accountId, { id: 7, name: 'Ada', email: 'ada@example.com' });
+    const split = `function adapt(payload) {
+      var d = payload.data;
+      return [
+        { table: 'users', rows: [{ id: String(d.id), name: d.name }] },
+        { table: 'user', rows: [{ id: String(d.id), email: d.email }] },
+      ];
+    }`;
+    const llm = script(split, userAdapter);
+
+    await pollOnce(generatorContext(accountId, llm));
+
+    expect(llm.calls).toHaveLength(2);
+    const retry = llm.calls[1]!.at(-1)!.content;
+    expect(retry).toContain('split_table');
+    expect(retry).toContain('Tables user and users hold the same entity');
+    expect((await attempts(accountId))[0]).toMatchObject({ status: 'succeeded' });
+    const stored = await db.query<{ code: string }>('SELECT code FROM adapters WHERE account_id = $1', [accountId]);
+    expect(stored.rows.map(({ code }) => code)).toEqual([userAdapter]);
+  });
+
   it('gives up after its tries, records only codes, and backs off before trying again', async () => {
     const accountId = await newAccount();
     await addStore(accountId);

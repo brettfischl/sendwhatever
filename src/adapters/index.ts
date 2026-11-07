@@ -1,7 +1,7 @@
 export { findDroppedValues, parseBodyLikeSandbox } from './carry.js';
 export type { DroppedValue } from './carry.js';
 
-export { checkOpaquePaths, runGate } from './gate.js';
+export { checkOpaquePaths, runGate, singularName } from './gate.js';
 export type {
   EarlierVersion,
   GateAdapter,

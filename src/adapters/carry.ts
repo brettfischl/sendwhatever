@@ -110,6 +110,10 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
+function isRecordWithId(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && (value as { id?: unknown }).id != null;
+}
+
 function displayPath(path: readonly string[]): string {
   return path.reduce((text, segment) => (segment === ARRAY ? `${text}[]` : `${text}.${segment}`), '$');
 }
@@ -125,6 +129,9 @@ function displayPath(path: readonly string[]): string {
  * - An identical object or array element repeated at the same path counts once. A customer embedded in
  *   every order merges into one row (§8), and that isn't data loss. The cost is that keeping one of two
  *   wholly identical list items also passes.
+ * - An identical object with an `id` counts once wherever it appears, so a featured record that repeats an
+ *   item of a list, like Shopify's `image` and `images`, can be written once in that list's table (§12.1).
+ *   The cost is that the reference to the featured item, such as a `featured_image_id` column, isn't required.
  */
 function collectPayloadValues(data: unknown, opaquePaths: readonly string[]): PayloadValue[] {
   const opaque = opaquePaths.map((path) => parseOpaquePath(path));
@@ -134,9 +141,12 @@ function collectPayloadValues(data: unknown, opaquePaths: readonly string[]): Pa
   const found: PayloadValue[] = [];
   const seen = new Set<string>();
   const firstVisit = (path: readonly string[], value: unknown) => {
-    const key = `${JSON.stringify(path)}:${stableStringify(value)}`;
-    if (seen.has(key)) return false;
+    const content = stableStringify(value);
+    const key = `${JSON.stringify(path)}:${content}`;
+    const record = isRecordWithId(value) ? `record:${content}` : undefined;
+    if (seen.has(key) || (record !== undefined && seen.has(record))) return false;
     seen.add(key);
+    if (record !== undefined) seen.add(record);
     return true;
   };
 

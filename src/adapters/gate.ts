@@ -30,7 +30,9 @@ export type GateFailureCode =
   /** A column the version being replaced wrote for this sample is no longer written. */
   | 'dropped_column'
   /** A table name follows the request path, rather than being fixed in the code. */
-  | 'computed_table';
+  | 'computed_table'
+  /** Two table names differ only in singular and plural, such as `products_image` and `products_images`. */
+  | 'split_table';
 
 export interface GateFailure {
   code: GateFailureCode;
@@ -177,6 +179,7 @@ async function checkSample(
     ...(adapter.op === 'delete' ? checkDeleteRows(first.output) : []),
     ...checkCarry(sample, planned.plan, adapter.opaquePaths),
     ...(await checkFixedTables(first.output, sample.request, (request) => run(adapter.code, request))),
+    ...checkSplitTables(first.output, registries),
   ];
 
   if (earlier) {
@@ -229,6 +232,75 @@ async function checkFixedTables(
       'computed from payload.request. Name each table for the entity the event describes, from its body and ' +
       'headers, not for the path.',
   }];
+}
+
+/**
+ * Catches one entity split across tables whose names differ only in singular and plural, such as
+ * `products_image` beside `products_images`, which the model produces for a featured record and the list
+ * it comes from. Prompt rule 5 alone doesn't stop it.
+ *
+ * Names are compared by `singularName`, which misses some splits rather than risk joining distinct
+ * entities. Two names that are both already registered pass, since rejecting can't undo a split already in
+ * the schema, and the adapter may have to keep writing both.
+ */
+function checkSplitTables(output: unknown, registries: ReadonlyMap<string, RegisteredColumns>): GateFailure[] {
+  const registered = new Set([...registries.values()].flatMap((tables) => [...tables.keys()]));
+  const registeredBySingular = groupBySingular(registered);
+  const failures: GateFailure[] = [];
+  for (const [singular, names] of groupBySingular(tableNames(output))) {
+    const existing = (registeredBySingular.get(singular) ?? []).filter((name) => !names.includes(name));
+    if (names.length > 1) {
+      if (names.every((name) => registered.has(name))) continue;
+      const keep = names.filter((name) => registered.has(name));
+      failures.push({
+        code: 'split_table',
+        detail:
+          `Tables ${quoteNames(names)} hold the same entity, one singular and one plural. Write it to one ` +
+          `table${keep.length > 0 ? `, the existing ${quoteNames(keep)}` : ', named in the plural'}, keyed by its ` +
+          'id. When a payload has one record and a list of the same kind, such as image and images, write the ' +
+          'single one as a row of that table too, and refer to it from the parent with a column such as ' +
+          'featured_image_id.',
+      });
+    } else if (!registered.has(names[0]!) && existing.length > 0) {
+      failures.push({
+        code: 'split_table',
+        detail:
+          `Table ${quoteNames(names)} is new, but the registered table ${quoteNames(existing)} holds the same ` +
+          'entity. Write to the registered table instead, keyed by the same id.',
+      });
+    }
+  }
+  return failures;
+}
+
+function groupBySingular(names: Iterable<string>): Map<string, string[]> {
+  const groups = new Map<string, string[]>();
+  for (const name of names) {
+    const singular = singularName(name);
+    groups.set(singular, [...(groups.get(singular) ?? []), name]);
+  }
+  return groups;
+}
+
+/**
+ * Singularises each underscore-separated word, so `products_images`, `product_images`, and `products_image`
+ * all become `product_image`. It is deliberately simple: an unknown plural is left alone, which can only miss
+ * a split, and words ending in `ss`, `us`, or `is`, such as `address`, `status`, and `analysis`, are kept.
+ */
+export function singularName(name: string): string {
+  return name.split('_').map(singularWord).join('_');
+}
+
+function singularWord(word: string): string {
+  if (word.length <= 3 || /(ss|us|is)$/.test(word)) return word;
+  if (word.endsWith('ies')) return `${word.slice(0, -3)}y`;
+  if (/(sses|xes|zzes|ches|shes)$/.test(word)) return word.slice(0, -2);
+  if (word.endsWith('s')) return word.slice(0, -1);
+  return word;
+}
+
+function quoteNames(names: readonly string[]): string {
+  return names.slice(0, MAX_TABLES_QUOTED).map((name) => name.slice(0, MAX_IDENTIFIER_LENGTH)).join(' and ');
 }
 
 /**

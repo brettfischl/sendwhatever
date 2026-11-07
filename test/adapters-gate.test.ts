@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runGate, type GateFailureCode, type GateInput, type GateOptions, type GateResult } from '../src/adapters/index.js';
+import { runGate, singularName, type GateFailureCode, type GateInput, type GateOptions, type GateResult } from '../src/adapters/index.js';
 import type { AdapterRequest } from '../src/contracts/index.js';
 import type { RegisteredColumns } from '../src/planner/registry.js';
 import { runAdapter, type SandboxResult } from '../src/sandbox/index.js';
@@ -749,5 +749,116 @@ describe('a table name that follows the request path', () => {
   it('does not count a table the planner would have rejected as a computed name', async () => {
     const code = `function adapt(payload) { return { table: 'Not Valid', rows: [{ id: 'x' }] }; }`;
     expect(codes(await gate(code, { samples: at('/ingest/a') }))).toEqual(['invalid_output']);
+  });
+});
+
+describe('one entity split across singular and plural tables', () => {
+  /** Runs a fixed output, so these spend no sandbox time. A bare `/ingest` skips the altered-path reruns. */
+  const returning = (output: unknown) => ({ run: async () => ({ ok: true as const, output }) });
+  const tables = (...names: string[]) => names.map((table) => ({ table, rows: [{ id: 'x' }] }));
+  const check = (output: unknown, registries: GateInput['registries'] = new Map()) =>
+    gate('', { samples: [sample({})], registries }, {}, returning(output));
+  const registered = (...names: string[]): GateInput['registries'] =>
+    new Map([['store-1', new Map(names.map((name) => [name, new Map([['id', 'string' as const]])]))]]);
+
+  /** Every table name seen in sw-1dk's live runs. `refund_transactions` is left out: see below. */
+  const REAL_NAMES = [
+    'products', 'products_variants', 'products_variant_gids', 'products_options', 'products_options_values',
+    'products_images', 'products_images_variant_ids', 'products_featured_image', 'orders', 'orders_line_items',
+    'orders_line_items_properties', 'orders_line_items_tax_lines', 'orders_tax_lines', 'orders_shipping_lines',
+    'orders_payment_gateway_names', 'orders_billing_address', 'orders_shipping_address', 'orders_client_details',
+    'customers', 'customers_addresses', 'customers_default_address', 'refunds', 'refunds_refund_line_items',
+    'refunds_transactions', 'sessions', 'sessions_agenda', 'sessions_tags', 'sessions_comments',
+    'session_organizers', 'session_speakers', 'speakers', 'sponsors', 'registrations', 'comments',
+    'comment_batches', 'named_records',
+  ];
+
+  it.each([
+    ['products_images', 'product_image'],
+    ['product_images', 'product_image'],
+    ['products_image', 'product_image'],
+    ['categories', 'category'],
+    ['addresses', 'address'],
+    ['tax_boxes', 'tax_box'],
+    ['batches', 'batch'],
+    ['wishes', 'wish'],
+    ['address', 'address'],
+    ['status', 'status'],
+    ['analysis', 'analysis'],
+    ['variant_ids', 'variant_ids'],
+    ['named_records', 'named_record'],
+  ])('reads %s as %s', (name, singular) => {
+    expect(singularName(name)).toBe(singular);
+  });
+
+  it.each([
+    ['products_image', 'products_images'],
+    ['product_images', 'products_images'],
+  ])('rejects %s beside %s in one output, naming both', async (a, b) => {
+    const result = await check(tables('products', a, b));
+    expect(codes(result)).toEqual(['split_table']);
+    expect(result.failures[0]?.detail).toContain(`${a} and ${b}`);
+    expect(result.failures[0]?.detail).toContain('featured_image_id');
+  });
+
+  it('rejects a split between a default child name and an explicit table', async () => {
+    const result = await check({
+      table: 'products',
+      rows: [{
+        id: 'p',
+        children: {
+          images: { rows: [{ id: 'i' }] },
+          featured: { table: 'products_image', rows: [{ id: 'i' }] },
+        },
+      }],
+    });
+    expect(codes(result)).toEqual(['split_table']);
+    expect(result.failures[0]?.detail).toContain('products_image and products_images');
+  });
+
+  it('rejects a split in a grandchild with no rows on this sample', async () => {
+    const output = {
+      table: 'products',
+      rows: [{ id: 'p', children: { images: { rows: [{ id: 'i', children: { variant_ids: { rows: [] } } }] }, image: { rows: [{ id: 'i' }] } } }],
+    };
+    expect(codes(await check(output))).toEqual(['split_table']);
+  });
+
+  it('rejects a new table that splits a registered one, naming the one to reuse', async () => {
+    const result = await check(tables('products', 'product_images'), registered('products', 'products_images'));
+    expect(codes(result)).toEqual(['split_table']);
+    expect(result.failures[0]?.detail).toContain('Table product_images is new, but the registered table products_images');
+  });
+
+  it('names the registered table when a new one sits beside it in the output', async () => {
+    const result = await check(tables('products_images', 'products_image'), registered('products_images'));
+    expect(codes(result)).toEqual(['split_table']);
+    expect(result.failures[0]?.detail).toContain('the existing products_images');
+  });
+
+  it('passes two names that are both already registered, since rejecting cannot undo the split', async () => {
+    const result = await check(tables('products_image', 'products_images'), registered('products_image', 'products_images'));
+    expect(result.ok).toBe(true);
+  });
+
+  it('passes a registered table written again', async () => {
+    expect((await check(tables('products_images'), registered('products_images'))).ok).toBe(true);
+  });
+
+  it('passes every table name from the live runs together, and each against all the others registered', async () => {
+    expect((await check(tables(...REAL_NAMES))).ok).toBe(true);
+    for (const name of REAL_NAMES) {
+      const others = REAL_NAMES.filter((other) => other !== name);
+      expect((await check(tables(name), registered(...others))).ok, name).toBe(true);
+    }
+  });
+
+  it('catches refund_transactions beside refunds_transactions, a split seen across those runs', async () => {
+    expect(codes(await check(tables('refunds_transactions', 'refund_transactions')))).toEqual(['split_table']);
+  });
+
+  it('reports it beside other failures, so one retry can fix them all', async () => {
+    const output = tables('products_image', 'products_images').map((object) => ({ ...object, rows: [{ id: 'x', product_id: 5 }] }));
+    expect(codes(await check(output))).toEqual(expect.arrayContaining(['split_table', 'numeric_id']));
   });
 });

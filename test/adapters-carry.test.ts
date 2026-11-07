@@ -322,6 +322,20 @@ describe('repeated data', () => {
     expect(dropped(data, table({ city: 'Paris' }))).toHaveLength(1);
   });
 
+  it('passes a featured record written once, as a row of the list it repeats (sw-0l3)', () => {
+    const front = { id: 1, src: 'front.jpg', product_id: 9 };
+    const data = { id: 9, image: front, images: [front, { id: 2, src: 'back.jpg', product_id: 9 }] };
+    const rows = data.images.map(({ id, src }) => ({ id: String(id), src }));
+    const output = { table: 'products', rows: [{ id: '9', featured_image_id: '1', children: { images: { rows } } }] };
+    expect(dropped(data, output)).toEqual([]);
+  });
+
+  it('still counts an object with an id that differs from the list item it shares an id with', () => {
+    const data = { image: { id: 1, src: 'new.jpg' }, images: [{ id: 1, src: 'old.jpg' }] };
+    const output = table({ children: { images: { rows: [{ id: '1', src: 'old.jpg' }] } } });
+    expect(dropped(data, output)).toContain('$.image.src');
+  });
+
   it('fails when one constant id merges away the other rows', () => {
     const data = { items: [{ sku: 'A' }, { sku: 'B' }] };
     const output = table({ id: 'x', sku: 'A' }, { id: 'x', sku: 'B' });
