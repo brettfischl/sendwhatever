@@ -5,6 +5,8 @@
     "moduleResolution": "NodeNext",
     "types": ["node"],
     "strict": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx",
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
     "noEmit": true
