@@ -14,6 +14,8 @@ import {
   validCsrf,
   type SessionUser,
 } from './sessions.js';
+import { connectPage } from './pages/connect.js';
+import { createKey, credentialsPage, revealLogin, revokeKey } from './pages/credentials.js';
 import { pipelineRoute } from './pages/pipeline.js';
 import { schemaRoute } from './pages/schema.js';
 import { trafficRoute } from './pages/traffic.js';
@@ -211,6 +213,11 @@ adminRoutes.get('/accounts/:accountId', (c) => {
   );
 });
 
+adminRoutes.get('/accounts/:accountId/connect', connectPage);
+adminRoutes.get('/accounts/:accountId/credentials', credentialsPage);
+adminRoutes.post('/accounts/:accountId/credentials/keys', createKey);
+adminRoutes.post('/accounts/:accountId/credentials/keys/:keyId/revoke', revokeKey);
+adminRoutes.post('/accounts/:accountId/credentials/reveal', revealLogin);
 adminRoutes.get('/accounts/:accountId/schema', schemaRoute);
 adminRoutes.get('/accounts/:accountId/traffic', trafficRoute);
 adminRoutes.get('/accounts/:accountId/pipeline', pipelineRoute);
