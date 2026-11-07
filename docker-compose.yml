@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?run npm run setup}
+      SW_APP_DB_PASSWORD: ${SW_APP_DB_PASSWORD:?run npm run setup}
+      SW_DATA_DB_PASSWORD: ${SW_DATA_DB_PASSWORD:?run npm run setup}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:?run npm run setup}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Uses TCP because the temporary server that runs the init scripts only listens on a socket.
+      # Over a socket, this would report ready before the roles and databases exist.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres"]
+      interval: 1s
+      timeout: 3s
+      retries: 60
+
+volumes:
+  pgdata:

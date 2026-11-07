@@ -1,0 +1,39 @@
+import { fileURLToPath } from 'node:url';
+
+export interface Config {
+  appDatabaseUrl: string;
+  dataDatabaseUrl: string;
+  /** Undefined until a key is set. Code that calls the LLM should fail with a clear error. */
+  fireworksApiKey: string | undefined;
+  fireworksModel: string;
+}
+
+const DEFAULT_FIREWORKS_MODEL = 'accounts/fireworks/models/deepseek-v4p1-flash';
+
+const ENV_FILE = fileURLToPath(new URL('../.env', import.meta.url));
+
+/** Reads .env from the repo root. Variables already set in the environment take precedence. */
+export function loadConfig(): Config {
+  try {
+    process.loadEnvFile(ENV_FILE);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+
+  const port = required('POSTGRES_PORT');
+  const url = (role: string, password: string) =>
+    `postgres://${role}:${encodeURIComponent(password)}@localhost:${port}/${role}`;
+
+  return {
+    appDatabaseUrl: url('sw_app', required('SW_APP_DB_PASSWORD')),
+    dataDatabaseUrl: url('sw_data', required('SW_DATA_DB_PASSWORD')),
+    fireworksApiKey: process.env.FIREWORKS_API_KEY || undefined,
+    fireworksModel: process.env.FIREWORKS_MODEL || DEFAULT_FIREWORKS_MODEL,
+  };
+}
+
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is not set. Run npm run setup to create it in .env.`);
+  return value;
+}
