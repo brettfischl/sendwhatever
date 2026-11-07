@@ -854,7 +854,7 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 - Carries every field value in the payload through to the output, allowing for casts like `5` to `"5"` and for a delete flag becoming `_deleted`, so an adapter can't pass while silently losing data.
 - If it replaces an earlier version for the same shape, still writes every column that version wrote, so a column can't quietly stop being populated.
 
-**Mistakes are recoverable.** A bad adapter that passes the gate writes wrong rows, not lost data. The original payloads remain in the event log, so a corrected adapter and a rebuild (§5.4) repair the account.
+**Mistakes are recoverable.** A bad adapter that passes the gate writes wrong rows, not lost data. The original payloads remain in the event log, so a corrected adapter and a rebuild (§5.4) can repair the account once rebuilds exist.
 
 **Limits.** Generation concurrency is capped per account, so one account sending many new shapes can't starve others or run up unbounded LLM cost.
 
@@ -1042,7 +1042,6 @@ This is a one-day hackathon build at low volume: it needs to work end to end. Wo
 **2. If time allows.**
 - Per-column ordering with `_column_seq` (§11.2).
 - The remaining webhook features: handshakes, signatures, batches, and form bodies (§6.2).
-- Rebuilds between Postgres stores (§5.4).
 - A basic conformance suite (§11.5).
 
 **3. Stretch goals.**
@@ -1052,6 +1051,7 @@ This is a one-day hackathon build at low volume: it needs to work end to end. Wo
 - **Recurring LLM jobs:** scheduled jobs that reap old quarantined records and audit an account's tables for quality improvements. Improvements apply through new adapters and a rebuild.
 
 **4. After the hackathon.**
+- **Rebuilds (§5.4):** most useful once there's a second store to move to. Until then, rows written by a bad adapter that passed validation stay in place, though the original events remain in the log.
 - **sqld backend:** the first test of the interface against a second store, and of a rebuild across backends. Treat the interface as unstable until this ships.
 - **ClickHouse backend:** the first backend with `atomicWrites: false` and eventual idempotency. Further backends follow the same path.
 
