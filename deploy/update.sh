@@ -13,6 +13,13 @@ main() {
   source /opt/sendwhatever/app/deploy/lib.sh
   require_root
 
+  # Through the deploy key, `ssh ... status` reports without changing anything.
+  if [ "${SSH_ORIGINAL_COMMAND:-}" = status ]; then
+    echo "Running $(as_sw git -C "$APP_DIR" log -1 --format='%h %s')"
+    systemctl is-active "${UNITS[@]}" | paste -sd' '
+    exit 0
+  fi
+
   as_sw git -C "$APP_DIR" pull --ff-only
   # Re-source in case the pull changed it.
   # shellcheck source=deploy/lib.sh
