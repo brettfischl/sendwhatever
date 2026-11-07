@@ -1,9 +1,9 @@
-import { Hono, type Context, type MiddlewareHandler } from 'hono';
+import { Hono, type Context, type ErrorHandler, type MiddlewareHandler } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { csrf } from 'hono/csrf';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { HttpError, type AppEnv } from '../http/deps.js';
+import { HttpError, isConnectionError, type AppEnv } from '../http/deps.js';
 import {
   SESSION_COOKIE,
   SESSION_HOURS,
@@ -42,12 +42,14 @@ const DUMMY_HASH = await hashPassword('not a real password');
 
 export const adminRoutes = new Hono<AdminEnv>();
 
-adminRoutes.onError((error, c) => {
+export const adminOnError: ErrorHandler<AdminEnv> = (error, c) => {
   if (error instanceof HttpError) return page(c, error.status, error.message);
   if (error instanceof HTTPException) return page(c, error.status, 'Request refused');
+  if (isConnectionError(error)) return page(c, 503, 'Database unavailable');
   console.error(error);
   return page(c, 500, 'Something went wrong');
-});
+};
+adminRoutes.onError(adminOnError);
 adminRoutes.notFound((c) => page(c, 404, 'Page not found'));
 
 function page(c: AdminContext, status: ContentfulStatusCode, message: string) {
@@ -78,6 +80,7 @@ adminRoutes.use('*', async (c, next) => {
     }
   }
   if (token && c.get('user') && !SAFE_METHODS.has(c.req.method) && c.req.path !== '/admin/login') {
+    // Login is exempt: login CSRF is covered by the Origin check, and a logged-in POST without _csrf is allowed.
     const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
     if (!validCsrf(c.get('deps').config.encryptionKey, token, body._csrf)) {
       throw new HttpError(403, 'Invalid or missing CSRF token');

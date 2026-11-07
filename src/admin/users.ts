@@ -12,7 +12,14 @@ const SALT_LENGTH = 16;
 type Queryable = Pick<pg.Pool, 'query'>;
 
 /** A bad input to a user helper, with a message that is safe to show an operator. */
-export class UserError extends Error {}
+export class UserError extends Error {
+  constructor(
+    readonly code: 'invalid_email' | 'weak_password' | 'email_taken',
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 function derive(password: string, salt: Buffer, n: number, r: number, p: number, length: number) {
   const options: ScryptOptions = { N: n, r, p, maxmem: 256 * n * r };
@@ -43,7 +50,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
 
 function checkPassword(password: string): void {
   if (password.length < MIN_PASSWORD_LENGTH) {
-    throw new UserError(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+    throw new UserError('weak_password', `password must be at least ${MIN_PASSWORD_LENGTH} characters`);
   }
 }
 
@@ -56,7 +63,7 @@ export interface NewUser {
 /** Creates a user. The one place a new user's password is checked and hashed. */
 export async function createUser(db: Queryable, input: NewUser): Promise<{ id: string }> {
   const email = input.email.trim();
-  if (!email.includes('@')) throw new UserError('email is not valid');
+  if (!email.includes('@')) throw new UserError('invalid_email', 'email is not valid');
   checkPassword(input.password);
   const hash = await hashPassword(input.password);
   try {
@@ -66,7 +73,7 @@ export async function createUser(db: Queryable, input: NewUser): Promise<{ id: s
     );
     return { id: rows[0]!.id };
   } catch (error) {
-    if ((error as { code?: string }).code === '23505') throw new UserError('email already in use');
+    if ((error as { code?: string }).code === '23505') throw new UserError('email_taken', 'email already in use');
     throw error;
   }
 }
@@ -103,7 +110,7 @@ export async function ensureSuperAdmin(
     await createUser(db, { email, password, isSuperAdmin: true });
   } catch (error) {
     // A concurrent start may have created the same user first.
-    if (error instanceof UserError && error.message === 'email already in use') return false;
+    if (error instanceof UserError && error.code === 'email_taken') return false;
     throw error;
   }
   console.log(`Created the first super admin ${email}.`);

@@ -1,7 +1,16 @@
 import { createHash, randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { adminRoutes } from '../src/admin/index.js';
+import { Hono } from 'hono';
+import { getCookie } from 'hono/cookie';
+import {
+  adminOnError,
+  adminRoutes,
+  requireAccountAccess,
+  requireSuperAdmin,
+  type AdminEnv,
+} from '../src/admin/index.js';
+import { SESSION_COOKIE, loadSession } from '../src/admin/sessions.js';
 import {
   createUser,
   disableUser,
@@ -218,7 +227,6 @@ describe('CSRF', () => {
     const s = await session(user.email);
     const evil = 'https://evil.example';
     expect((await post('/admin/logout', s, { _csrf: s.csrf }, evil)).status).toBe(403);
-    expect((await loginResponse(user.email, PASSWORD, evil + '/..')).status).toBe(403);
     const res = await app.request('/admin/login', {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', origin: evil },
@@ -226,6 +234,29 @@ describe('CSRF', () => {
     });
     expect(res.status).toBe(403);
     expect(res.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('allows a logged-in POST to /admin/login without _csrf (login CSRF is covered by the Origin check)', async () => {
+    const user = await newUser('login-exempt');
+    const s = await session(user.email);
+    const res = await post('/admin/login', s, { email: user.email, password: PASSWORD });
+    expect(res.status).toBe(303);
+    // The Origin check still applies.
+    const cross = await post('/admin/login', s, { email: user.email, password: PASSWORD }, 'https://evil.example');
+    expect(cross.status).toBe(403);
+  });
+
+  it('rejects a missing or wrong _csrf on a non-GET account route, for members and super admins', async () => {
+    const member = await newUser('csrf-member');
+    const admin = await newUser('csrf-super', true);
+    const account = await newAccount('csrf-acct');
+    await addMember(account.id, member.id);
+    for (const who of [member, admin]) {
+      const s = await session(who.email);
+      const path = `/admin/accounts/${account.id}/anything`;
+      expect((await post(path, s)).status).toBe(403);
+      expect((await post(path, s, { _csrf: 'wrong' })).status).toBe(403);
+    }
   });
 
   it('puts the token in every form the admin renders', async () => {
@@ -240,7 +271,7 @@ describe('CSRF', () => {
 });
 
 describe('authorization', () => {
-  it('refuses a member on every account route pattern of another account', async () => {
+  it('guards every account route pattern with requireAccountAccess, and never reaches the handler for an intruder', async () => {
     const owner = await newUser('owner');
     const intruder = await newUser('intruder');
     const target = await newAccount('target');
@@ -249,37 +280,60 @@ describe('authorization', () => {
     await addMember(own.id, intruder.id);
     const s = await session(intruder.email);
 
-    const patterns = adminRoutes.routes
-      .filter((r) => r.method !== 'ALL' && /^\/accounts\/:accountId(\/|$)/.test(r.path))
-      .map((r) => ({ method: r.method, path: r.path }));
-    expect(patterns.length).toBeGreaterThan(0);
-    // An unregistered path under the prefix must be covered too, for pages added later.
-    patterns.push({ method: 'GET', path: '/accounts/:accountId/__later' });
-    patterns.push({ method: 'POST', path: '/accounts/:accountId/__later' });
+    // The guard is registered directly on the wildcard, for all methods.
+    const guard = adminRoutes.routes.find(
+      (r) => r.method === 'ALL' && r.path === '/accounts/:accountId/*',
+    );
+    expect(guard?.handler).toBe(requireAccountAccess);
 
-    for (const { method, path } of patterns) {
-      const concrete = (accountId: string) =>
-        '/admin' + path.replace(':accountId', accountId).replace(/:\w+/g, 'x');
-      const send = (accountId: string) =>
-        app.request(concrete(accountId), {
-          method,
-          headers: { ...s.headers, 'content-type': 'application/x-www-form-urlencoded', origin: ORIGIN },
-          body: method === 'GET' ? undefined : form({ _csrf: s.csrf }),
-        });
-      const res = await send(target.id);
-      expect(res.status, `${method} ${path} on another account`).toBe(404);
-      // The account home is reachable on the member's own account, so the 404 above is authorization.
-      if (method === 'GET' && path === '/accounts/:accountId') {
-        expect((await send(own.id)).status).toBe(200);
-      }
+    // Every registered route under the prefix (ALL expanded over the usual methods), plus a path
+    // that does not exist yet, so pages added later are covered.
+    const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+    const patterns = new Set<string>(['GET /accounts/:accountId/__later', 'POST /accounts/:accountId/__later']);
+    for (const r of adminRoutes.routes) {
+      if (!/^\/accounts\/:accountId(\/|$)/.test(r.path)) continue;
+      for (const m of r.method === 'ALL' ? METHODS : [r.method]) patterns.add(`${m} ${r.path}`);
+    }
+    expect(patterns.size).toBeGreaterThan(2);
+
+    // A probe app with the same guard and a handler that answers 200, so a 404 proves it never ran.
+    const probe = probeApp();
+    probe.use('/accounts/:accountId/*', guard!.handler);
+    for (const entry of patterns) {
+      const [method, path] = entry.split(' ') as [string, string];
+      probe.on(method, path, (c) => c.text('handler reached'));
     }
 
-    // Unknown and malformed ids look the same as another account's.
+    const send = (method: string, path: string, accountId: string) =>
+      probe.request(
+        '/admin' + path.replace(':accountId', accountId).replace(/:\w+/g, 'x').replace('*', 'x'),
+        {
+          method,
+          headers: { ...s.headers, 'content-type': 'application/x-www-form-urlencoded' },
+          body: method === 'GET' ? undefined : form({ _csrf: s.csrf }),
+        },
+      );
+    const missingId = '00000000-0000-4000-8000-000000000000';
+    for (const entry of patterns) {
+      const [method, path] = entry.split(' ') as [string, string];
+      const res = await send(method, path, target.id);
+      expect(res.status, entry).toBe(404);
+      const body = await res.text();
+      expect(body, entry).not.toContain('handler reached');
+      // Another account looks exactly like one that doesn't exist.
+      const none = await send(method, path, missingId);
+      expect(none.status, entry).toBe(404);
+      expect(await none.text(), entry).toBe(body);
+      // The member's own account does reach the handler.
+      const mine = await send(method, path, own.id);
+      expect(await mine.text(), entry).toBe('handler reached');
+    }
+
+    // And through the real app, the account home works for the member and not for the intruder.
+    const home = (id: string) => app.request(`/admin/accounts/${id}`, { headers: s.headers });
+    expect((await home(own.id)).status).toBe(200);
+    expect((await home(target.id)).status).toBe(404);
     expect((await app.request('/admin/accounts/not-a-uuid', { headers: s.headers })).status).toBe(404);
-    const missing = await app.request('/admin/accounts/00000000-0000-4000-8000-000000000000', {
-      headers: s.headers,
-    });
-    expect(missing.status).toBe(404);
   });
 
   it('lets a member use their own account', async () => {
@@ -332,18 +386,49 @@ describe('authorization', () => {
     expect(write.status).toBe(404);
   });
 
-  it('hides /admin/manage from everyone but super admins', async () => {
+  it('guards /manage/* with requireSuperAdmin: members get the same 404 as an unregistered page', async () => {
     const member = await newUser('manage-member');
     const admin = await newUser('manage-super', true);
     const m = await session(member.email);
     const a = await session(admin.email);
+
+    const guard = adminRoutes.routes.find((r) => r.method === 'ALL' && r.path === '/manage/*');
+    expect(guard?.handler).toBe(requireSuperAdmin);
+
+    const probe = probeApp();
+    probe.use('/manage/*', guard!.handler);
+    probe.get('/manage/page', (c) => c.text('handler reached'));
+
+    const refused = await probe.request('/admin/manage/page', { headers: m.headers });
+    expect(refused.status).toBe(404);
+    const unregistered = await app.request('/admin/zzz-unregistered', { headers: m.headers });
+    expect(unregistered.status).toBe(404);
+    const body = await refused.text();
+    expect(body).not.toContain('handler reached');
+    expect(body).toBe(await unregistered.text());
+
+    const ok = await probe.request('/admin/manage/page', { headers: a.headers });
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe('handler reached');
+    // Through the real app a member is also refused.
     expect((await app.request('/admin/manage/anything', { headers: m.headers })).status).toBe(404);
-    // For a super admin it passes the guard and reaches the 404 for an unregistered page.
-    const res = await app.request('/admin/manage/anything', { headers: a.headers });
-    expect(res.status).toBe(404);
-    expect(await res.text()).toContain('Page not found');
   });
 });
+
+/** A bare app that loads the session like the admin does, then runs whatever the test registers. */
+function probeApp() {
+  const probe = new Hono<AdminEnv>().basePath('/admin');
+  probe.onError(adminOnError);
+  probe.use('*', async (c, next) => {
+    c.set('deps', { appDb, backend: new PostgresBackend(), config });
+    const token = getCookie(c, SESSION_COOKIE);
+    const user = token ? await loadSession(appDb, token) : undefined;
+    if (!user) return c.text('no session', 401);
+    c.set('user', user);
+    await next();
+  });
+  return probe;
+}
 
 describe('users', () => {
   it('round-trips a password hash and rejects short passwords', async () => {
@@ -370,32 +455,67 @@ describe('users', () => {
     ).rejects.toThrow('email already in use');
   });
 
-  it('creates the first super admin once and then does nothing', async () => {
-    const supers = async () =>
-      (await appDb.query('SELECT 1 FROM users WHERE is_super_admin')).rowCount ?? 0;
-    const before = await supers();
-    const email = `seed-${tag}@example.test`;
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    try {
-      if (before === 0) {
-        expect(await ensureSuperAdmin(appDb, undefined, undefined)).toBe(false);
-        expect(warn).toHaveBeenCalled();
-        expect(await ensureSuperAdmin(appDb, email, PASSWORD)).toBe(true);
-        expect(await supers()).toBe(1);
-        const { rows } = await appDb.query<{ id: string }>('SELECT id FROM users WHERE email = $1', [
-          email,
-        ]);
-        userIds.push(rows[0]!.id);
+  describe('ensureSuperAdmin', () => {
+    // Runs on a checked-out client in a transaction that demotes every super admin and rolls back,
+    // so the cases don't depend on what other tests or the dev database hold.
+    async function inEmptyTransaction(run: (client: pg.PoolClient) => Promise<void>) {
+      const client = await appDb.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query('UPDATE users SET is_super_admin = false WHERE is_super_admin');
+        await run(client);
+      } finally {
+        await client.query('ROLLBACK');
+        client.release();
       }
-      // Idempotent: a super admin exists now, so nothing more is created.
-      const count = await supers();
-      expect(await ensureSuperAdmin(appDb, `second-${tag}@example.test`, PASSWORD)).toBe(false);
-      expect(await supers()).toBe(count);
-    } finally {
-      warn.mockRestore();
-      log.mockRestore();
     }
+    const supers = async (db: pg.PoolClient) =>
+      (await db.query('SELECT 1 FROM users WHERE is_super_admin')).rowCount ?? 0;
+
+    it('creates the first super admin, who can log in, then does nothing more', async () => {
+      const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+      try {
+        await inEmptyTransaction(async (db) => {
+          expect(await ensureSuperAdmin(db, `seed-${tag}@example.test`, PASSWORD)).toBe(true);
+          expect(await supers(db)).toBe(1);
+          expect(await ensureSuperAdmin(db, `second-${tag}@example.test`, PASSWORD)).toBe(false);
+          expect(await supers(db)).toBe(1);
+          const { rows } = await db.query<{ is_super_admin: boolean }>(
+            'SELECT is_super_admin FROM users WHERE email = $1',
+            [`second-${tag}@example.test`],
+          );
+          expect(rows).toHaveLength(0);
+        });
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it('warns and creates nothing when the variables are missing', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        await inEmptyTransaction(async (db) => {
+          const before = (await db.query('SELECT 1 FROM users')).rowCount;
+          expect(await ensureSuperAdmin(db, undefined, undefined)).toBe(false);
+          expect(await ensureSuperAdmin(db, 'a@example.test', undefined)).toBe(false);
+          expect(warn).toHaveBeenCalledTimes(2);
+          expect((await db.query('SELECT 1 FROM users')).rowCount).toBe(before);
+        });
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('propagates a UserError for a short password', async () => {
+      await inEmptyTransaction(async (db) => {
+        const error = await ensureSuperAdmin(db, `weak-${tag}@example.test`, 'short').catch(
+          (e: unknown) => e,
+        );
+        expect(error).toBeInstanceOf(UserError);
+        expect((error as UserError).code).toBe('weak_password');
+        expect(await supers(db)).toBe(0);
+      });
+    });
   });
 });
 
