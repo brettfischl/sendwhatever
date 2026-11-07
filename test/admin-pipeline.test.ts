@@ -41,6 +41,8 @@ const page = async (path: string, fragment = false) => {
 };
 /** Visible text, tags removed and whitespace collapsed. */
 const text = (html: string) => html.replace(/<[^>]+>/g, '').replace(/&#39;/g, "'").replace(/\s+/g, ' ');
+/** Like `text`, but tags become spaces, so a stat tile's label, value and hint stay apart. */
+const spaced = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/&#39;/g, "'").replace(/\s+/g, ' ');
 
 const fp = () => `fp-${randomBytes(4).toString('hex')}`;
 
@@ -170,12 +172,14 @@ const pipelinePath = () => `/admin/accounts/${busy.id}/pipeline`;
 
 describe('pipeline status', () => {
   it('says what is waiting, generating, failed, awaiting approval, and stuck', async () => {
-    const status = text(await page(pipelinePath()));
-    expect(status).toContain('3 events waiting for an adapter (2 new shapes)');
-    expect(status).toContain('AI is generating 1 adapter');
-    expect(status).toContain('Last attempt failed: gave_up ((no path) / write)');
-    expect(status).toContain('1 adapter awaiting approval');
-    expect(status).toContain("2 need attention: The body isn't a JSON object or array (1); Writing to the account's store failed (1)");
+    const status = spaced(await page(pipelinePath()));
+    expect(status).toContain('Waiting for adapter 3 2 new shapes');
+    expect(status).toContain('AI generating 1 adapter');
+    expect(status).toMatch(/Last generation failed gave_up \(\(no path\) \/ write, /);
+    expect(status).toContain('Awaiting approval 1 validated adapters');
+    expect(status).toContain(
+      "Needs attention 2 The body isn't a JSON object or array (1); Writing to the account's store failed (1)",
+    );
     expect(status).not.toContain('Nothing is waiting');
   });
 
@@ -190,7 +194,8 @@ describe('pipeline status', () => {
   it('points an account with no events to the Connect page', async () => {
     const empty = await newAccount('empty');
     const html = await page(`/admin/accounts/${empty.id}/pipeline`);
-    expect(text(html)).toContain('No events yet. Send your first one');
+    expect(text(html)).toContain('No events yet');
+    expect(text(html)).toContain('Send your first one');
     expect(html).toContain(`href="/admin/accounts/${empty.id}/connect"`);
     expect(html).not.toContain('data-filters');
     expect(html).toMatch(/data-depth="true">0</); // the queue stays
@@ -211,11 +216,14 @@ describe('recent events', () => {
     expect(row(html, ids.malformed)).toContain('>Needs attention<');
     expect(row(html, ids.written)).toContain('>Written<');
 
-    expect(row(html, ids.waiting)).toContain('No adapter handles this shape yet, gave_up, awaiting approval');
+    expect(row(html, ids.waiting)).toContain('gave_up, awaiting approval');
     expect(row(html, ids.malformed)).toContain('The body isn&#39;t a JSON object or array');
     expect(row(html, ids.writeError)).toContain('Writing to the account&#39;s store failed');
     expect(row(html, ids.waiting)).toContain('(no path)');
-    expect(row(html, ids.written)).toContain(`href="/admin/accounts/${busy.id}/events/${ids.written}"`);
+    const href = `/admin/accounts/${busy.id}/events/${ids.written}`;
+    expect(html).toContain(`href="${href}" data-event="${ids.written}"`);
+    // The whole row is clickable too: the tr carries the target, and the link stays for keyboards.
+    expect(html).toMatch(new RegExp(`<tr[^>]*data-href="${href}"[^>]*class="row-link"|<tr[^>]*class="row-link"[^>]*data-href="${href}"`));
   });
 
   it('notes a replayed event', async () => {
@@ -266,7 +274,7 @@ describe('filters', () => {
     expect(html).toMatch(/<option value="\/"[^>]*>\(no path\)<\/option>/);
     expect(html).toMatch(/<option value="shopify"[^>]*>shopify<\/option>/);
     expect(html).toMatch(/<option value="stripe"[^>]*>stripe<\/option>/);
-    for (const label of ['All', 'Queued', 'AI generating', 'Waiting for adapter', 'Needs attention', 'Written']) {
+    for (const label of ['All statuses', 'Queued', 'AI generating', 'Waiting for adapter', 'Needs attention', 'Written']) {
       expect(html).toContain(`>${label}</option>`);
     }
 
@@ -320,6 +328,43 @@ describe('event lookup', () => {
     expect(html).not.toContain('<b>not-an-id</b>');
     expect(html).toContain('Look up an event ID');
     expect(html).toMatch(/<input[^>]+name="event"[^>]+pattern="/);
+  });
+});
+
+describe('lookup error is one-shot', () => {
+  it('shows on the full page but not on the refresh, which re-sends the same query string', async () => {
+    const path = `${pipelinePath()}?event=nope`;
+    const full = await page(path);
+    expect(full).toContain("That isn&#39;t an event ID");
+    // The error sits above the live region, so a refresh can neither repeat nor clear it.
+    expect(full.indexOf("That isn&#39;t an event ID")).toBeLessThan(full.indexOf('data-live-region'));
+    const refreshed = await page(path, true);
+    expect(refreshed).not.toContain("That isn&#39;t an event ID");
+    expect(refreshed).toContain('data-filters');
+  });
+});
+
+describe('overview glance', () => {
+  it('counts only this account: events in the last hour, waiting, tables, needs attention', async () => {
+    await busy.addTable('glance_a');
+    await other.addTable('theirs_a');
+    await other.addTable('theirs_b');
+    // An old event doesn't count toward the last hour.
+    await appDb.query(
+      `UPDATE events SET received_at = now() - interval '3 hours' WHERE account_id = $1 AND id = $2`,
+      [busy.id, ids.written],
+    );
+    const raw = await page(`/admin/accounts/${busy.id}`);
+    const html = spaced(raw);
+    expect(html).toContain('Events, last hour 6 See traffic');
+    expect(html).toContain('Waiting for adapter 3 2 new shapes');
+    expect(html).toContain('Tables created 1 See schema');
+    expect(html).toContain('Needs attention 2 Open the pipeline');
+    expect(raw).toContain(`href="/admin/accounts/${busy.id}/pipeline?status=waiting"`);
+    expect(raw).toContain(`href="/admin/accounts/${busy.id}/schema"`);
+    expect(raw).toContain(`href="/admin/accounts/${busy.id}/adapters"`);
+    expect(html).toContain('The code the AI wrote for each data shape.');
+    await appDb.query(`UPDATE events SET received_at = now() WHERE account_id = $1 AND id = $2`, [busy.id, ids.written]);
   });
 });
 

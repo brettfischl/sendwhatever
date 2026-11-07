@@ -19,7 +19,8 @@ import {
 import { connectPage } from './pages/connect.js';
 import { createKey, credentialsPage, revealLogin, revokeKey } from './pages/credentials.js';
 import { eventPayloadRoute, eventRoute } from './pages/events.js';
-import { pipelineRoute } from './pages/pipeline.js';
+import { needsAttention, pipelineRoute } from './pages/pipeline.js';
+import { getPipelineSummary } from '../pipeline/status.js';
 import { schemaRoute } from './pages/schema.js';
 import { swaggerAsset, tableDocsRoute, tableSpecRoute } from './pages/table-docs.js';
 import { trafficRoute } from './pages/traffic.js';
@@ -232,14 +233,35 @@ adminRoutes.use('/accounts/:accountId/*', requireAccountAccess);
 adminRoutes.use('/manage/*', requireSuperAdmin);
 
 // Account pages go here, all under /accounts/:accountId. Later tickets add their routes next to this one.
-adminRoutes.get('/accounts/:accountId', (c) => {
+adminRoutes.get('/accounts/:accountId', async (c) => {
   const account = c.get('account')!;
+  const db = c.get('deps').appDb;
+  const [summary, events, tables] = await Promise.all([
+    getPipelineSummary(db, account.id),
+    db.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM events WHERE account_id = $1 AND received_at > now() - interval '1 hour'`,
+      [account.id],
+    ),
+    db.query<{ n: number }>(
+      `SELECT count(DISTINCT (c.store_id, c.table_name))::int AS n
+         FROM data_columns c JOIN account_stores s ON s.id = c.store_id
+        WHERE s.account_id = $1 AND s.status = 'active'`,
+      [account.id],
+    ),
+  ]);
   return c.html(
     <AccountHomePage
       user={c.get('user')!}
       csrf={c.get('csrf')!}
       account={account}
       readOnly={account.readOnly}
+      glance={{
+        eventsLastHour: events.rows[0]?.n ?? 0,
+        waitingEvents: summary.waitingEvents,
+        waitingShapes: summary.waitingShapeCount,
+        tables: tables.rows[0]?.n ?? 0,
+        needsAttention: needsAttention(summary),
+      }}
     />,
   );
 });

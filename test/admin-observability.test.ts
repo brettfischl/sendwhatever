@@ -397,7 +397,7 @@ describe('pipeline page', () => {
     const html = await (await get(`/admin/accounts/${quiet.id}/pipeline`, session)).text();
     expect(html).toMatch(/data-depth="true">0</);
     expect(html).toMatch(/data-oldest="true">—</);
-    expect(html).toContain('No jobs have been retried');
+    expect(html).toContain('0 retries');
   });
 });
 

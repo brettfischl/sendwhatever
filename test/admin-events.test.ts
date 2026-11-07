@@ -244,7 +244,8 @@ describe('event page', () => {
     expect(html).toContain('>Queued</span>');
     expect(field(html, 'source')).toBe('(no path)');
     expect(field(html, 'op')).toBe('write');
-    expect(field(html, 'received')).toMatch(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/);
+    expect(field(html, 'received')).toMatch(/\d{4}-\d\d-\d\d \d\d:\d\d:\d\d UTC/);
+    expect(section(html, 'data-field="received"', '</dd>')).toMatch(/<time datetime="\d{4}-\d\d-\d\dT[^"]+" title="[^"]+ UTC">/);
     expect(field(html, 'fingerprint')).toContain('fp-');
     expect(field(html, 'size')).toBe('2 bytes');
     expect(field(html, 'job')).toContain('Still queued (2 attempts so far)');
@@ -257,7 +258,7 @@ describe('event page', () => {
     expect(html).toContain('data-status="adapter_generating"');
     expect(html).toContain('>AI generating</span>');
     expect(field(html, 'source')).toContain('gen');
-    expect(field(html, 'job')).toContain('None');
+    expect(field(html, 'job')).toContain('Processed');
     expect(html).toContain('data-reason="unknown_fingerprint"');
     expect(html).toContain('No adapter handles this shape yet.');
   });
@@ -276,7 +277,7 @@ describe('event page', () => {
     const html = await eventHtml(ev.quarantined!);
     expect(html).toContain('data-status="quarantined"');
     expect(html).toContain('>Needs attention</span>');
-    expect(field(html, 'fingerprint')).toBe('none (malformed body)');
+    expect(field(html, 'fingerprint')).toBe('None (malformed body)');
     expect(field(html, 'size')).toBe('8 bytes');
     expect(html).toContain('data-reason="malformed"');
     expect(unescapeHtml(html)).toContain(reasonLabel('malformed'));
