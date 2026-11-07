@@ -19,7 +19,7 @@ import { STATUS_LABELS, reasonPhrase } from '../../pipeline/labels.js';
 /** Pipeline refreshes faster than the other pages: it's where people watch events arrive. */
 export const PIPELINE_REFRESH_MS = 2500;
 const FEED_SIZE = 25;
-/** The source filter's value for events sent with no path, whose source is ''. A real source can't hold '/'. */
+/** The source filter's value for events sent with no path, whose source is ''. Known gap (sw-fm4): a real source of '/' (from /ingest/%2F) shares this value. */
 const NO_PATH = '/';
 
 // Page-local styles: the shared stylesheet in views.tsx is left alone.
