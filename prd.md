@@ -264,7 +264,7 @@ An exact match takes priority, so a specific adapter can still be added for a sh
 
 ## 8. Intermediate Object Contract
 
-Adapters transform the raw payload into an intermediate object. The platform turns that object into storage backend writes.
+Adapters transform the raw payload into an intermediate object. The platform turns that object into storage backend writes. The block below is a summary, and `src/contracts` holds the exact types.
 
 ```typescript
 // An adapter returns IntermediateObject | IntermediateObject[]
@@ -290,7 +290,7 @@ Rules:
   - A child of a parent with an adapter-supplied `id` derives from `(parent id, table, position)`, so a repeat of the parent updates its children instead of adding more.
   - A shorter list never removes anything. If a later event has fewer children, the extra rows stay current, because the event may be a partial update. Removing a child takes an explicit delete: a `DELETE` request for it, or a `_deleted: true` child row (below).
   - Every other row, and any child table with `append: true`, derives from `(event_id, table, row path)`.
-- An adapter-supplied `id` is treated as the record's identity, and writes to it merge: columns in the write are updated, and columns absent from it keep their values. An explicit `null` clears a column, and so does a column set to `undefined`; only a missing key keeps the stored value. On `id`, `_deleted`, and `children`, `undefined` means the key is omitted. When events conflict on a column, the one latest in the log wins (§11.2).
+- An adapter-supplied `id` is treated as the record's identity, and writes to it merge: columns in the write are updated, and columns absent from it keep their values. An explicit `null` clears a column, and so does a column set to `undefined`, which the write planner converts to `null`; only a missing key keeps the stored value. On `id`, `_deleted`, and `children`, `undefined` means the key is omitted. When events conflict on a column, the one latest in the log wins (§11.2).
 - `_deleted: true` marks the record deleted by setting `_deleted_at` to the deleting event's `received_at`, so replays match, and any fields included on the row are written too, so nothing in the event is lost. A write later in the log for the same `id` restores it; a delayed earlier event does not (§11.2). Rows are never physically removed. This works on child rows too, so an adapter can turn `{ "id": "order_1", "items": [{ "id": "1", "deleted": true }] }` into a `_deleted: true` row for item 1. Deletes are always explicit, and the platform never infers one from a missing row.
 - Returning an array writes several top-level tables from one event, such as an order and the customer embedded in it. An entity with its own identity belongs in its own table, referenced by a column like `customer_id`, rather than repeated as a child of each parent.
 - Column values are strings, finite numbers, booleans, or `null`, plus objects or arrays at declared opaque paths (§9). `NaN` and `Infinity` fail with `adapter_error`, because JSON would turn them into `null` and clear the column. A `timestamp` column is declared in `column_types`, and its values must be ISO 8601 strings with a timezone.
@@ -784,12 +784,18 @@ function adapt(payload) {
       children: item.profile ? {
         profile: {
           rows: [{
-            first_name: item.profile.firstName || item.profile.first_name,
-            last_name: item.profile.lastName || item.profile.last_name
+            ...field(item.profile, 'first_name', 'firstName', 'first_name'),
+            ...field(item.profile, 'last_name', 'lastName', 'last_name')
           }]
         }
       } : undefined
     };
+  }
+
+  // Returns the column only if the payload has one of these keys.
+  function field(source, column, ...keys) {
+    const key = keys.find((name) => name in source);
+    return key ? { [column]: source[key] } : {};
   }
 }
 ```
