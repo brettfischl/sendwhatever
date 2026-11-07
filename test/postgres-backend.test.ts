@@ -308,6 +308,16 @@ describe('provision', () => {
     const final = await backend.provision(shared);
     await asLogin(final, (client) => client.query('SELECT 1'));
   });
+
+  // The race is on the GRANTs after the database exists, and only sometimes loses, so it needs several tries.
+  it('never fails with concurrently updated catalog rows when calls for one store overlap', async () => {
+    for (let round = 0; round < 8; round += 1) {
+      const store = newStore();
+      await expect(
+        Promise.all([backend.provision(store), backend.provision(store), backend.provision(store)]),
+      ).resolves.toHaveLength(3);
+    }
+  });
 });
 
 describe('applySchema', () => {
