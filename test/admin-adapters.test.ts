@@ -302,4 +302,9 @@ describe('access and navigation', () => {
       expect(keys.indexOf('adapters')).toBe(keys.indexOf('pipeline') + 1);
     }
   });
+
+  it('gives the Overview card for Adapters a description', async () => {
+    const html = await page(`/admin/accounts/${listPath().split('/')[3]}`);
+    expect(text(html)).toContain('The code the AI wrote for each data shape.');
+  });
 });
