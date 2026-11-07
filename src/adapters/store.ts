@@ -301,6 +301,12 @@ export async function activateAdapter(
 ): Promise<ActivationResult> {
   const client = await pool.connect();
   let brokenConnection: Error | undefined;
+  // The pool only listens to idle clients. Without this, losing the connection between these statements
+  // would be an unhandled 'error' event that crashes the process. The next query rejects instead.
+  const onError = (error: Error) => {
+    brokenConnection = error;
+  };
+  client.on('error', onError);
   try {
     await client.query('BEGIN');
     const shape = await client.query<Pick<AdapterRow, 'id' | 'active' | 'validated_at'>>(
@@ -336,6 +342,7 @@ export async function activateAdapter(
     });
     throw error;
   } finally {
+    client.removeListener('error', onError);
     client.release(brokenConnection);
   }
 }

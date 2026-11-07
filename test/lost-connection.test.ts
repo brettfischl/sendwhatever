@@ -5,11 +5,13 @@ import pg from 'pg';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import type { StorageBackend } from '../src/contracts/index.js';
+import { activateAdapter } from '../src/adapters/index.js';
 import { createApp } from '../src/http/app.js';
 
 vi.setConfig({ testTimeout: 30_000 });
 
-const config = loadConfig();
+const TOKEN = 'lost-connection-test-token';
+const config = { ...loadConfig(), internalApiToken: TOKEN };
 const killer = new pg.Pool({ connectionString: config.appDatabaseUrl, max: 1 });
 const slugs: string[] = [];
 
@@ -26,6 +28,18 @@ function newPool(): pg.Pool {
   return pool;
 }
 
+/** The connection goes right after BEGIN, while the client sits idle in its transaction. */
+function loseAfterBegin(pool: pg.Pool): void {
+  pool.on('acquire', (client) => {
+    const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
+    (client as unknown as { query: unknown }).query = async (...args: unknown[]) => {
+      const result = await query(...args);
+      if (args[0] === 'BEGIN') await terminate(client);
+      return result;
+    };
+  });
+}
+
 const backend = (provision: StorageBackend['provision']): StorageBackend => ({
   capabilities: { atomicWrites: true, idempotency: 'immediate' },
   provision,
@@ -39,7 +53,7 @@ function postAccount(app: ReturnType<typeof createApp>, slug: string) {
   slugs.push(slug);
   return app.request('/accounts', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ slug }),
   });
 }
@@ -49,6 +63,7 @@ const newSlug = () => `lost-${randomBytes(5).toString('hex')}`;
 afterAll(async () => {
   const accounts = `(SELECT id FROM accounts WHERE slug = ANY($1))`;
   await killer.query(`DELETE FROM queue WHERE account_id IN ${accounts}`, [slugs]);
+  await killer.query(`DELETE FROM adapters WHERE account_id IN ${accounts}`, [slugs]);
   await killer.query(`DELETE FROM events WHERE account_id IN ${accounts}`, [slugs]);
   await killer.query(`DELETE FROM api_keys WHERE account_id IN ${accounts}`, [slugs]);
   await killer.query(`DELETE FROM account_stores WHERE account_id IN ${accounts}`, [slugs]);
@@ -83,6 +98,28 @@ describe('losing the application database during a request', () => {
     await pool.end();
   });
 
+  it('rejects from activateAdapter rather than crashing, and leaves the adapter inactive', async () => {
+    const setup = newPool();
+    const slug = newSlug();
+    const created = await postAccount(createApp({ appDb: setup, backend: backend(login), config }), slug);
+    const { account_id: accountId } = (await created.json()) as { account_id: string };
+    await setup.end();
+    const { rows } = await killer.query<{ id: string }>(
+      `INSERT INTO adapters (account_id, op, fingerprint, version, code, validated_at)
+       VALUES ($1, 'write', 'aaaaaaaaaaaaaaaa', 1, 'function adapt() {}', now()) RETURNING id`,
+      [accountId],
+    );
+    const adapterId = rows[0]!.id;
+
+    const pool = newPool();
+    loseAfterBegin(pool);
+    await expect(activateAdapter(pool, adapterId, { replacing: null })).rejects.toThrow();
+    await pool.end();
+
+    const after = await killer.query<{ active: boolean }>('SELECT active FROM adapters WHERE id = $1', [adapterId]);
+    expect(after.rows[0]!.active).toBe(false);
+  });
+
   it('returns 503 from /ingest mid-transaction, with nothing stored', async () => {
     const setup = newPool();
     const slug = newSlug();
@@ -91,15 +128,7 @@ describe('losing the application database during a request', () => {
     await setup.end();
 
     const pool = newPool();
-    // The connection goes right after BEGIN, while the client sits idle in its transaction.
-    pool.on('acquire', (client) => {
-      const query = client.query.bind(client) as (...args: unknown[]) => Promise<unknown>;
-      (client as unknown as { query: unknown }).query = async (...args: unknown[]) => {
-        const result = await query(...args);
-        if (args[0] === 'BEGIN') await terminate(client);
-        return result;
-      };
-    });
+    loseAfterBegin(pool);
     const app = createApp({ appDb: pool, backend: backend(login), config });
     const response = await app.request('/ingest', {
       method: 'POST',
