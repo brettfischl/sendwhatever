@@ -175,7 +175,7 @@ describe('pipeline status', () => {
     expect(status).toContain('AI is generating 1 adapter');
     expect(status).toContain('Last attempt failed: gave_up ((no path) / write)');
     expect(status).toContain('1 adapter awaiting approval');
-    expect(status).toContain("2 need attention: 1 not an object or array; 1 couldn't be written to the database");
+    expect(status).toContain("2 need attention: The body isn't a JSON object or array (1); Writing to the account's store failed (1)");
     expect(status).not.toContain('Nothing is waiting');
   });
 
@@ -211,9 +211,9 @@ describe('recent events', () => {
     expect(row(html, ids.malformed)).toContain('>Needs attention<');
     expect(row(html, ids.written)).toContain('>Written<');
 
-    expect(row(html, ids.waiting)).toContain('new shape, waiting for an adapter, gave_up, awaiting approval');
-    expect(row(html, ids.malformed)).toContain('not an object or array');
-    expect(row(html, ids.writeError)).toContain('couldn&#39;t be written to the database');
+    expect(row(html, ids.waiting)).toContain('No adapter handles this shape yet, gave_up, awaiting approval');
+    expect(row(html, ids.malformed)).toContain('The body isn&#39;t a JSON object or array');
+    expect(row(html, ids.writeError)).toContain('Writing to the account&#39;s store failed');
     expect(row(html, ids.waiting)).toContain('(no path)');
     expect(row(html, ids.written)).toContain(`href="/admin/accounts/${busy.id}/events/${ids.written}"`);
   });

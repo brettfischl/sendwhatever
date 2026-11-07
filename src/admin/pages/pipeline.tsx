@@ -14,6 +14,7 @@ import {
   type EventView,
   type PipelineSummary,
 } from '../../pipeline/status.js';
+import { STATUS_LABELS, reasonPhrase } from '../../pipeline/labels.js';
 
 /** Pipeline refreshes faster than the other pages: it's where people watch events arrive. */
 export const PIPELINE_REFRESH_MS = 2500;
@@ -43,24 +44,6 @@ form.inline label { min-width: 10rem; }
 .error { color: var(--live); font-size: 0.9rem; }
 `;
 
-export const STATUS_LABELS: Record<EventStatus, string> = {
-  queued: 'Queued',
-  adapter_generating: 'AI generating',
-  waiting: 'Waiting for adapter',
-  quarantined: 'Needs attention',
-  written: 'Written',
-};
-
-/** Quarantine reasons (§10) in plain English. */
-export const REASON_LABELS: Record<string, string> = {
-  unknown_fingerprint: 'new shape, waiting for an adapter',
-  malformed: 'not an object or array',
-  adapter_error: 'the adapter failed on it',
-  schema_conflict: 'conflicts with the existing tables',
-  write_error: "couldn't be written to the database",
-};
-
-export const reasonLabel = (reason: string) => REASON_LABELS[reason] ?? reason;
 export const sourceLabel = (source: string) => (source === '' ? '(no path)' : source);
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
@@ -95,7 +78,7 @@ export function statusLines(summary: PipelineSummary): string[] {
   const attention = summary.quarantineByReason.filter(({ reason }) => reason !== 'unknown_fingerprint');
   const needing = attention.reduce((sum, { count }) => sum + count, 0);
   if (needing > 0) {
-    const reasons = attention.map(({ reason, count }) => `${count} ${reasonLabel(reason)}`).join('; ');
+    const reasons = attention.map(({ reason, count }) => `${reasonPhrase(reason)} (${count})`).join('; ');
     lines.push(`${needing} need attention: ${reasons}`);
   }
   return lines;
@@ -103,7 +86,7 @@ export function statusLines(summary: PipelineSummary): string[] {
 
 /** Codes and flags only: never a payload value (§19.3). */
 export function eventNotes(event: EventView): string[] {
-  const notes = event.quarantine.map(({ reason }) => reasonLabel(reason));
+  const notes = event.quarantine.map(({ reason }) => reasonPhrase(reason));
   if (event.adapterFailure) notes.push(event.adapterFailure);
   if (event.replayed) notes.push('replayed');
   if (event.awaitingApproval) notes.push('awaiting approval');
