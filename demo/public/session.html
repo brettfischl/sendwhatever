@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Session · Beacon Live</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <div class="site">
+        <nav class="topbar"><a href="/" class="brand"><span class="brand-dot"></span>Beacon Live</a></nav>
+        <main>
+          <section id="session-header" class="card"><p class="muted">Loading…</p></section>
+          <div class="columns">
+            <section class="card">
+              <h2>Register</h2>
+              <form id="register-form" class="form">
+                <div class="form-row">
+                  <label>First name<input name="first_name" required autocomplete="given-name" /></label>
+                  <label>Last name<input name="last_name" required autocomplete="family-name" /></label>
+                </div>
+                <label>Email<input name="email" type="email" required autocomplete="email" /></label>
+                <div class="form-row">
+                  <label>Company (optional)<input name="company" autocomplete="organization" /></label>
+                  <label>Job title (optional)<input name="job_title" autocomplete="organization-title" /></label>
+                </div>
+                <label class="check"><input name="marketing_consent" type="checkbox" /> Send me future events</label>
+                <div class="actions"><button type="submit" class="primary">Register and watch</button></div>
+              </form>
+            </section>
+            <section class="card">
+              <h2>Simulate an audience</h2>
+              <p class="muted">Registers people, has them join and comment, flags a spam comment as deleted, and has some leave and one cancel. Takes the session live if it isn't yet.</p>
+              <form id="simulate-form" class="inline-form">
+                <label>Viewers<input name="viewers" type="number" min="2" max="200" required value="20" /></label>
+                <button type="submit" class="primary">Simulate viewers</button>
+              </form>
+              <p class="muted"><span id="comment-count">0</span> comments so far.</p>
+            </section>
+          </div>
+          <section class="card">
+            <h2>Lookalike payloads</h2>
+            <p class="muted">A speaker and a sponsor are both exactly <code>{ id, name }</code>. Sent to plain <code>/ingest</code>, they share a fingerprint, so one adapter would handle both (PRD §6.1).</p>
+            <form id="lookalike-form" class="inline-form">
+              <label>Name<input name="name" required placeholder="Quillstack" /></label>
+              <button type="submit" value="speaker">Add as speaker</button>
+              <button type="submit" value="sponsor">Add as sponsor</button>
+              <label class="check"><input name="use_path" type="checkbox" /> Send to <code>/ingest/speakers</code> and <code>/ingest/sponsors</code></label>
+            </form>
+          </section>
+          <section class="card">
+            <h2>Registrants <span id="registrant-count" class="muted"></span></h2>
+            <p id="registrants-empty" class="muted">No one has registered yet.</p>
+            <div class="table-wrap">
+              <table>
+                <tbody id="registrants"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="card columns">
+            <div><h2>Speakers</h2><ul id="speakers" class="plain"></ul></div>
+            <div><h2>Sponsors</h2><ul id="sponsors" class="plain"></ul></div>
+            <div><h2>Agenda</h2><ol id="agenda" class="plain"></ol></div>
+          </section>
+        </main>
+      </div>
+    <aside class="log" aria-label="Request log">
+      <header>
+        <div class="log-heading">
+          <h2>Requests to ingest</h2>
+          <span id="log-count" class="log-count"></span>
+          <button id="log-clear" type="button" class="link">Clear</button>
+        </div>
+        <div id="log-target" class="log-target"></div>
+      </header>
+      <p id="log-empty" class="log-empty">Nothing sent yet. Each request and its response appears here.</p>
+      <div id="log-list"></div>
+    </aside>
+    <div id="toast" class="toast" role="alert" hidden></div>
+    </div>
+    <script type="module" src="/assets/session.js"></script>
+  </body>
+</html>

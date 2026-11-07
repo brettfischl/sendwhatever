@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Beacon Live</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <div class="site">
+        <nav class="topbar"><a href="/" class="brand"><span class="brand-dot"></span>Beacon Live</a></nav>
+        <main>
+          <section class="card">
+            <h1>Host a webinar</h1>
+            <p class="muted">Creating a session sends it to ingest, with its speakers, agenda, and tags nested inside.</p>
+            <form id="create-form" class="form">
+              <label>Title<input name="title" required value="Shipping Schemas Without the Meetings" /></label>
+              <label>Description<textarea name="description" rows="2">How two data teams stopped hand-writing pipelines for every new event source.</textarea></label>
+              <div class="form-row">
+                <label>Starts<input name="starts_at" type="datetime-local" required /></label>
+                <label>Time zone<input name="timezone" required /></label>
+                <label>Capacity<input name="capacity" type="number" min="1" required value="500" /></label>
+              </div>
+              <label>Tags, separated by commas<input name="tags" value="data, postgres, ingestion" /></label>
+              <label>Speakers, one per line: name | title | company
+                <textarea name="speakers" rows="2">Priya Raman | Staff Engineer | Northwind Cloud
+Tomas Ortega | VP Data | Fieldnote</textarea></label>
+              <label>Agenda, one per line: minutes | title | speaker
+                <textarea name="agenda" rows="3">10 | Welcome and why this matters | Tomas Ortega
+30 | From raw JSON to clean tables | Priya Raman
+20 | Live Q&amp;A | Tomas Ortega</textarea></label>
+              <div class="actions"><button type="submit" class="primary">Create session</button></div>
+            </form>
+          </section>
+          <section class="card">
+            <h2>Sessions</h2>
+            <p id="sessions-empty" class="muted">No sessions yet. Sessions live in memory until the server restarts.</p>
+            <ul id="sessions" class="session-list"></ul>
+          </section>
+        </main>
+      </div>
+    <aside class="log" aria-label="Request log">
+      <header>
+        <div class="log-heading">
+          <h2>Requests to ingest</h2>
+          <span id="log-count" class="log-count"></span>
+          <button id="log-clear" type="button" class="link">Clear</button>
+        </div>
+        <div id="log-target" class="log-target"></div>
+      </header>
+      <p id="log-empty" class="log-empty">Nothing sent yet. Each request and its response appears here.</p>
+      <div id="log-list"></div>
+    </aside>
+    <div id="toast" class="toast" role="alert" hidden></div>
+    </div>
+    <script type="module" src="/assets/index.js"></script>
+  </body>
+</html>
