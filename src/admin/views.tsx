@@ -61,6 +61,7 @@ export const Layout: FC<PropsWithChildren<{ title: string; user?: SessionUser; c
               {user.email}
               {user.isSuperAdmin ? ' (super admin)' : ''}
             </span>
+            {user.isSuperAdmin && <a href="/admin/manage/accounts">Manage</a>}
             <Form action="/admin/logout" csrf={csrf}>
               <button class="quiet" type="submit">
                 Sign out
