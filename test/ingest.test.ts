@@ -454,6 +454,37 @@ describe('stored request context', () => {
 });
 
 describe('idempotency', () => {
+  it('handles a burst of duplicates on a small pool without exhausting it', async () => {
+    const a = await createAccount();
+    const small = new pg.Pool({ connectionString: config.appDatabaseUrl, max: 2 });
+    const smallApp = createApp({ appDb: small, backend, config });
+    try {
+      const responses = await Promise.all(
+        Array.from({ length: 12 }, () =>
+          smallApp.request('/ingest/burst', {
+            method: 'POST',
+            headers: {
+              'x-account-slug': a.slug,
+              authorization: `Bearer ${a.api_key}`,
+              'idempotency-key': 'burst-1',
+            },
+            body: '{"n":1}',
+          }),
+        ),
+      );
+      const ids = new Set<string>();
+      for (const res of responses) {
+        expect(res.status).toBe(202);
+        ids.add(((await res.json()) as { event_id: string }).event_id);
+      }
+      expect(ids.size).toBe(1);
+      expect(await count('events', a)).toBe(1);
+      expect(await count('queue', a)).toBe(1);
+    } finally {
+      await small.end();
+    }
+  }, 15_000);
+
   it('returns the original event for a repeat and creates nothing new', async () => {
     const a = await createAccount();
     const opts = { account: a, body: '{"a":1}', headers: ['Idempotency-Key', 'abc'] };

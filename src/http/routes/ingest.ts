@@ -196,6 +196,7 @@ async function appendEvent(
   event: NewEvent,
 ): Promise<{ id: string; malformed: boolean }> {
   const client = await db.connect();
+  let broken = false;
   try {
     await client.query('BEGIN');
     const inserted = await client.query<{ id: string }>(
@@ -216,7 +217,8 @@ async function appendEvent(
     const row = inserted.rows[0];
     if (!row) {
       await client.query('COMMIT');
-      const original = await db.query<{ id: string; fingerprint: string | null }>(
+      // On this client: asking the pool for a second connection while holding this one can deadlock it.
+      const original = await client.query<{ id: string; fingerprint: string | null }>(
         `SELECT id, fingerprint FROM events
          WHERE account_id = $1 AND source = $2 AND op = $3 AND idempotency_key = $4`,
         [event.accountId, event.source, event.op, event.idempotencyKey],
@@ -240,9 +242,13 @@ async function appendEvent(
     await client.query('COMMIT');
     return { id: row.id, malformed: event.malformedDetail !== null };
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined);
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      broken = true; // Don't return a connection that may still be inside a transaction to the pool.
+    }
     throw error;
   } finally {
-    client.release();
+    client.release(broken ? true : undefined);
   }
 }
