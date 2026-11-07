@@ -181,7 +181,7 @@ const productCreatedStep: ShopifyStep<'products/create'> = {
   id: 'product-created',
   label: 'Product created',
   description:
-    'A merchant saves a new jacket as a draft, with two sizes and one photo. It has no sale price and isn't published yet, so those fields arrive as null.',
+    "A merchant saves a new jacket as a draft, with two sizes and one photo. It has no sale price and isn't published yet, so those fields arrive as null.",
   topic: 'products/create',
   method: 'POST',
   path: '/ingest/shopify',
