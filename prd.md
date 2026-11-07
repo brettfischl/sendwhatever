@@ -837,7 +837,7 @@ A configurable cap limits generations per shape, and the shape then waits for an
 - Give child rows a natural `id` where one exists, such as a SKU. Set `append: true` for lists where each event adds new items, such as messages.
 - Declare date and time fields as `timestamp`, and normalize them to ISO 8601 with a timezone.
 - Give an entity with its own identity one table, wherever it appears, keyed by the same `id`. A speaker sent directly and a speaker embedded in a session both go to `speakers`. Link many-to-many relationships through a join table, such as `session_speakers`, using array output, so one entity is never split across parent-specific child tables.
-- Choose table names from the content of the payload. Use the path and headers as hints when they are present, and don't rely on them being there.
+- Choose table names from the content of the payload. Use the path and headers as hints when they are present, and don't rely on them being there. Write each name as a fixed literal in the code, never computed from the request.
 - Use `payload.request` to tell event kinds apart. For `DELETE` requests, and events whose body or headers say a record was deleted, set `_deleted: true` on the same table and `id` the write adapter uses. Keep any fields the event includes. Look for per-item signals too, like `items: [{ "id": 1, "deleted": true }]`, and mark that child row the same way. Never treat a missing item as a delete.
 
 Prompts are guidance, so the rules that matter are also enforced in code, by the gate below and the schema layer (§9).
@@ -853,6 +853,7 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 - For `op = delete`, sets `_deleted: true` on every top-level row, with an `id`.
 - Carries every field value in the payload through to the output, allowing for casts like `5` to `"5"` and for a delete flag becoming `_deleted`, so an adapter can't pass while silently losing data.
 - If it replaces an earlier version for the same shape, still writes every column that version wrote, so a column can't quietly stop being populated.
+- Keeps its table names fixed when the request path changes, including child tables, so a table can't be named after a path segment such as the `shopify` in `/ingest/shopify`. The gate reruns it with every character after `/ingest` replaced by another of its kind, which keeps the segment count and each id's format. Literal names an adapter chooses between by path pass: they settle on the same fallback on a second altered path, where a computed name moves again. A run that fails only on an altered path also passes, since production never sends that adapter such a path. This doesn't judge a literal name, so `table: "shopify"` still passes.
 
 **Mistakes are recoverable.** A bad adapter that passes the gate writes wrong rows, not lost data. The original payloads remain in the event log, so a corrected adapter and a rebuild (§5.4) can repair the account once rebuilds exist.
 

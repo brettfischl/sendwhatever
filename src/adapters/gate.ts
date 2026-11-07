@@ -7,7 +7,7 @@ import type { AdapterRequest, AdapterResult, SchemaChange } from '../contracts/i
 import { OpaquePathError, parseOpaquePath } from '../fingerprint/index.js';
 import { planWrite, type WritePlan } from '../planner/index.js';
 import { findConflicts, findMissingChanges, type RegisteredColumns } from '../planner/registry.js';
-import { runAdapter, type SandboxFailureKind, type SandboxLimits } from '../sandbox/index.js';
+import { runAdapter, type SandboxFailureKind, type SandboxLimits, type SandboxResult } from '../sandbox/index.js';
 import { findDroppedValues, parseBodyLikeSandbox } from './carry.js';
 
 export type GateFailureCode =
@@ -28,7 +28,9 @@ export type GateFailureCode =
   | 'delete_row'
   | 'dropped_field'
   /** A column the version being replaced wrote for this sample is no longer written. */
-  | 'dropped_column';
+  | 'dropped_column'
+  /** A table name follows the request path, rather than being fixed in the code. */
+  | 'computed_table';
 
 export interface GateFailure {
   code: GateFailureCode;
@@ -95,6 +97,10 @@ const MAX_QUOTED_VALUE_LENGTH = 40;
 /** A full date-time. It needs the time part, so plain dates and ordinary text never match. */
 const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?$/;
 const RETRIED_FAILURES: ReadonlySet<SandboxFailureKind> = new Set<SandboxFailureKind>(['timeout', 'memory_limit', 'crashed']);
+const MAX_TABLES_QUOTED = 5;
+const MAX_IDENTIFIER_LENGTH = 63;
+/** Each is closed under `alternatePath`'s shift, so hex stays hex, and a number stays a number. */
+const PATH_ALPHABETS = ['0123456789', 'abcdef', 'ghijklmnopqrstuvwxyz', 'ABCDEF', 'GHIJKLMNOPQRSTUVWXYZ'];
 
 /** Rejects bad syntax and any path that would collapse the root or an array of the root (§7.1). */
 export function checkOpaquePaths(paths: readonly string[]): GateFailure[] {
@@ -139,8 +145,8 @@ async function checkSample(
   options: GateOptions,
 ): Promise<{ report: SampleReport; failures: GateFailure[] }> {
   const { adapter, earlier, registries } = input;
-  const run = (code: string) =>
-    (options.run ?? runAdapter)({ code, body: sample.body, request: sample.request }, options.limits);
+  const run = (code: string, request = sample.request) =>
+    (options.run ?? runAdapter)({ code, body: sample.body, request }, options.limits);
   const [first, second] = await Promise.all([run(adapter.code), run(adapter.code)]);
 
   const report: SampleReport = { eventId: sample.eventId };
@@ -170,6 +176,7 @@ async function checkSample(
     ...checkUndeclaredTimestamps(planned.plan, registries),
     ...(adapter.op === 'delete' ? checkDeleteRows(first.output) : []),
     ...checkCarry(sample, planned.plan, adapter.opaquePaths),
+    ...(await checkFixedTables(first.output, sample.request, (request) => run(adapter.code, request))),
   ];
 
   if (earlier) {
@@ -184,6 +191,92 @@ async function checkSample(
     }
   }
   return { report, failures };
+}
+
+/**
+ * Catches a table named after the request, such as `segs[1]` of `/ingest/shopify`. A prompt rule can't stop
+ * it, and a reused schema spreads the name to later adapters.
+ *
+ * Names that move on one altered path may still be literals the adapter chooses between, which is fine, so
+ * a second path decides: literals land on the same fallback both times, and a computed name follows the path
+ * to somewhere new. A failed run on an altered path says nothing about the names, so it isn't held against
+ * the adapter. Those paths are made up, and with the first segment picking the source, production never sends
+ * them to this adapter.
+ */
+async function checkFixedTables(
+  output: unknown,
+  request: AdapterRequest,
+  run: (request: AdapterRequest) => Promise<SandboxResult>,
+): Promise<GateFailure[]> {
+  const tablesOn = async (path: string) => {
+    const result = await run({ ...request, path });
+    return result.ok ? tableNames(result.output) : null;
+  };
+  const firstPath = alternatePath(request.path, 1);
+  // A bare `/ingest` has nothing to change while keeping its segment count.
+  if (firstPath === request.path) return [];
+
+  const original = tableNames(output);
+  const altered = await tablesOn(firstPath);
+  if (altered === null || isDeepStrictEqual(altered, original)) return [];
+  const again = await tablesOn(alternatePath(request.path, 2));
+  if (again === null || isDeepStrictEqual(again, altered)) return [];
+  return [{
+    code: 'computed_table',
+    detail:
+      `Table names follow the request path: this path writes ${quoteTables(original, altered)}, and a different ` +
+      `one writes ${quoteTables(altered, original)} instead. Write every table name, including a child's, as a fixed string literal, never ` +
+      'computed from payload.request. Name each table for the entity the event describes, from its body and ' +
+      'headers, not for the path.',
+  }];
+}
+
+/**
+ * The same path with every character after `/ingest` replaced by another of its kind. Keeping the segment
+ * count and each segment's format means an adapter that reads an id from the path still finds one. Different
+ * shifts differ at every character, so a name derived from the path can't come out the same on two of them.
+ * A percent escape is left alone, since a shifted one is usually invalid UTF-8 and would make decoding throw.
+ */
+function alternatePath(path: string, shift: number): string {
+  const prefix = /^\/ingest(?=\/|$)/.exec(path)?.[0] ?? '';
+  const altered = path.slice(prefix.length).replace(/%[0-9a-fA-F]{2}|[a-zA-Z0-9]/g, (char) => {
+    if (char.length > 1) return char;
+    const alphabet = PATH_ALPHABETS.find((letters) => letters.includes(char))!;
+    return alphabet[(alphabet.indexOf(char) + shift) % alphabet.length]!;
+  });
+  return prefix + altered;
+}
+
+/**
+ * Every table named in an output, sorted. This reads the output rather than the plan because the planner
+ * skips a table with no rows, and a sample with an empty list would hide a computed child table. An altered
+ * path's output hasn't been validated, so nothing about its structure is assumed.
+ */
+function tableNames(output: unknown): string[] {
+  const names = new Set<string>();
+  const visit = (object: unknown, defaultName?: string): void => {
+    if (!isRecord(object)) return;
+    const name = String(object.table ?? defaultName);
+    names.add(name);
+    if (!Array.isArray(object.rows)) return;
+    for (const row of object.rows) {
+      if (!isRecord(row) || !isRecord(row.children)) continue;
+      for (const [key, child] of Object.entries(row.children)) visit(child, `${name}_${key}`);
+    }
+  };
+  for (const object of Array.isArray(output) ? output : [output]) visit(object);
+  return [...names].sort();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The names in one set and not the other, since those are the ones to fix. */
+function quoteTables(names: readonly string[], other: readonly string[]): string {
+  const moved = names.filter((name) => !other.includes(name));
+  if (moved.length === 0) return 'no other table';
+  return moved.slice(0, MAX_TABLES_QUOTED).map((name) => name.slice(0, MAX_IDENTIFIER_LENGTH)).join(', ');
 }
 
 function plan(output: unknown, sample: GateSample, opaquePaths: readonly string[]) {
