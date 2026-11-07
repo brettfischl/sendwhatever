@@ -507,7 +507,8 @@ describe('matching', () => {
       await enqueueReplay(db, newId);
     };
 
-    expect((await processNextJob(context({ replayBatchSize: 1 }), { accountId }))?.job.adapterId).toBe(oldId);
+    // Both rows are on one page, and the old version still stops at the second.
+    expect((await processNextJob(context(), { accountId }))?.job.adapterId).toBe(oldId);
     expect(await row(first.rowId)).toMatchObject({ released_by_adapter_id: oldId });
     expect(await row(second.rowId)).toMatchObject({ released_at: null });
 
@@ -566,22 +567,181 @@ describe('which stores', () => {
     expect(await sweepStrandedRows(context(), { accountId })).toEqual([]);
   });
 
-  it('keeps a row open if any live store fails for good, naming that store', async () => {
-    const accountId = await newAccount();
-    await addStore(accountId);
-    const building = await addStore(accountId, 'building');
-    const adapterId = await addAdapter(accountId);
-    const { rowId } = await addQuarantined(accountId, userBody('a'));
-    await addJob(accountId, adapterId);
-    backend.beforeWrite = async (writeNumber) => {
-      if (writeNumber === 2) throw new StorageError('rejected', { retryable: false });
-    };
+  describe('when only some live stores take the write', () => {
+    const rejected = () => new StorageError('rejected', { retryable: false });
 
-    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+    async function openRows(eventId: string) {
+      const result = await db.query<{ id: string; store_id: string | null; reason: string; detail: string }>(
+        'SELECT id, store_id, reason, detail FROM quarantine WHERE event_id = $1 AND released_at IS NULL',
+        [eventId],
+      );
+      return result.rows;
+    }
 
-    const open = await row(rowId);
-    expect(open).toMatchObject({ released_at: null, reason: 'write_error' });
-    expect(open.detail).toBe(`Store ${building.id}: rejected`);
+    /** An active store that works, a building store that rejects writes, and one open row for both. */
+    async function setUp() {
+      const accountId = await newAccount();
+      const active = await addStore(accountId);
+      const building = await addStore(accountId, 'building');
+      const adapterId = await addAdapter(accountId);
+      const { rowId, eventId } = await addQuarantined(accountId, userBody('a'));
+      await addJob(accountId, adapterId);
+      backend.beforeWrite = async () => {
+        if (backend.writes.at(-1)?.namespace === building.namespace) throw rejected();
+      };
+      return { accountId, active, building, adapterId, rowId, eventId };
+    }
+
+    it('releases the row, and opens one against just the failed store', async () => {
+      const { accountId, active, building, adapterId, rowId, eventId } = await setUp();
+
+      expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+
+      expect(await row(rowId)).toMatchObject({ released_by_adapter_id: adapterId });
+      expect((await row(rowId)).released_at).not.toBeNull();
+      expect(await openRows(eventId)).toMatchObject([
+        { store_id: building.id, reason: 'write_error', detail: 'rejected' },
+      ]);
+      expect(await usersIn(active.namespace)).toHaveLength(1);
+      expect(await usersIn(building.namespace)).toEqual([]);
+    });
+
+    it('logs nothing as failed, so it cannot count against the generator cap', async () => {
+      const { accountId, adapterId, rowId, eventId } = await setUp();
+
+      await processNextJob(context(), { accountId });
+      expect(await enqueueReplay(db, adapterId)).toBe(true);
+      await processNextJob(context(), { accountId });
+
+      const [narrowed] = await openRows(eventId);
+      expect(await logFor(rowId)).toEqual([
+        { account_id: accountId, adapter_id: adapterId, status: 'released', detail: null },
+      ]);
+      expect(await logFor(narrowed!.id)).toEqual([
+        { account_id: accountId, adapter_id: adapterId, status: 'store_failed', detail: 'write_error: rejected' },
+        { account_id: accountId, adapter_id: adapterId, status: 'store_failed', detail: 'write_error: rejected' },
+      ]);
+    });
+
+    it('stays one row through repeats, writes only the failed store, and closes when it recovers', async () => {
+      const { accountId, active, building, adapterId, eventId } = await setUp();
+      await processNextJob(context(), { accountId });
+
+      backend.writes = [];
+      await enqueueReplay(db, adapterId);
+      expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+      expect(backend.writes.map(({ namespace }) => namespace)).toEqual([building.namespace]);
+      expect(await openRows(eventId)).toHaveLength(1);
+
+      backend.beforeWrite = undefined;
+      await enqueueReplay(db, adapterId);
+      expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+      expect(await openRows(eventId)).toEqual([]);
+      expect(await usersIn(building.namespace)).toHaveLength(1);
+      expect(await usersIn(active.namespace)).toHaveLength(1);
+    });
+
+    it('updates a row already open against that store, rather than adding another', async () => {
+      const { accountId, building, eventId } = await setUp();
+      const existing = await addQuarantined(accountId, null, { eventId, storeId: building.id, reason: 'schema_conflict' });
+
+      await processNextJob(context(), { accountId });
+
+      // The existing row is replayed too, and fails again on its own store.
+      expect(await openRows(eventId)).toMatchObject([
+        { id: existing.rowId, store_id: building.id, reason: 'write_error', detail: 'rejected' },
+      ]);
+    });
+
+    it('opens one row when a stalled worker finishes after another has already narrowed it', async () => {
+      const { accountId, rowId, eventId } = await setUp();
+      const jobs = await db.query<{ id: string }>('SELECT id FROM queue WHERE account_id = $1', [accountId]);
+      let resume = () => {};
+      const stalled = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      const rejectBuilding = backend.beforeWrite!;
+      backend.beforeWrite = async (writeNumber) => {
+        if (writeNumber === 2) await stalled;
+        await rejectBuilding(writeNumber);
+      };
+
+      const first = processNextJob(context(), { accountId });
+      await vi.waitFor(() => expect(backend.writes).toHaveLength(2), { timeout: 30_000 });
+      const second = new HookedBackend();
+      second.beforeWrite = async () => {
+        if (second.writes.length % 2 === 0) throw rejected();
+      };
+      await makeReady(jobs.rows[0]!.id);
+      const secondContext = { ...context(), backends: { postgres: second } };
+      expect((await processNextJob(secondContext, { accountId }))?.outcome).toBe('done');
+
+      resume();
+      expect((await first)?.outcome).toBe('lease_lost');
+
+      const open = await openRows(eventId);
+      expect(open).toHaveLength(1);
+      expect(await logFor(rowId)).toMatchObject([{ status: 'released' }]);
+      expect(await logFor(open[0]!.id)).toMatchObject([{ status: 'store_failed' }]);
+    });
+
+    it('opens a row for each store that failed, when one still took the write', async () => {
+      const accountId = await newAccount();
+      const active = await addStore(accountId);
+      const ready = await addStore(accountId, 'ready');
+      const building = await addStore(accountId, 'building');
+      const adapterId = await addAdapter(accountId);
+      const { eventId } = await addQuarantined(accountId, userBody('a'));
+      await addJob(accountId, adapterId);
+      backend.beforeWrite = async () => {
+        if (backend.writes.at(-1)?.namespace !== active.namespace) throw rejected();
+      };
+
+      await processNextJob(context(), { accountId });
+
+      const open = await openRows(eventId);
+      expect(open.map(({ store_id: storeId }) => storeId).sort()).toEqual([ready.id, building.id].sort());
+    });
+
+    it('narrows to a store still failing transiently at the maximum age', async () => {
+      const accountId = await newAccount();
+      await addStore(accountId);
+      const building = await addStore(accountId, 'building');
+      const adapterId = await addAdapter(accountId);
+      const { rowId, eventId } = await addQuarantined(accountId, userBody('a'));
+      await addJob(accountId, adapterId, 73);
+      backend.beforeWrite = async () => {
+        if (backend.writes.at(-1)?.namespace === building.namespace) {
+          throw new StorageError('down', { retryable: true });
+        }
+      };
+
+      expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+
+      expect((await row(rowId)).released_at).not.toBeNull();
+      expect(await openRows(eventId)).toMatchObject([
+        { store_id: building.id, reason: 'write_error', detail: 'Still failing at the maximum age: down' },
+      ]);
+    });
+
+    it('keeps the row, logged as failed, when no store took the write', async () => {
+      const accountId = await newAccount();
+      const active = await addStore(accountId);
+      const building = await addStore(accountId, 'building');
+      const adapterId = await addAdapter(accountId);
+      const { rowId, eventId } = await addQuarantined(accountId, userBody('a'));
+      await addJob(accountId, adapterId);
+      backend.beforeWrite = async () => {
+        throw rejected();
+      };
+
+      await processNextJob(context(), { accountId });
+
+      expect(await row(rowId)).toMatchObject({ released_at: null, reason: 'write_error' });
+      expect((await row(rowId)).detail).toBe(`Store ${active.id}: rejected; Store ${building.id}: rejected`);
+      expect(await openRows(eventId)).toHaveLength(1);
+      expect(await logFor(rowId)).toMatchObject([{ status: 'failed' }]);
+    });
   });
 });
 
@@ -725,6 +885,66 @@ describe('transient failures', () => {
     expect(failed).toMatchObject({ released_at: null, reason: 'write_error' });
     expect(failed.detail).toContain('Still failing at the maximum age: down');
     expect((await row(second.rowId)).released_at).not.toBeNull();
+  });
+
+  it('records a permanent failure at once, even while another store is still retrying', async () => {
+    const accountId = await newAccount();
+    const active = await addStore(accountId);
+    await addStore(accountId, 'building');
+    const adapterId = await addAdapter(accountId);
+    const { rowId, eventId } = await addQuarantined(accountId, userBody('a'));
+    const jobId = await addJob(accountId, adapterId);
+    backend.beforeWrite = async (writeNumber) => {
+      if (writeNumber === 1) throw new StorageError('rejected', { retryable: false });
+      throw new StorageError('down', { retryable: true });
+    };
+
+    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('retry');
+
+    const open = await row(rowId);
+    expect(open).toMatchObject({ released_at: null, reason: 'write_error' });
+    expect(open.detail).toBe(`Store ${active.id}: rejected`);
+    expect(await logFor(rowId)).toMatchObject([{ status: 'store_failed' }]);
+    expect(await jobRow(jobId)).toBeDefined();
+
+    // The other store recovers, so the row narrows to the one that failed for good.
+    backend.writes = [];
+    backend.beforeWrite = async (writeNumber) => {
+      if (writeNumber === 1) throw new StorageError('rejected', { retryable: false });
+    };
+    await makeReady(jobId);
+    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+    expect((await row(rowId)).released_at).not.toBeNull();
+    const narrowed = await db.query(
+      'SELECT store_id FROM quarantine WHERE event_id = $1 AND released_at IS NULL',
+      [eventId],
+    );
+    expect(narrowed.rows).toEqual([{ store_id: active.id }]);
+  });
+
+  it('does not blame a row when the adapter lookup fails, even past the maximum age', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    const adapterId = await addAdapter(accountId);
+    const { rowId } = await addQuarantined(accountId, userBody('a'));
+    const jobId = await addJob(accountId, adapterId, 73);
+    const failing = new Proxy(db, {
+      get(target, property) {
+        if (property !== 'query') return Reflect.get(target, property);
+        return (text: unknown, values: unknown) => {
+          if (typeof text === 'string' && text.includes('AS "opaquePaths"')) {
+            return Promise.reject(new Error('query timeout'));
+          }
+          return target.query(text as string, values as unknown[]);
+        };
+      },
+    });
+
+    expect((await processNextJob({ ...context(), db: failing }, { accountId }))?.outcome).toBe('retry');
+
+    expect(await row(rowId)).toMatchObject({ released_at: null, reason: 'unknown_fingerprint', detail: 'original detail' });
+    expect(await logFor(rowId)).toEqual([]);
+    expect(await jobRow(jobId)).toBeDefined();
   });
 
   it('retries when the application database fails partway through', async () => {
@@ -1021,7 +1241,6 @@ describe('the sweep', () => {
 
     backend.beforeWrite = undefined;
     await makeReady(job!.job.id);
-    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('rerun');
     expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
     expect(await sweepStrandedRows(context(), { accountId })).toEqual([]);
     expect(await processNextJob(context(), { accountId })).toBeNull();
@@ -1061,18 +1280,27 @@ describe('the sweep', () => {
     expect(enqueued.sort()).toEqual([exactId, opaqueId].sort());
   });
 
-  it('asks a queued replay to run again rather than adding a second job', async () => {
+  it('leaves a queued replay alone, so a long one is not repeated, and catches a missed row afterwards', async () => {
     const accountId = await newAccount();
     await addStore(accountId);
     const adapterId = await addAdapter(accountId);
-    await addQuarantined(accountId, userBody('a'));
+    const { rowId } = await addQuarantined(accountId, userBody('a'));
     const jobId = await addJob(accountId, adapterId);
 
-    await sweepStrandedRows(context(), { accountId });
+    expect(await sweepStrandedRows(context(), { accountId })).toEqual([]);
 
-    expect(await jobRow(jobId)).toMatchObject({ rerun_requested: true });
+    expect(await jobRow(jobId)).toMatchObject({ rerun_requested: false });
     const jobs = await db.query('SELECT 1 FROM queue WHERE account_id = $1', [accountId]);
     expect(jobs.rowCount).toBe(1);
+
+    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+    expect((await row(rowId)).released_at).not.toBeNull();
+
+    // A row that landed behind that replay is picked up now that the job has gone.
+    const missed = await addQuarantined(accountId, userBody('b'));
+    expect(await sweepStrandedRows(context(), { accountId })).toEqual([adapterId]);
+    expect((await processNextJob(context(), { accountId }))?.outcome).toBe('done');
+    expect((await row(missed.rowId)).released_at).not.toBeNull();
   });
 
   it('only sweeps the requested account', async () => {
