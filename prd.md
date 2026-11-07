@@ -1042,6 +1042,7 @@ This is a one-day hackathon build at low volume: it needs to work end to end. Wo
 **2. If time allows.**
 - Per-column ordering with `_column_seq` (§11.2).
 - The remaining webhook features: handshakes, signatures, batches, and form bodies (§6.2).
+- Rebuilds (§5.4), to repair bad adapters and reshape existing data. Until they exist, rows written by a bad adapter that passed validation stay in place, though the original events remain in the log.
 - A basic conformance suite (§11.5).
 
 **3. Stretch goals.**
@@ -1051,7 +1052,6 @@ This is a one-day hackathon build at low volume: it needs to work end to end. Wo
 - **Recurring LLM jobs:** scheduled jobs that reap old quarantined records and audit an account's tables for quality improvements. Improvements apply through new adapters and a rebuild.
 
 **4. After the hackathon.**
-- **Rebuilds (§5.4):** most useful once there's a second store to move to. Until then, rows written by a bad adapter that passed validation stay in place, though the original events remain in the log.
 - **sqld backend:** the first test of the interface against a second store, and of a rebuild across backends. Treat the interface as unstable until this ships.
 - **ClickHouse backend:** the first backend with `atomicWrites: false` and eventual idempotency. Further backends follow the same path.
 
