@@ -3,6 +3,7 @@ import pg from 'pg';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { jsx } from 'hono/jsx';
 import { createUser } from '../src/admin/users.js';
+import { ErrorPage } from '../src/admin/views.js';
 import {
   activeNav,
   DataTable,
@@ -80,16 +81,29 @@ describe('stylesheet', () => {
     expect(res.headers.get('content-type')).toContain('text/css');
     expect(res.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
     expect(res.headers.get('cache-control')).not.toContain('no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(await res.text()).toContain('--accent');
   });
 
-  it('is linked with a version query string, and the login page has no sidebar', async () => {
+  it('is linked with a version query string', async () => {
     const html = await page('/admin/login', {});
     expect(STYLESHEET_HREF).toMatch(/^\/admin\/assets\/app\.css\?v=[0-9a-f]{10}$/);
     expect(html).toContain(`href="${STYLESHEET_HREF}"`);
-    expect(html).not.toContain('class="sidebar"');
     expect(html).not.toContain('<style');
+  });
+
+  it('serves the exact versioned URL the pages link to', async () => {
+    const res = await app.request(STYLESHEET_HREF);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(await (await app.request('/admin/assets/app.css')).text());
+  });
+
+  it('leaves the sidebar off logged-out pages', async () => {
+    expect(await page('/admin/login', {})).not.toContain('class="sidebar"');
+    const html = await render(jsx(ErrorPage, { status: 404, message: 'Page not found' }));
+    expect(html).toContain('Page not found');
+    expect(html).not.toContain('class="sidebar"');
   });
 });
 
@@ -129,6 +143,15 @@ describe('sidebar', () => {
     expect(current(html)).toBe('manage-users');
     expect(current(await page('/admin/manage/accounts', s))).toBe('manage-accounts');
   });
+
+  it('shows a super admin both the account nav and Manage on an account page', async () => {
+    const admin = await newUser('super-acct', true);
+    const account = await newAccount('super-acct');
+    const html = await page(`/admin/accounts/${account.id}/schema`, await session(admin.email));
+    expect(html).toContain('data-nav="account"');
+    expect(html).toContain('data-nav="manage"');
+    expect(current(html)).toBe('schema');
+  });
 });
 
 describe('activeNav', () => {
@@ -152,8 +175,8 @@ describe('components', () => {
       expect(html).toContain('Label');
     }
     const css = await (await app.request('/admin/assets/app.css')).text();
-    expect(css).toMatch(/\.pill-progress \.pill-dot \{ animation/);
-    expect(css).toMatch(/prefers-reduced-motion: reduce[\s\S]*\.pill-progress \.pill-dot \{ animation: none/);
+    expect(css).toMatch(/\.pill-progress \.pill-dot \{ animation: sw-pulse/);
+    expect(css).toMatch(/prefers-reduced-motion: reduce\) \{[^@]*\.pill-progress \.pill-dot \{ animation: none/);
   });
 
   it('maps pipeline statuses to variants and labels', () => {

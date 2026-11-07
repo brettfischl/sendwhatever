@@ -78,8 +78,10 @@ adminRoutes.use('*', csrf());
 
 // The stylesheet. Registered before the no-store and session middleware, so it's public and cached;
 // Layout links it with a content-hash query string, so a changed stylesheet gets a new URL.
+// Public and cached for a year: only ever serve static content here.
 adminRoutes.get('/assets/app.css', (c) => {
   c.header('content-type', 'text/css; charset=utf-8');
+  c.header('x-content-type-options', 'nosniff');
   c.header('cache-control', 'public, max-age=31536000, immutable');
   return c.body(CSS);
 });
