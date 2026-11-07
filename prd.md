@@ -766,7 +766,7 @@ Security note: Adapter code is written by an LLM from client-supplied payloads a
 
 ### 12.1 Adapter Generator
 
-A continuously running process that turns quarantined shapes into active adapters. It calls its LLM through Fireworks.
+A continuously running process that turns quarantined shapes into active adapters. It calls its LLM through Fireworks, using `accounts/fireworks/models/deepseek-v4p1-flash` by default, set by the `FIREWORKS_MODEL` config value. This is a reasoning model, and reasoning counts against `max_tokens`, so requests need a generous limit. An empty reply with `finish_reason: length` means the limit was too low.
 
 1. It polls for `(account_id, source, op, fingerprint)` shapes with open quarantine rows, no generation in progress, and no validated adapter awaiting an operator, and records a `running` row in `adapter_attempts`. An attempt left `running` past a timeout is treated as failed.
 2. It first tries to avoid an LLM call:
@@ -966,7 +966,6 @@ curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
 
 ## 16. Open Questions
 
-- Which Fireworks model does the generator use?
 - Providers don't guarantee delivery order, and `_event_seq` is arrival order, so a late `customer.updated` can overwrite a newer one. Should adapters be able to supply a source version (e.g., Stripe `created`, Shopify `updated_at`) that takes precedence?
 
 Released quarantine rows, `replay_log` entries, and retired stores are kept indefinitely for now.
