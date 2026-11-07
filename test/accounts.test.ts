@@ -100,8 +100,26 @@ describe('POST /accounts', () => {
   });
 
   it('rejects malformed postgres storage', async () => {
-    const res = await post(app, { slug: newSlug(), storage: { backend: 'postgres' } });
-    expect(res.status).toBe(400);
+    const connection = { host: 'localhost', port: 5432, database: 'sw_data' };
+    const credentials = { user: 'u', password: 'p' };
+    const cases: Record<string, unknown> = {
+      'only a backend': { backend: 'postgres' },
+      null: null,
+      'a string': 'postgres',
+      'an array': [],
+      'no backend': { connection, credentials },
+      'string port': { backend: 'postgres', connection: { ...connection, port: '5432' }, credentials },
+      'no host': { backend: 'postgres', connection: { port: 5432, database: 'd' }, credentials },
+      'no database': { backend: 'postgres', connection: { host: 'h', port: 5432 }, credentials },
+      'numeric password': { backend: 'postgres', connection, credentials: { user: 'u', password: 1 } },
+      'no user': { backend: 'postgres', connection, credentials: { password: 'p' } },
+      'no credentials': { backend: 'postgres', connection },
+    };
+    for (const [name, storage] of Object.entries(cases)) {
+      const res = await post(app, { slug: newSlug(), storage });
+      expect(res.status, name).toBe(400);
+      expect(await res.json(), name).toEqual({ error: expect.any(String) });
+    }
   });
 
   it('creates an account with a key and working read-only credentials', async () => {
@@ -126,7 +144,38 @@ describe('POST /accounts', () => {
     await customer.connect();
     try {
       expect((await customer.query('SELECT 1 AS one')).rows).toEqual([{ one: 1 }]);
-      await expect(customer.query('CREATE TABLE nope (id int)')).rejects.toThrow();
+      await expect(customer.query('CREATE TABLE nope (id int)')).rejects.toMatchObject({
+        code: expect.stringMatching(/^(42501|25006)$/),
+      });
+
+      // A table created after provisioning must be readable (default privileges) but not writable.
+      const owner = new pg.Client({
+        host: database.host,
+        port: database.port,
+        user: 'sw_data',
+        password: config.dataDbPassword,
+        database: database.database,
+      });
+      await owner.connect();
+      try {
+        await owner.query('CREATE TABLE readable (id int, note text)');
+        await owner.query(`INSERT INTO readable VALUES (1, 'hello')`);
+      } finally {
+        await owner.end();
+      }
+      expect((await customer.query('SELECT id, note FROM readable')).rows).toEqual([
+        { id: 1, note: 'hello' },
+      ]);
+      for (const statement of [
+        `INSERT INTO readable VALUES (2, 'x')`,
+        `UPDATE readable SET note = 'x'`,
+        'DELETE FROM readable',
+        'DROP TABLE readable',
+      ]) {
+        await expect(customer.query(statement), statement).rejects.toMatchObject({
+          code: expect.stringMatching(/^(42501|25006)$/),
+        });
+      }
     } finally {
       await customer.end();
     }
