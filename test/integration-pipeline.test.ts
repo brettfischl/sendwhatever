@@ -21,7 +21,8 @@ import { DEFAULT_SETTINGS, processNextJob, startWorker, type WorkerContext } fro
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
 
-const config = loadConfig();
+const TOKEN = 'pipeline-test-token';
+const config = { ...loadConfig(), internalApiToken: TOKEN };
 const db = new pg.Pool({ connectionString: config.appDatabaseUrl, max: 12 });
 const backend = new PostgresBackend({ idleTimeoutMs: 50 });
 const app = createApp({ appDb: db, backend, config });
@@ -51,7 +52,7 @@ async function newAccount(): Promise<Account> {
   const slug = `pipeline-${randomBytes(5).toString('hex')}`;
   const response = await app.request('/accounts', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ slug }),
   });
   expect(response.status).toBe(201);
