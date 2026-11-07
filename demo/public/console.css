@@ -159,6 +159,48 @@ body.console {
 .console .send-anyway { flex: none; color: var(--live); border-color: var(--live); }
 .console .send-anyway:hover { color: #fff; background: var(--live); }
 
+/* Guided flows */
+.flows { display: flex; flex-direction: column; gap: 0.5rem; height: 100%; }
+.flows > * { flex-shrink: 0; }
+.flow-loading { padding: 1rem; color: var(--muted); }
+.flow-picker { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.console .flow-picker button { flex: 1; font-size: 1rem; white-space: nowrap; }
+.console .flow-picker button[aria-pressed='true'] { color: #fff; background: var(--log-bg); border-color: var(--log-bg); opacity: 1; }
+.flow-mode { margin: 0; padding: 0.4rem 0.65rem; font-size: 0.86rem; border-radius: 6px; }
+.flow-mode-stub { color: #4b3a10; background: #fff3cf; border: 1px solid #e6c766; }
+.flow-mode-real { color: #143d25; background: #e3f5e9; border: 1px solid #a7dcb9; }
+.flow-description { margin: 0; color: var(--muted); font-size: 0.92rem; }
+.flow-controls { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.flow-status { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.7rem; min-height: 2.1rem; padding: 0.3rem 0.65rem; font-weight: 600; background: #e7ebf0; border-radius: 6px; }
+.flow-status-fail { color: #fff; background: var(--live); }
+.flow-status code { font-size: 1em; }
+.flow-pause-track { flex: 1; min-width: 5rem; height: 0.5rem; overflow: hidden; background: #fff; border-radius: 99px; }
+.flow-pause-bar { display: block; height: 100%; background: var(--accent); transform-origin: left; animation: flow-pause linear forwards; }
+@keyframes flow-pause { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@media (prefers-reduced-motion: reduce) { .flow-pause-track { display: none; } }
+.console .flow-steps { flex: 1 1 0; min-height: 8rem; display: flex; flex-direction: column; gap: 0.4rem; margin: 0; padding: 2px; list-style: none; overflow-y: auto; }
+.flow-step { flex: none; padding: 0.45rem 0.65rem; background: var(--card); border: 1px solid var(--line); border-left: 0.3rem solid var(--line); border-radius: 6px; }
+.flow-step p { margin: 0.2rem 0 0; }
+.flow-step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.5rem; }
+.flow-step-number { display: grid; place-items: center; width: 1.45rem; height: 1.45rem; flex: none; font-size: 0.85rem; font-weight: 700; color: #fff; background: var(--muted); border-radius: 50%; }
+.flow-pill { margin-left: auto; padding: 0.02rem 0.5rem; font-size: 0.8rem; font-weight: 700; border-radius: 5px; color: var(--muted); background: #e7ebf0; }
+.flow-step-text { font-size: 0.92rem; }
+.flow-step-note { color: var(--muted); font-size: 0.84rem; }
+.flow-result { font-size: 0.86rem; font-weight: 600; overflow-wrap: anywhere; }
+.flow-result code { font-weight: 400; }
+.flow-result-ok { color: var(--ok); }
+.flow-result-fail { color: var(--live); }
+.flow-step-later { color: var(--muted); }
+/* Room goes to the step being talked about: a delivered one shrinks to its result. */
+.flow-step-delivered .flow-step-text, .flow-step-delivered .flow-step-note, .flow-step-later .flow-step-note { display: none; }
+@media (max-height: 800px) { .flow-description, .flow-step-later .flow-step-text { display: none; } }
+.flow-step-next, .flow-step-sending { border-color: var(--accent); border-left-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.flow-step-next .flow-step-number, .flow-step-sending .flow-step-number, .flow-pill-next, .flow-pill-sending { color: #fff; background: var(--accent); }
+.flow-step-delivered { border-left-color: var(--ok); }
+.flow-step-delivered .flow-step-number, .flow-pill-delivered { color: #fff; background: var(--ok); }
+.flow-step-failed { border-color: var(--live); border-left-color: var(--live); box-shadow: 0 0 0 1px var(--live); }
+.flow-step-failed .flow-step-number, .flow-pill-failed { color: #fff; background: var(--live); }
+
 /* Request and response */
 .exchange { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; min-height: 0; }
 .exchange-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
@@ -195,4 +237,5 @@ pre .exchange-note { margin: 0; font-size: inherit; }
   .exchange { grid-template-columns: minmax(0, 1fr); }
   .exchange-body { max-height: 60vh; min-height: 8rem; }
   .console-slot { height: auto; min-height: 12rem; }
+  .console .flow-steps { flex: none; overflow: visible; }
 }
