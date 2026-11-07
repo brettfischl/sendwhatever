@@ -2,3 +2,12 @@
 # Dolt database files (added by bd init)
 .dolt/
 *.db
+.env
+node_modules/
+dist/
+coverage/
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

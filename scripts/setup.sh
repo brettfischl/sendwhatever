@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Takes a fresh checkout to Postgres running, migrations applied, and tests passing.
+# Safe to re-run. It only adds missing variables to .env and never changes or prints values.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+umask 077
+touch .env
+chmod 600 .env
+if [ -n "$(tail -c1 .env)" ]; then echo >> .env; fi
+
+ensure_var() {
+  grep -q "^$1=" .env || printf '%s=%s\n' "$1" "$2" >> .env
+}
+random_password() {
+  node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
+}
+random_key() {
+  node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+}
+
+ensure_var POSTGRES_PORT 5433
+ensure_var POSTGRES_SUPERUSER_PASSWORD "$(random_password)"
+ensure_var SW_APP_DB_PASSWORD "$(random_password)"
+ensure_var SW_DATA_DB_PASSWORD "$(random_password)"
+ensure_var SW_ENCRYPTION_KEY "$(random_key)"
+ensure_var FIREWORKS_API_KEY ""
+
+npm ci
+docker compose up -d --wait
+# The init scripts only run on a new volume, so an existing one needs this too.
+docker compose exec -T postgres psql -U postgres -q -v ON_ERROR_STOP=1 -c 'ALTER ROLE sw_data CREATEDB'
+npm run migrate
+npm test
