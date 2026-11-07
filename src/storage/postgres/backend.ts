@@ -100,15 +100,16 @@ export class PostgresBackend implements StorageBackend {
         await client.query(`ALTER ROLE ${role} SET default_transaction_read_only = on`);
         await client.query(`GRANT CONNECT ON DATABASE ${database} TO ${role}`);
         await client.query('COMMIT');
-      });
 
-      await this.transaction(store, async (client) => {
-        await client.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
-        await client.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${role}`);
-        // Table-level SELECT also covers columns added later.
-        await client.query(
-          `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ${role}`,
-        );
+        // Still under the lock, or overlapping GRANTs fail with `tuple concurrently updated`.
+        await this.transaction(store, async (storeClient) => {
+          await storeClient.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
+          await storeClient.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${role}`);
+          // Table-level SELECT also covers columns added later.
+          await storeClient.query(
+            `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO ${role}`,
+          );
+        });
       });
     } catch (error) {
       throw toStorageError('provision', error, { ddl: true });
@@ -223,7 +224,8 @@ export class PostgresBackend implements StorageBackend {
 
   /**
    * Runs on its own connection to `connection.database`, which customer logins can't reach, so they
-   * can't take this lock. Ending the connection releases the lock and rolls back anything unfinished.
+   * can't take this lock. It's held until `run` finishes. Ending the connection releases the lock and
+   * rolls back anything unfinished.
    */
   private async createDatabaseAndLogin(
     store: StoreConfig,
