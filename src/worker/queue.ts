@@ -97,25 +97,31 @@ export async function deleteJob(db: pg.Pool, job: Job): Promise<boolean> {
 }
 
 /**
- * Records an ingest job's failures and deletes it, in one transaction. Rows use the job's account, and
- * the job's account matches its event's through the foreign key. False means another worker now holds
- * the job, and nothing changed.
+ * Records an ingest job's failures and, in one transaction, deletes the job, or reschedules it if
+ * `retryInMs` is set because another store is still retrying. Rows use the job's account, and the job's
+ * account matches its event's through the foreign key. False means another worker now holds the job,
+ * and nothing changed.
  */
 export async function quarantineJob(
   db: pg.Pool,
   job: Job,
   eventId: string,
   entries: readonly QuarantineEntry[],
+  { retryInMs }: { retryInMs?: number } = {},
 ): Promise<boolean> {
   const client = await db.connect();
   let broken: Error | undefined;
   try {
     await client.query('BEGIN');
-    const deleted = await client.query('DELETE FROM queue WHERE id = $1 AND attempts = $2', [
-      job.id,
-      job.attempts,
-    ]);
-    if (deleted.rowCount !== 1) {
+    const held =
+      retryInMs === undefined
+        ? await client.query('DELETE FROM queue WHERE id = $1 AND attempts = $2', [job.id, job.attempts])
+        : await client.query(
+            `UPDATE queue SET run_at = now() + $3::double precision * interval '1 millisecond'
+             WHERE id = $1 AND attempts = $2`,
+            [job.id, job.attempts, retryInMs],
+          );
+    if (held.rowCount !== 1) {
       await client.query('ROLLBACK');
       return false;
     }
@@ -155,14 +161,15 @@ export function backoffMs(attempts: number, baseMs: number, maxMs: number): numb
 export function startHeartbeat(
   db: pg.Pool,
   job: Job,
-  { leaseMs, intervalMs, log }: { leaseMs: number; intervalMs: number; log: (message: string) => void },
+  { leaseMs, log }: { leaseMs: number; log: (message: string) => void },
 ): () => Promise<void> {
   let renewal: Promise<unknown> = Promise.resolve();
   const timer = setInterval(() => {
     renewal = renewal
       .then(() => pushRunAt(db, job, leaseMs))
       .catch((error: Error) => log(`Job ${job.id}: could not renew its lease: ${error.message}`));
-  }, intervalMs);
+    // Often enough that one slow or failed renewal doesn't lose the lease.
+  }, leaseMs / 3);
   return async () => {
     clearInterval(timer);
     await renewal;

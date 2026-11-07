@@ -690,7 +690,8 @@ describe('transient failures', () => {
     fake.failWrite = () => new StorageError('down', { retryable: true });
     expect((await processNextJob(context(), { accountId }))?.outcome).toBe('retry');
 
-    await db.query(`UPDATE queue SET created_at = now() - interval '72 hours 1 minute' WHERE id = $1`, [jobId]);
+    // Late enough that workers were stopped for a while, such as a 30-minute deploy.
+    await db.query(`UPDATE queue SET created_at = now() - interval '72 hours 30 minutes' WHERE id = $1`, [jobId]);
     await makeReady(jobId);
     fake.calls = [];
     expect((await processNextJob(context(), { accountId }))?.outcome).toBe('quarantined');
@@ -727,9 +728,9 @@ describe('transient failures', () => {
     expect(await quarantineRows(eventId)).toEqual([]);
   });
 
-  it('gives up on an old job whose last attempt never finished, in case the event kills workers', async () => {
+  it('gives up well past the maximum age on a job with earlier attempts, in case the event kills workers', async () => {
     const { accountId, body } = await setUp();
-    const { eventId, jobId } = await addEvent(accountId, body, { jobAgeHours: 73 });
+    const { eventId, jobId } = await addEvent(accountId, body, { jobAgeHours: 74 });
     await claimJob(db, { kinds: ['ingest'], leaseMs: 60_000, accountId });
     await makeReady(jobId);
 
@@ -737,7 +738,7 @@ describe('transient failures', () => {
 
     expect(fake.calls).toEqual([]);
     expect(await quarantineRows(eventId)).toMatchObject([
-      { store_id: null, reason: 'write_error', detail: expect.stringContaining('never finished') },
+      { store_id: null, reason: 'write_error', detail: expect.stringContaining('Given up') },
     ]);
   });
 });
@@ -799,7 +800,7 @@ describe('live stores', () => {
     expect(await quarantineRows(eventId)).toMatchObject([{ store_id: active.id, reason: 'write_error' }]);
   });
 
-  it('holds a permanent failure until the other store stops retrying, so the job finishes as one', async () => {
+  it('quarantines a permanent failure at once, even while another store is still retrying', async () => {
     const accountId = await newAccount();
     const active = await addStore(accountId, { status: 'active', namespace: 'active' });
     await addStore(accountId, { status: 'building', namespace: 'building' });
@@ -812,13 +813,20 @@ describe('live stores', () => {
         : new StorageError('down', { retryable: true });
 
     expect((await processNextJob(context(), { accountId }))?.outcome).toBe('retry');
-    expect(await quarantineRows(eventId)).toEqual([]);
+    expect(await quarantineRows(eventId)).toMatchObject([{ store_id: active.id, reason: 'write_error' }]);
+    const row = await jobRow(jobId);
+    expect(row?.attempts).toBe(1);
+    expect(row?.delay_ms).toBeLessThanOrEqual(DEFAULT_SETTINGS.backoffBaseMs);
 
+    // The repeat reuses the open row, and the job finishes once the other store recovers.
     await makeReady(jobId);
     fake.failWrite = ({ namespace }) =>
-      namespace === 'active' ? new StorageError('rejected', { retryable: false }) : undefined;
+      namespace === 'active' ? new StorageError('rejected again', { retryable: false }) : undefined;
     expect((await processNextJob(context(), { accountId }))?.outcome).toBe('quarantined');
-    expect(await quarantineRows(eventId)).toMatchObject([{ store_id: active.id, reason: 'write_error' }]);
+    expect(await jobRow(jobId)).toBeUndefined();
+    expect(await quarantineRows(eventId)).toMatchObject([
+      { store_id: active.id, reason: 'write_error', detail: expect.stringContaining('rejected again') },
+    ]);
   });
 
   it('passes decrypted credentials to the backend', async () => {
@@ -924,7 +932,7 @@ describe('leases', () => {
       sawClaim = await claimJob(db, { kinds: ['ingest'], leaseMs: 60_000, accountId });
     };
 
-    const result = await processNextJob(context({ leaseMs, heartbeatMs: 100 }), { accountId });
+    const result = await processNextJob(context({ leaseMs }), { accountId });
 
     expect(sawClaim).toBeNull();
     expect(result?.outcome).toBe('done');
@@ -1086,6 +1094,13 @@ describe('matching adapters', () => {
     const good = await addAdapter(accountId, { shape: body, opaquePaths: ['metadata'], code });
 
     expect((await match(accountId))?.id).toBe(good);
+  });
+
+  it('matches nothing through opaque paths when the body cannot be parsed', async () => {
+    const accountId = await newAccount();
+    await addAdapter(accountId, { shape: body, opaquePaths: ['metadata'], code });
+    const result = await findAdapter(db, { accountId, source: '', op: 'write', fingerprint: 'x', body: '{nope' });
+    expect(result).toBeNull();
   });
 
   it('treats an empty body as the null shape', async () => {

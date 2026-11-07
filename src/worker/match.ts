@@ -47,7 +47,13 @@ export async function findAdapter(db: pg.Pool, event: EventShape): Promise<Match
   );
   if (opaque.rows.length === 0) return null;
 
-  const collapse = collapser(event.body);
+  let body: unknown;
+  try {
+    body = event.body === '' ? undefined : JSON.parse(event.body);
+  } catch {
+    return null;
+  }
+  const collapse = collapser(body);
   return opaque.rows.find((adapter) => collapse(adapter.opaquePaths) === adapter.fingerprint) ?? null;
 }
 
@@ -58,19 +64,13 @@ export async function findAdapter(db: pg.Pool, event: EventShape): Promise<Match
  * functions, so a retry would fail the same way, and one adapter's bad path mustn't hold up the events
  * that other adapters can handle.
  */
-function collapser(rawBody: string): (paths: readonly string[]) => string | undefined {
+function collapser(body: unknown): (paths: readonly string[]) => string | undefined {
   const known = new Map<string, string | undefined>();
-  let body: unknown;
-  let parsed = false;
   return (paths) => {
     const key = JSON.stringify([...paths].sort());
     if (known.has(key)) return known.get(key);
     let result: string | undefined;
     try {
-      if (!parsed) {
-        body = rawBody === '' ? undefined : JSON.parse(rawBody);
-        parsed = true;
-      }
       result = fingerprint(body, { opaquePaths: paths });
     } catch {
       result = undefined;

@@ -61,7 +61,6 @@ export async function processNextJob(
 
   const stopHeartbeat = startHeartbeat(db, job, {
     leaseMs: settings.leaseMs,
-    intervalMs: settings.heartbeatMs,
     log: settings.log,
   });
   let decision;
@@ -85,7 +84,10 @@ export async function processNextJob(
     case 'retry': {
       const delay = backoffMs(job.attempts, settings.backoffBaseMs, settings.backoffMaxMs);
       settings.log(`Job ${job.id}: attempt ${job.attempts} failed, retrying in ${delay} ms: ${decision.detail}`);
-      held = await pushRunAt(db, job, delay);
+      held =
+        decision.entries.length > 0
+          ? await quarantineJob(db, job, decision.eventId, decision.entries, { retryInMs: delay })
+          : await pushRunAt(db, job, delay);
       outcome = 'retry';
       break;
     }
@@ -117,7 +119,16 @@ export function startWorker(options: WorkerOptions): Worker {
   const settings: WorkerSettings = { ...DEFAULT_SETTINGS, ...overrides };
 
   // A job can use two connections at once, one held for a schema lock and one for its heartbeat.
-  const db = new pg.Pool({ connectionString: databaseUrl, max: concurrency * 2 + 2 });
+  const db = new pg.Pool({
+    connectionString: databaseUrl,
+    max: concurrency * 2 + 2,
+    keepAlive: true,
+    connectionTimeoutMillis: 10_000,
+    // Longer than the registry's 30-second wait for a schema lock. The client's limit catches a dead
+    // network, where the server's own timeout can't reach us.
+    statement_timeout: 45_000,
+    query_timeout: 50_000,
+  });
   // pg emits 'error' on a lost connection, and with no listener that crashes the process. The pool only
   // listens to idle connections, so one that's checked out needs its own. Its running query rejects with
   // the same failure, so that's where it's handled.

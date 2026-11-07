@@ -10,8 +10,6 @@ import type { QuarantineEntry } from './queue.js';
 export interface WorkerSettings {
   /** How long a claim holds a job before another worker may take it. */
   leaseMs: number;
-  /** How often a running job renews its lease. */
-  heartbeatMs: number;
   /** The wait after a first transient failure, which then doubles. */
   backoffBaseMs: number;
   backoffMaxMs: number;
@@ -23,7 +21,6 @@ export interface WorkerSettings {
 
 export const DEFAULT_SETTINGS: WorkerSettings = {
   leaseMs: 60_000,
-  heartbeatMs: 20_000,
   backoffBaseMs: 5_000,
   backoffMaxMs: 300_000,
   maxAgeMs: 72 * 60 * 60 * 1000,
