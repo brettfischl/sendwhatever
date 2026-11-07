@@ -40,7 +40,7 @@ body.console {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.8rem;
   padding: 0.8rem;
 }
@@ -179,7 +179,7 @@ body.console {
 .flow-pause-bar { display: block; height: 100%; background: var(--accent); transform-origin: left; animation: flow-pause linear forwards; }
 @keyframes flow-pause { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 @media (prefers-reduced-motion: reduce) { .flow-pause-track { display: none; } }
-.console .flow-steps { flex: 1 1 0; min-height: 8rem; display: flex; flex-direction: column; gap: 0.4rem; margin: 0; padding: 2px; list-style: none; overflow-y: auto; }
+.console .flow-steps { flex: 1 1 0; min-height: 6rem; display: flex; flex-direction: column; gap: 0.4rem; margin: 0; padding: 2px; list-style: none; overflow-y: auto; }
 .flow-step { flex: none; padding: 0.45rem 0.65rem; background: var(--card); border: 1px solid var(--line); border-left: 0.3rem solid var(--line); border-radius: 6px; }
 .flow-step p { margin: 0.2rem 0 0; }
 .flow-step-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.5rem; }
