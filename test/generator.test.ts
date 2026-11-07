@@ -111,7 +111,7 @@ async function inStore<T extends pg.QueryResultRow>(namespace: string, sql: stri
 async function addQuarantined(
   accountId: string,
   body: unknown,
-  options: { source?: string; op?: string; reason?: string; storeId?: string | null; malformed?: boolean; detail?: string } = {},
+  options: { source?: string; op?: string; reason?: string; storeId?: string | null; malformed?: boolean; detail?: string; path?: string } = {},
 ): Promise<{ rowId: string; eventId: string }> {
   const event = await db.query<{ id: string }>(
     `INSERT INTO events (account_id, body, source, op, fingerprint, request)
@@ -122,7 +122,7 @@ async function addQuarantined(
       options.source ?? '',
       options.op ?? 'write',
       options.malformed ? null : fingerprint(body),
-      request,
+      { ...request, path: options.path ?? request.path },
     ],
   );
   const row = await db.query<{ id: string }>(
@@ -320,6 +320,29 @@ describe('generating an adapter', () => {
     expect(retry.content.match(/<\/data>/g)).toHaveLength(1);
     expect(llm.calls[1]!.at(-2)).toEqual({ role: 'assistant', content: dropsEmailAdapter });
     expect((await attempts(accountId))[0]).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('sends a table named after the path back to the LLM, and stores only the corrected adapter', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await addQuarantined(accountId, { id: 7, name: 'Ada', email: 'ada@example.com' }, { source: 'shopify', path: '/ingest/shopify' });
+    const computed = `function adapt(payload) {
+      var segs = payload.request.path.split("/").filter(function (s) { return s.length > 0; });
+      var table = segs.length > 1 ? segs[1] : "users";
+      var d = payload.data;
+      return { table: table, rows: [{ id: String(d.id), name: d.name, email: d.email }] };
+    }`;
+    const llm = script(computed, userAdapter);
+
+    await pollOnce(generatorContext(accountId, llm));
+
+    expect(llm.calls).toHaveLength(2);
+    const retry = llm.calls[1]!.at(-1)!.content;
+    expect(retry).toContain('computed_table');
+    expect(retry).toContain('this path writes shopify');
+    expect((await attempts(accountId))[0]).toMatchObject({ status: 'succeeded' });
+    const stored = await db.query<{ code: string }>('SELECT code FROM adapters WHERE account_id = $1', [accountId]);
+    expect(stored.rows.map(({ code }) => code)).toEqual([userAdapter]);
   });
 
   it('gives up after its tries, records only codes, and backs off before trying again', async () => {

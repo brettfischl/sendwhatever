@@ -212,7 +212,8 @@ async function report(accountId: string, namespace: string): Promise<void> {
 }
 
 const slug = `live-${randomBytes(4).toString('hex')}`;
-const created = await app.request('/accounts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ slug }) });
+const created = await app.request('/accounts', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.internalApiToken}` }, body: JSON.stringify({ slug }) });
+if (!created.ok) throw new Error(`Could not create an account (${created.status}). Is INTERNAL_API_TOKEN set in .env?`);
 const account = (await created.json()) as { account_id: string; slug: string; api_key: string };
 const stores = await appDb.query<{ namespace: string }>('SELECT namespace FROM account_stores WHERE account_id = $1', [account.account_id]);
 

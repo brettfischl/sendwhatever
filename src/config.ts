@@ -24,6 +24,16 @@ export interface Config {
   fireworksModel: string;
   /** Reasoning counts against max_tokens, and off is faster and cheaper with no visible loss (§12.1). */
   fireworksReasoningEffort: string;
+  /**
+   * The origin customers reach this server at, such as https://app.example.com, with no trailing slash
+   * (§21.3). Shown on admin pages, and the only Origin the admin's CSRF check accepts. Undefined means
+   * local mode: pages show localhost, and the check compares with the request URL.
+   */
+  publicBaseUrl: string | undefined;
+  /** The Postgres host shown to customers. Undefined means localhost. Set, it adds `?sslmode=require`. */
+  publicDbHost: string | undefined;
+  /** The Postgres port shown to customers. Undefined means POSTGRES_PORT. */
+  publicDbPort: number | undefined;
 }
 
 const DEFAULT_FIREWORKS_MODEL = 'accounts/fireworks/models/deepseek-v4p1-flash';
@@ -59,7 +69,52 @@ export function loadConfig(): Config {
     fireworksApiKey: process.env.FIREWORKS_API_KEY || undefined,
     fireworksModel: process.env.FIREWORKS_MODEL || DEFAULT_FIREWORKS_MODEL,
     fireworksReasoningEffort: process.env.FIREWORKS_REASONING_EFFORT || DEFAULT_FIREWORKS_REASONING_EFFORT,
+    publicBaseUrl: parsePublicBaseUrl(process.env.PUBLIC_BASE_URL || undefined),
+    publicDbHost: parsePublicDbHost(process.env.PUBLIC_DB_HOST || undefined),
+    publicDbPort: parsePublicDbPort(process.env.PUBLIC_DB_PORT || undefined),
   };
+}
+
+// The messages below never echo the value, in case someone pastes a URL with credentials in it.
+
+/** An http(s) origin with nothing after it, since the app's routes live at the root. */
+export function parsePublicBaseUrl(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const fail = () => {
+    throw new Error(
+      'PUBLIC_BASE_URL must be an http or https origin, such as https://app.example.com, with no path, query, or credentials.',
+    );
+  };
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return fail();
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') fail();
+  if (url.username || url.password || url.pathname !== '/' || url.search || url.hash) fail();
+  // `new URL` accepts '?' and '#' with nothing after them; the origin would drop them silently.
+  if (/[?#]/.test(value)) fail();
+  return url.origin;
+}
+
+/** A hostname or IPv4 address: it goes into a connection string as is. */
+export function parsePublicDbHost(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const label = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/;
+  if (value.length > 253 || !value.split('.').every((part) => label.test(part))) {
+    throw new Error('PUBLIC_DB_HOST must be a hostname or IPv4 address, such as db.example.com.');
+  }
+  return value;
+}
+
+export function parsePublicDbPort(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const port = Number(value);
+  if (!/^\d+$/.test(value) || port < 1 || port > 65535) {
+    throw new Error('PUBLIC_DB_PORT must be a port number from 1 to 65535.');
+  }
+  return port;
 }
 
 function required(name: string): string {

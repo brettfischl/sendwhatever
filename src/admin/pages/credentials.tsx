@@ -1,28 +1,27 @@
 import type { Context, Handler } from 'hono';
 import { HttpError } from '../../http/deps.js';
 import { decryptJson, generateApiKey, hashApiKey } from '../../secrets.js';
+import { publicDbAddress, type PublicDbAddress } from '../public-addresses.js';
 import { CopyBlock, Form, Layout } from '../views.js';
 import type { AdminEnv } from '../index.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export interface ReadLogin {
+export interface ReadLogin extends PublicDbAddress {
   user: string;
   password: string;
   database: string;
-  host: string;
-  port: number;
 }
 
 /**
  * The read-only login of the account's active store, or undefined when there isn't one yet.
- * Local mode only: the host is localhost and the port is the dev Postgres port.
+ * The host and port are the public ones customers connect to, not the store's own connection.
  */
 export async function loadReadLogin(c: Context<AdminEnv>): Promise<ReadLogin | undefined> {
   const { appDb, config } = c.get('deps');
   const row = (
-    await appDb.query<{ read_credentials: Buffer | null }>(
-      `SELECT read_credentials FROM account_stores
+    await appDb.query<{ read_credentials: Buffer | null; connection: { host: unknown; port: unknown } }>(
+      `SELECT read_credentials, connection FROM account_stores
         WHERE account_id = $1 AND status = 'active'`,
       [c.get('account')!.id],
     )
@@ -33,8 +32,7 @@ export async function loadReadLogin(c: Context<AdminEnv>): Promise<ReadLogin | u
     user: String(creds.user),
     password: String(creds.password),
     database: String(creds.database),
-    host: 'localhost',
-    port: config.postgresPort,
+    ...publicDbAddress(config, row.connection),
   };
 }
 
@@ -43,12 +41,14 @@ export function connectionString(login: ReadLogin, withPassword: boolean): strin
   const auth = withPassword
     ? `${encodeURIComponent(login.user)}:${encodeURIComponent(login.password)}`
     : encodeURIComponent(login.user);
-  return `postgres://${auth}@${login.host}:${login.port}/${encodeURIComponent(login.database)}`;
+  const ssl = login.requireSsl ? '?sslmode=require' : '';
+  return `postgres://${auth}@${login.host}:${login.port}/${encodeURIComponent(login.database)}${ssl}`;
 }
 
 interface KeyRow {
   id: string;
   short: string;
+  scope: 'ingest' | 'read';
   created_at: Date;
   revoked_at: Date | null;
 }
@@ -56,7 +56,7 @@ interface KeyRow {
 export const credentialsPage: Handler<AdminEnv> = async (c) => {
   const account = c.get('account')!;
   const { rows } = await c.get('deps').appDb.query<KeyRow>(
-    `SELECT id, left(key_hash, 8) AS short, created_at, revoked_at
+    `SELECT id, left(key_hash, 8) AS short, scope, created_at, revoked_at
        FROM api_keys WHERE account_id = $1 ORDER BY created_at DESC, id`,
     [account.id],
   );
@@ -82,6 +82,7 @@ export const credentialsPage: Handler<AdminEnv> = async (c) => {
               <li>
                 <span>
                   <code>{key.short}</code>{' '}
+                  <span class="tag">{key.scope === 'read' ? 'read-only' : 'ingest'}</span>{' '}
                   <span class="muted">created {key.created_at.toISOString()}</span>
                 </span>
                 {key.revoked_at ? (
@@ -100,9 +101,19 @@ export const credentialsPage: Handler<AdminEnv> = async (c) => {
           </ul>
         )}
         {!account.readOnly && (
-          <Form action={`${base}/keys`} csrf={csrf}>
-            <button type="submit">Create API key</button>
-          </Form>
+          <>
+            <Form action={`${base}/keys`} csrf={csrf}>
+              <button type="submit">Create API key</button>
+            </Form>
+            <Form action={`${base}/keys`} csrf={csrf}>
+              <input type="hidden" name="scope" value="read" />
+              <button type="submit">Create read-only API key</button>
+            </Form>
+            <p class="muted">
+              API keys send data to <code>/ingest</code>. Read-only keys read rows from{' '}
+              <code>/tables</code>, and neither can do the other's job.
+            </p>
+          </>
         )}
       </section>
       <section class="card">
@@ -128,15 +139,17 @@ export const credentialsPage: Handler<AdminEnv> = async (c) => {
 export const createKey: Handler<AdminEnv> = async (c) => {
   const account = c.get('account')!;
   const key = generateApiKey();
-  await c.get('deps').appDb.query('INSERT INTO api_keys (account_id, key_hash) VALUES ($1, $2)', [
-    account.id,
-    hashApiKey(key),
-  ]);
+  const { scope: requested } = await c.req.parseBody();
+  const scope = requested === 'read' ? 'read' : 'ingest';
+  await c.get('deps').appDb.query(
+    'INSERT INTO api_keys (account_id, key_hash, scope) VALUES ($1, $2, $3)',
+    [account.id, hashApiKey(key), scope],
+  );
   // Rendered directly, never redirected, so the key cannot end up in a URL.
   return c.html(
     <Layout title="New API key" user={c.get('user')} csrf={c.get('csrf')}>
       <section class="card">
-        <h1>New API key</h1>
+        <h1>{scope === 'read' ? 'New read-only API key' : 'New API key'}</h1>
         <p class="error">Copy it now. It won't be shown again.</p>
         <CopyBlock value={key} label="API key" />
         <p>
@@ -195,6 +208,11 @@ const LoginDetails = ({ login }: { login: ReadLogin }) => (
       <li>
         Port <code>{String(login.port)}</code>
       </li>
+      {login.requireSsl && (
+        <li>
+          SSL mode <code>require</code>
+        </li>
+      )}
     </ul>
     <p>Connection string</p>
     <CopyBlock value={connectionString(login, true)} label="connection string" />

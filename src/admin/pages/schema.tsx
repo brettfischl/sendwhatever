@@ -63,6 +63,11 @@ export const SchemaRegion: FC<{
           <h2>
             <code>{table.name}</code> <span class="tag">{counts.get(table.name) ?? '—'} rows</span>
           </h2>
+          <p>
+            <a href={`/admin/accounts/${accountId}/schema/${encodeURIComponent(table.name)}/docs`}>
+              API docs
+            </a>
+          </p>
           <TableLinks label="Child of" names={table.parents} />
           <TableLinks label="Parent of" names={table.children} />
           <table class="grid">

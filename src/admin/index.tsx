@@ -21,6 +21,7 @@ import { createKey, credentialsPage, revealLogin, revokeKey } from './pages/cred
 import { eventPayloadRoute, eventRoute } from './pages/events.js';
 import { pipelineRoute } from './pages/pipeline.js';
 import { schemaRoute } from './pages/schema.js';
+import { swaggerAsset, tableDocsRoute, tableSpecRoute } from './pages/table-docs.js';
 import { trafficRoute } from './pages/traffic.js';
 import { hashPassword, verifyPassword } from './users.js';
 import { manageAccountRoutes } from './pages/manage-accounts.js';
@@ -75,7 +76,15 @@ adminRoutes.use('*', contextStorage());
 adminRoutes.use('*', trimTrailingSlash());
 
 // Layer 1 of CSRF: reject cross-origin form posts, including the login form, which has no session.
-adminRoutes.use('*', csrf());
+// Behind the TLS proxy the request URL is http:// but the browser's Origin is https://, so with
+// PUBLIC_BASE_URL set, that's the only Origin allowed. Forwarded headers are never consulted (§21.3).
+// As before, a browser's Sec-Fetch-Site: same-origin also passes, without reaching the Origin check.
+adminRoutes.use(
+  '*',
+  csrf({
+    origin: (origin, c) => origin === (c.get('deps').config.publicBaseUrl ?? new URL(c.req.url).origin),
+  }),
+);
 
 // The stylesheet. Registered before the no-store and session middleware, so it's public and cached;
 // Layout links it with a content-hash query string, so a changed stylesheet gets a new URL.
@@ -241,6 +250,9 @@ adminRoutes.post('/accounts/:accountId/credentials/keys', createKey);
 adminRoutes.post('/accounts/:accountId/credentials/keys/:keyId/revoke', revokeKey);
 adminRoutes.post('/accounts/:accountId/credentials/reveal', revealLogin);
 adminRoutes.get('/accounts/:accountId/schema', schemaRoute);
+adminRoutes.get('/accounts/:accountId/schema/:table/openapi.json', tableSpecRoute);
+adminRoutes.get('/accounts/:accountId/schema/:table/docs', tableDocsRoute);
+adminRoutes.get('/assets/swagger/:file', swaggerAsset);
 adminRoutes.get('/accounts/:accountId/traffic', trafficRoute);
 adminRoutes.get('/accounts/:accountId/pipeline', pipelineRoute);
 adminRoutes.get('/accounts/:accountId/events/:eventId', eventRoute);

@@ -10,7 +10,14 @@ export interface AppDeps {
   backend: StorageBackend;
   config: Pick<
     Config,
-    'postgresPort' | 'dataDbPassword' | 'encryptionKey' | 'internalApiToken' | 'port'
+    | 'postgresPort'
+    | 'dataDbPassword'
+    | 'encryptionKey'
+    | 'internalApiToken'
+    | 'port'
+    | 'publicBaseUrl'
+    | 'publicDbHost'
+    | 'publicDbPort'
   >;
   /** Overrides how the validation gate runs, in tests. */
   gate?: SampleOptions;

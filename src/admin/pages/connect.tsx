@@ -1,13 +1,13 @@
 import type { Handler } from 'hono';
+import { ingestEndpoint } from '../public-addresses.js';
 import { CopyBlock, Layout } from '../views.js';
 import type { AdminEnv } from '../index.js';
 import { connectionString, loadReadLogin } from './credentials.js';
 
 export const connectPage: Handler<AdminEnv> = async (c) => {
   const account = c.get('account')!;
-  const { config } = c.get('deps');
   const login = await loadReadLogin(c);
-  const endpoint = `http://localhost:${config.port}/ingest`;
+  const endpoint = ingestEndpoint(c.get('deps').config);
   const curl = [
     `curl -X POST ${endpoint} \\`,
     `  -H 'X-Account-Slug: ${account.slug}' \\`,
@@ -59,6 +59,10 @@ export const connectPage: Handler<AdminEnv> = async (c) => {
         ) : (
           <p class="muted">This account has no active store yet.</p>
         )}
+        <p class="muted">
+          Or read rows over HTTP with a read-only API key. Each table on the{' '}
+          <a href={`/admin/accounts/${account.id}/schema`}>Schema</a> page links to its API docs.
+        </p>
       </section>
     </Layout>,
   );
