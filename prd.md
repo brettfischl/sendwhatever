@@ -830,7 +830,7 @@ A configurable cap limits generations per shape, and the shape then waits for an
 - Never discard a field. Every field gets a clearly named column or child table, with no catch-all columns. When deriving a value, such as a full name, also keep the original fields.
 - Normalize nested data: objects and arrays of objects become child tables, and arrays of primitives become child tables with a `value` column.
 - Declare an opaque path only for a field whose keys truly vary. Store it as a child table with `key` and `value` columns when its values are uniform, or as a named `json` column when it is truly free-form. JSON is never a place to put data that could be modeled.
-- Use a stable `id` from the payload when events describe the same real-world record, so they merge into one row, and cast it to a string. Omit it when each event is a new record.
+- Use a stable `id` from the payload when events describe the same real-world record, so they merge into one row, and cast it to a string. Omit it when each event is a new record. Cast every ID-like field to a string too, such as `product_id`. The sandbox turns integers above 2^53 into strings to keep them exact, so a field left as a number would change type once its values grow.
 - Pass `null` through only when the source means to clear a value. Leave out any field the event doesn't include: `email: item.email` on a partial update would set `undefined` and clear the stored email.
 - Give child rows a natural `id` where one exists, such as a SKU. Set `append: true` for lists where each event adds new items, such as messages.
 - Declare date and time fields as `timestamp`, and normalize them to ISO 8601 with a timezone.
@@ -844,6 +844,8 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 - Runs without errors or timeouts, and returns a valid intermediate object with valid identifiers.
 - Produces identical output when run twice on the same payload.
 - Produces parseable values for every declared `timestamp` column.
+- Writes no number to an ID-like column: `id` or a name ending in `_id`. It must be cast to a string, because the column's type can never change later.
+- Writes no ISO 8601 date-time to a string column. It must be declared as `timestamp`, for the same reason.
 - Causes no type conflicts with registered columns.
 - Declares opaque paths only on specific named fields, never the payload root or an array of the root, so an adapter can't match everything.
 - For `op = delete`, sets `_deleted: true` on every top-level row, with an `id`.
