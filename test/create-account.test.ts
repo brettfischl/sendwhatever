@@ -5,6 +5,7 @@ import { AccountError, createAccount } from '../src/accounts/create.js';
 import { loadConfig } from '../src/config.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 });
 
@@ -27,7 +28,7 @@ afterAll(async () => {
   ]);
   for (const { id } of rows) {
     const namespace = `acct_${id.replaceAll('-', '')}_1`;
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
     await appDb.query('DELETE FROM api_keys WHERE account_id = $1', [id]);
     await appDb.query('DELETE FROM account_stores WHERE account_id = $1', [id]);

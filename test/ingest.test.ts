@@ -10,6 +10,7 @@ import { createApp, MAX_BODY_BYTES } from '../src/http/app.js';
 import { DELIVERY_ID_HEADERS, stripKeyParam } from '../src/http/routes/ingest.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 });
 
@@ -140,7 +141,7 @@ afterAll(async () => {
   ]);
   for (const { id } of rows) {
     const namespace = `acct_${id.replaceAll('-', '')}_1`;
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
     for (const table of ['quarantine', 'queue', 'events', 'api_keys', 'account_stores']) {
       await appDb.query(`DELETE FROM ${table} WHERE account_id = $1`, [id]);

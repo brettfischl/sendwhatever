@@ -10,6 +10,7 @@ import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
 import { DEFAULT_SETTINGS, processNextJob, startWorker, type WorkerContext } from '../src/worker/index.js';
 import { findAdapter } from '../src/worker/match.js';
 import { backoffMs, claimJob, deleteJob, pushRunAt, quarantineJob, toDetail } from '../src/worker/queue.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 // Everything but runAdapter is the real module, and runAdapter is real until a test says otherwise.
 vi.mock('../src/sandbox/index.js', async (importOriginal) => {
@@ -262,7 +263,7 @@ afterAll(async () => {
   await db.end();
   await realBackend.close();
   for (const namespace of scratchDatabases) {
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
   }
   await admin.end();
