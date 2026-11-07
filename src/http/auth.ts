@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
-import { hashApiKey } from '../secrets.js';
+import { isActiveApiKey } from '../accounts/api-keys.js';
 import { HttpError, type AppEnv } from './deps.js';
 
 export interface Authenticated {
@@ -32,14 +32,7 @@ export async function authenticate(
   if (!slug || !account) throw new HttpError(404, 'unknown account');
 
   const key = extractKey(c, options.allowQueryKey);
-  const valid =
-    key !== undefined &&
-    (
-      await appDb.query(
-        'SELECT 1 FROM api_keys WHERE key_hash = $1 AND account_id = $2 AND revoked_at IS NULL',
-        [hashApiKey(key), account.id],
-      )
-    ).rowCount === 1;
+  const valid = key !== undefined && (await isActiveApiKey(appDb, account.id, key));
   if (!valid) throw new HttpError(401, 'invalid or missing API key');
 
   // 'provisioning' has no usable store yet, so it is refused like a disabled account.

@@ -3,6 +3,7 @@
 .dolt/
 *.db
 .env
+.demo-seed.json*
 node_modules/
 dist/
 coverage/

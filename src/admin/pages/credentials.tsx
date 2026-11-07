@@ -1,41 +1,15 @@
 import type { Context, Handler } from 'hono';
 import { HttpError } from '../../http/deps.js';
-import { decryptJson, generateApiKey, hashApiKey } from '../../secrets.js';
+import { createApiKey } from '../../accounts/api-keys.js';
+import { loadAccountReadLogin, type ReadLogin } from '../../accounts/read-login.js';
 import { CopyBlock, Form, Layout } from '../views.js';
 import type { AdminEnv } from '../index.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export interface ReadLogin {
-  user: string;
-  password: string;
-  database: string;
-  host: string;
-  port: number;
-}
-
-/**
- * The read-only login of the account's active store, or undefined when there isn't one yet.
- * Local mode only: the host is localhost and the port is the dev Postgres port.
- */
-export async function loadReadLogin(c: Context<AdminEnv>): Promise<ReadLogin | undefined> {
-  const { appDb, config } = c.get('deps');
-  const row = (
-    await appDb.query<{ read_credentials: Buffer | null }>(
-      `SELECT read_credentials FROM account_stores
-        WHERE account_id = $1 AND status = 'active'`,
-      [c.get('account')!.id],
-    )
-  ).rows[0];
-  if (!row?.read_credentials) return undefined;
-  const creds = decryptJson(config.encryptionKey, row.read_credentials);
-  return {
-    user: String(creds.user),
-    password: String(creds.password),
-    database: String(creds.database),
-    host: 'localhost',
-    port: config.postgresPort,
-  };
+/** The read-only login of the current account's active store, or undefined when there isn't one yet. */
+export function loadReadLogin(c: Context<AdminEnv>): Promise<ReadLogin | undefined> {
+  return loadAccountReadLogin(c.get('deps'), c.get('account')!.id);
 }
 
 /** The connection string, with the password only when asked for. */
@@ -127,11 +101,7 @@ export const credentialsPage: Handler<AdminEnv> = async (c) => {
 
 export const createKey: Handler<AdminEnv> = async (c) => {
   const account = c.get('account')!;
-  const key = generateApiKey();
-  await c.get('deps').appDb.query('INSERT INTO api_keys (account_id, key_hash) VALUES ($1, $2)', [
-    account.id,
-    hashApiKey(key),
-  ]);
+  const key = await createApiKey(c.get('deps').appDb, account.id);
   // Rendered directly, never redirected, so the key cannot end up in a URL.
   return c.html(
     <Layout title="New API key" user={c.get('user')} csrf={c.get('csrf')}>

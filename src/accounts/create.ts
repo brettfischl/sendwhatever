@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { StorageError, type StoreConfig } from '../contracts/index.js';
-import { decryptJson, encryptJson, generateApiKey, hashApiKey } from '../secrets.js';
+import { decryptJson, encryptJson } from '../secrets.js';
+import { createApiKey } from './api-keys.js';
 import type { AppDeps } from '../http/deps.js';
 
 const SLUG = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -186,7 +187,7 @@ async function run(
     throw error;
   }
 
-  const apiKey = generateApiKey();
+  let apiKey: string;
   await client.query('BEGIN');
   try {
     await client.query(
@@ -194,10 +195,7 @@ async function run(
       [store.id, encryptJson(key, readOnly)],
     );
     await client.query(`UPDATE accounts SET status = 'active' WHERE id = $1`, [accountId]);
-    await client.query('INSERT INTO api_keys (account_id, key_hash) VALUES ($1, $2)', [
-      accountId,
-      hashApiKey(apiKey),
-    ]);
+    apiKey = await createApiKey(client, accountId);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined);
