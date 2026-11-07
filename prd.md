@@ -90,14 +90,20 @@ Every accepted payload is kept in an append-only ingress event log. Normalized t
               ┌───────────────────────┐                       │
               │ StorageBackend (§11)  │                       │ native driver
               └───────────┬───────────┘                       │
-                          ▼                                   │
-              ┌───────────────────────┐                       │
-              │  Postgres (sw_data)   │◄──────────────────────┘
-              │  schema acct_<id>     │
-              │  ├─ user              │
-              │  ├─ user_profile      │
-              │  └─ user_orders       │
-              └───────────────────────┘
+        ┌─────────────────┼─────────────────┐                 │
+        ▼                 ▼                 ▼                 │
+  ┌───────────┐     ┌───────────┐     ┌────────────┐          │
+  │ Postgres  │     │   sqld    │     │ ClickHouse │◄─────────┘
+  │   (MVP)   │     │  (later)  │     │  (later)   │
+  │           │     │           │     │            │
+  │ schema:   │     │ namespace:│     │ database:  │
+  │ acct_<id> │     │ acct_<id> │     │ acct_<id>  │
+  │ ├─ user   │     │ ...       │     │ ...        │
+  │ ├─ user_  │     │           │     │            │
+  │ │  profile│     │           │     │            │
+  │ └─ user_  │     │           │     │            │
+  │    orders │     │           │     │            │
+  └───────────┘     └───────────┘     └────────────┘
 ```
 
 System tables live outside the account's storage namespace, so a payload with `type: "adapters"` cannot collide with platform state. The `acct_<id>` labels above are shorthand: each store's full namespace is `acct_<account id>_<generation>` (§10). Not drawn: customers also connect directly to their namespace with read-only SQL credentials (§14.1).
@@ -117,7 +123,7 @@ System tables live outside the account's storage namespace, so a payload with `t
 7. If found, it runs the adapter to produce an intermediate object.
 8. Platform plans the write: injects deterministic IDs, `_event_seq`, and FK columns, then compares the rows against `data_columns` (§9).
 9. Any new tables or columns are applied through the storage backend and recorded in `data_columns`.
-10. Rows are written through the storage backend to the account's active store.
+10. Rows are written through the storage backend to each of the account's live stores: normally just the active store, plus the new store during a rebuild (§5.4). The active store is written first.
 11. The queue job is deleted.
 
 The write in step 10 and the delete in step 11 are not atomic. If a worker dies between them, its lease expires and another worker repeats the job. Idempotent writes make that harmless (§11.2).
@@ -131,7 +137,7 @@ The write in step 10 and the delete in step 11 are not atomic. If a worker dies 
 5. The LLM writes an adapter that normalizes the shape into the intermediate object format.
 6. Adapter is inserted with `active = false` and validated against the sample.
 7. If validation passes, adapter is set `active = true` (deactivating any earlier version for the same `(type, fingerprint)` in the same transaction) and a `replay` job is enqueued.
-8. The worker pages through matching unreleased rows in batches, reading each payload from `events`. Each event is written through the storage backend to the active store, then marked released and logged in `replay_log` in one application database transaction.
+8. The worker pages through matching unreleased rows in batches, reading each payload from `events`. Each event is written through the storage backend, to the store its quarantine row names or to all live stores if it names none. It is then marked released and logged in `replay_log` in one application database transaction.
 
 An event that fails during replay stays open, and its `reason` and `detail` are updated to the new failure, such as `adapter_error`.
 
@@ -145,9 +151,21 @@ A worker can look up an adapter just before activation and quarantine just after
 
 A body that isn't valid JSON, such as `{ messages: [ msg: broken]}`, never reaches this path. The Ingestion Service rejects it with `400` and stores nothing.
 
-### 5.4 Rebuilds (Later)
+### 5.4 Replay to a Different Store
 
-Because the event log is the source of truth, an account can be rebuilt by replaying its events in `seq` order through the current adapters into a fresh store, then switching `accounts.active_store_id` to it. This repairs bad adapters and moves accounts between backends. Detailed design comes after the hackathon; the schema keeps `account_stores` so it isn't ruled out.
+An account's data can be rebuilt from the event log into a new store, on any backend, and switched over in one step.
+
+1. Operator creates a store for the account with its backend and connection settings. The platform provisions it with `status = 'building'`.
+2. From that commit on, workers write new events to both the active store and the new store.
+3. A `rebuild` job reads the current maximum `events.seq`, then replays every event up to it, in `seq` order, through the currently active adapters into the new store.
+   - Malformed events and events with no active adapter are skipped. Their quarantine rows stay open, and they reach all live stores when released.
+   - An event that fails goes to quarantine against the new store, and the rebuild continues.
+4. The store moves to `ready`. Operator reviews any failures.
+5. Operator activates the store. One application database transaction points `accounts.active_store_id` at it, marks the old store `retired`, and closes quarantine rows that name the old store. A retired store receives no further writes and is kept until an operator removes it.
+
+No event can be missed. An event that isn't yet visible to the scan in step 3 commits after the store exists, so the worker that handles it sees the new store and writes to it. Any other event is already in the log for the scan to find. `_event_seq` stops the rebuild from overwriting newer live writes with older events (§11.2).
+
+A rebuild uses current adapters, so it also serves to reprocess an account's history on the same backend after adapters change.
 
 ---
 
@@ -177,9 +195,22 @@ Rules:
 - `data` must be an object or array. If it is an array, each element is treated as a row of type `type`.
 - Additional top-level keys are ignored by the platform but may be logged.
 
-### 6.1 Experiment: No Type at All (Later)
+### 6.1 Experiment: No Envelope
 
-`/ingest/:type` (§6.2) removes the need for an envelope, but a `type` is still required. Dropping it entirely can be tested offline: strip `type` from logged events, run the generator, and compare the tables it picks against the known types.
+We want to test how well the LLM does without the `{ type, data }` convention, accepting any JSON object or array as the payload.
+
+`type` currently gives the generator a table name and keeps apart shapes that look alike. Without it, a user `{ id, name }` and a product `{ id, name }` share a fingerprint, so one adapter would have to handle both.
+
+**Run it offline first.** The event log makes this possible without production changes: strip `type` from logged events, run the generator on them, and compare the results to the known types. Measure:
+- First-attempt validation pass rate, against enveloped events.
+- Events routed to the wrong table.
+- Whether similar shapes get consistent table names.
+- Generation time.
+
+**If it holds up**, it becomes a per-account setting, which requires:
+- Fingerprinting the whole body.
+- Making `type` optional on `events` and `adapters`, with adapters required to set `table`.
+- A new rule for what `malformed` means, since only JSON scalars would still fail the envelope check.
 
 ### 6.2 Webhook Sources
 
@@ -394,7 +425,9 @@ CREATE TABLE account_stores (
   credentials BYTEA,                    -- encrypted by the platform; key held outside the database
   read_credentials BYTEA,               -- the customer's read-only login (§14.1); encrypted the same way
   namespace TEXT NOT NULL,              -- acct_<account id>_<generation>
-  status TEXT NOT NULL CHECK (status IN ('active', 'retired')),
+  status TEXT NOT NULL CHECK (status IN ('building', 'ready', 'active', 'retired')),
+  rebuild_through_seq BIGINT,           -- end of the rebuild's scan
+  rebuild_cursor BIGINT,                -- last seq the rebuild has processed
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (account_id, generation)
 );
@@ -459,22 +492,25 @@ CREATE INDEX events_shape ON events (account_id, type, fingerprint);
 CREATE TABLE queue (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES accounts(id),
-  kind TEXT NOT NULL CHECK (kind IN ('ingest', 'replay')),
+  kind TEXT NOT NULL CHECK (kind IN ('ingest', 'replay', 'rebuild')),
   event_id UUID REFERENCES events(id),            -- event to process (ingest)
   adapter_id UUID REFERENCES adapters(id),        -- adapter to replay (replay)
+  store_id UUID REFERENCES account_stores(id),    -- store to fill (rebuild)
   run_at TIMESTAMPTZ NOT NULL DEFAULT now(),      -- next eligible time; doubles as lease and backoff
   attempts INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CHECK (
     (kind = 'ingest' AND event_id IS NOT NULL) OR
-    (kind = 'replay' AND adapter_id IS NOT NULL)
+    (kind = 'replay' AND adapter_id IS NOT NULL) OR
+    (kind = 'rebuild' AND store_id IS NOT NULL)
   )
 );
 
 CREATE INDEX queue_ready ON queue (run_at);
 
--- At most one replay per adapter at a time
+-- At most one replay per adapter and one rebuild per store at a time
 CREATE UNIQUE INDEX queue_one_replay ON queue (adapter_id) WHERE kind = 'replay';
+CREATE UNIQUE INDEX queue_one_rebuild ON queue (store_id) WHERE kind = 'rebuild';
 
 CREATE TABLE quarantine (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -535,10 +571,10 @@ CREATE TABLE data_columns (
 
 ### 10.1 Queue Behavior
 
-- **Scope:** every ingest goes through this queue, along with quarantine replays.
+- **Scope:** every ingest goes through this queue, along with quarantine replays and rebuilds.
 - **Claiming:** workers claim jobs with `FOR UPDATE SKIP LOCKED` on rows where `run_at <= now()`, advancing `run_at` by the lease duration and incrementing `attempts` in the same statement. No transaction stays open during adapter runs or backend writes.
 - **Crash recovery:** if a worker dies, its job becomes eligible again when the lease expires.
-- **Long jobs:** replays can outlast a lease, so the worker running one periodically pushes `run_at` forward as a heartbeat.
+- **Long jobs:** replays and rebuilds can outlast a lease, so the worker running one periodically pushes `run_at` forward as a heartbeat.
 - **Transient errors** (backend unreachable, timeout): the job stays in the queue and `run_at` moves forward with capped exponential backoff, so a backend outage delays writes without filling quarantine. After a configurable maximum age (default 72 hours), the event moves to quarantine with `reason = 'write_error'`.
 - **Permanent errors** go to quarantine immediately (§15).
 - **Completion:** jobs are deleted when done. The payload stays in `events`, and outcomes live in the data tables, `quarantine`, or `replay_log`.
@@ -576,7 +612,16 @@ CREATE INDEX ON "acct_0f3a..._1"."user_orders" ("user_id");
 
 ### 10.3 Event Log Lifecycle (Future Work)
 
-`events` is append-only by convention, not by constraint, so pruning old events to a backup store and handling deletion requests stay possible. Removing an event doesn't remove the rows it produced; a rebuild without it (§5.4) does.
+Out of scope for this PRD, and documented so the MVP doesn't rule it out. `events` is append-only by convention, not by constraint. It is an ordinary Postgres table, so historical rows can be updated or deleted when needed.
+
+- **Pruning:** a separate implementation can move older events out of `events` into a backup store to limit its size, partitioned by account and time.
+- **Deletion requests:** the affected events are removed from `events` directly. For pruned events, the account and time partitions narrow down where to find them in long-term storage.
+
+That work will need to handle:
+
+- **Derived rows:** removing an event doesn't remove what it produced in storage backends, and there is no direct reference between the two. One event can produce many rows across several tables, and with adapter-supplied IDs one row can be written by many events. `_event_seq` identifies only a row's last writer. Rebuilding into a new store (§5.4) without the deleted event handles all of these cases, including restoring a row an earlier event had written. If rebuilds prove too slow for this, a lineage table mapping events to rows is the alternative, at the cost of one more entry per derived row.
+- **Rebuilds after pruning:** a rebuild reads from `events`, so once events are pruned it must also read the backup store, or it will silently produce an incomplete store.
+- **Foreign keys:** `quarantine` and open `queue` rows reference `events(id)`, so they must be dealt with before an event can be pruned or deleted.
 
 ---
 
@@ -584,7 +629,7 @@ CREATE INDEX ON "acct_0f3a..._1"."user_orders" ("user_id");
 
 ### 11.1 Interface
 
-Every data store implements one interface, and the pipeline above it knows nothing about the store. Postgres is the only implementation for now; sqld and ClickHouse can follow through the same interface.
+Every data store implements one interface. The pipeline above it knows nothing about the store.
 
 ```typescript
 type LogicalType = 'string' | 'number' | 'boolean' | 'timestamp' | 'json';
@@ -608,6 +653,11 @@ interface TableRows {
 }
 
 interface StorageBackend {
+  readonly capabilities: {
+    atomicWrites: boolean;                    // a write() commits fully or not at all
+    idempotency: 'immediate' | 'eventual';    // when a repeated row stops being visible as a duplicate
+  };
+
   provision(store: StoreConfig): Promise<Record<string, unknown>>;  // returns the read-only credentials
   applySchema(store: StoreConfig, changes: SchemaChange[]): Promise<void>;
   write(store: StoreConfig, tables: TableRows[]): Promise<void>;
@@ -624,29 +674,47 @@ class StorageError extends Error {
 - `provision` and `applySchema` must be idempotent.
 - `write` receives all rows for one event and must be idempotent on `id`: writing the same row twice leaves one logical row.
 - `write` merges into existing rows, so a store's final state doesn't depend on the order workers ran in or on when a quarantined event is released:
-  - Each included column is updated only if the write's `_event_seq` is at least that column's entry in `_column_seq`; other columns are left alone. Out-of-order partial updates therefore all land, and a late event never overrides a newer value.
-  - Deletes and child-set replacement (§8) compare the row's `_event_seq`.
-  - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns.
+  - Each column is compared on its own: a write updates an included column only if its `_event_seq` is equal to or higher than that column's entry in `_column_seq`. Columns it doesn't include are left alone.
+  - So two out-of-order partial updates to different columns both land, and a late event never overrides a newer value for the same column.
+  - The row keeps the higher `_event_seq`. Deletes and child-set replacement (§8) follow the same rule, using the row's `_event_seq`.
+  - *MVP option:* skip `_column_seq` and compare only the row's `_event_seq`, with a lower write filling just the columns that are `NULL`. A late event can then miss a column that an older event set, until the next rebuild, which runs in order, corrects it.
 - `provision` must also create read-only credentials limited to that store's namespace, and they must keep working for tables and columns added later.
 - `write` must classify every failure as retryable or permanent through `StorageError`.
 - Backends do not validate identifiers or types, since the platform has already done so, but must quote identifiers and bind values as parameters.
 
-**Replay safety.** The event log is committed before anything is processed, so a replay always has a complete, unchanged source. Deterministic IDs (§8) and `_event_seq` make every replay converge on the same rows, however often it runs or wherever it is interrupted. Each event's write is one Postgres transaction, and an event is marked released only after its write succeeds.
+**Transactional replay.** The event log is committed in Postgres before anything is processed, so a replay always has a complete, unchanged source to read from. Deterministic IDs (§8) and `_event_seq` make every replay converge on the same rows, however often it runs or wherever it is interrupted. On top of that:
 
-### 11.3 Postgres Mapping
-
-| Concern | Postgres |
+| Operation | Guarantee |
 |---|---|
-| Store isolation | Schema |
-| `string` / `number` / `boolean` | `TEXT` / `NUMERIC` / `BOOLEAN` |
-| `timestamp` / `json` | `TIMESTAMPTZ` / `JSONB` |
-| `_event_seq` / `_column_seq` / `_deleted_at` | `BIGINT` / `JSONB` / `TIMESTAMPTZ` |
-| Merging write | `INSERT ... ON CONFLICT (id) DO UPDATE`, each included column set by comparing its `_column_seq` entry |
-| `add_index` | `CREATE INDEX IF NOT EXISTS` |
+| Rebuild to a new store (§5.4) | All-or-nothing on every backend. Readers see the old store until a single Postgres transaction switches them to the complete new one. |
+| Quarantine replay, per event | All-or-nothing where `atomicWrites` is true. Elsewhere, a partly written event can be visible until its retry completes. An event is marked released only after its write succeeds. |
+| Quarantine replay, whole batch | Applied event by event, so readers can see a batch partway through. A rebuild is the way to apply one all at once. |
+
+No distributed transaction spans the application database and a backend, and a store like ClickHouse has no multi-table transaction to offer. These guarantees come from the log instead.
+
+### 11.3 Backend Mapping
+
+| Concern | Postgres (MVP) | sqld (later) | ClickHouse (later) |
+|---|---|---|---|
+| Store isolation | Schema | Namespace | Database |
+| `string` | `TEXT` | `TEXT` | `Nullable(String)` |
+| `number` | `NUMERIC` | `NUMERIC` | `Nullable(Float64)` |
+| `boolean` | `BOOLEAN` | `INTEGER` | `Nullable(Bool)` |
+| `timestamp` | `TIMESTAMPTZ` | `TEXT` | `Nullable(DateTime64)` |
+| `json` | `JSONB` | `TEXT` | `Nullable(String)` |
+| `_event_seq` | `BIGINT` | `INTEGER` | `Int64` |
+| `_column_seq` | `JSONB` | `TEXT` | `Map(String, Int64)` |
+| `_deleted_at` | `TIMESTAMPTZ` | `TEXT` | `Nullable(DateTime64)` |
+| Merging write | `INSERT ... ON CONFLICT (id) DO UPDATE`, with each included column set by comparing its `_column_seq` entry | Same as Postgres | Needs design: `ReplacingMergeTree` replaces whole rows, so merging likely means `AggregatingMergeTree` with per-column latest values |
+| `add_index` | `CREATE INDEX IF NOT EXISTS` | `CREATE INDEX IF NOT EXISTS` | No-op at first; ClickHouse relies on its sort order |
+| `atomicWrites` | true | true | false |
+| `idempotency` | immediate | immediate | eventual: duplicates remain until merge unless read with `FINAL` |
+
+`write` is called once per event, and ClickHouse handles many small inserts poorly, so that backend should use `async_insert` or its own buffering.
 
 ### 11.4 Backend Selection
 
-The backend is part of the account object in the application database, set when the account is created.
+The backend is part of the account object in the application database, set when the account is created. There is no deployment-level backend configuration, and different accounts can use different backends in the same deployment.
 
 ```json
 {
@@ -659,12 +727,14 @@ The backend is part of the account object in the application database, set when 
 }
 ```
 
-- Settings are stored in `account_stores`, and `accounts.active_store_id` selects the current one, leaving room for rebuilds (§5.4).
+- Settings are stored in `account_stores`, and `accounts.active_store_id` selects the current one. A separate table is needed because a rebuild has two stores live at once, each with its own column registry.
+- Workers load an account's stores from the application database at the start of each job, so a new store takes effect without a deployment.
 - `credentials` are encrypted by the platform before storage. The encryption key comes from the service environment and is never stored in the database. They are never returned by the API.
+- Changing an account's backend means rebuilding into a new store (§5.4), not editing settings in place.
 
 ### 11.5 Conformance Suite
 
-A single test suite, run against every backend (Postgres for now), covers idempotent provisioning and schema changes, additive-only DDL, read-only credentials, repeated and out-of-order merging writes, reserved-word identifiers, all logical types and nulls, adding columns to populated tables, and error classification. Passing it is the definition of a supported backend.
+A single test suite, run against every backend, covers idempotent provisioning and schema changes, additive-only DDL, read-only credentials, repeated and out-of-order merging writes, reserved-word identifiers, all logical types and nulls, adding columns to populated tables, and error classification. Passing it is the definition of a supported backend.
 
 ---
 
@@ -797,7 +867,7 @@ Replays cover all reasons except `malformed`.
 
 Looks up the account's active store on each request through an internal Ingestion Service route, which returns connection settings and read-only credentials. It then connects with the backend's native driver. It has no direct access to the application database or the encryption key. Exposes domain-specific routes built on top of the normalized tables. Exact routes are out of scope for this PRD; they will be defined per-account/use case.
 
-`StorageBackend` is write-only by design. Queries are not abstracted across backends, so custom routes are written for a specific one.
+`StorageBackend` is write-only by design. Queries are not abstracted, because a useful abstraction over Postgres, SQLite, and ClickHouse would either hide what makes each one worthwhile or grow into a query engine. Custom routes are therefore written for a specific backend, and must be updated if a rebuild moves the account to a different one.
 
 ### 13.3 Account Administration
 
@@ -808,7 +878,15 @@ These routes are internal only and not routed through Caddy.
 - Inserts the account as `provisioning` with its first store, calls `StorageBackend.provision`, and sets both `active`. Safe to retry if provisioning fails.
 - Returns the account's first API key, shown once, and its read-only database connection details (§14.1).
 
-Store management routes come with rebuilds (§5.4).
+`POST /accounts/:id/stores`
+- Body: `storage`.
+- Creates and provisions a `building` store and enqueues a rebuild from the event log (§5.4).
+
+`GET /accounts/:id/stores`
+- Lists the account's stores with status, rebuild progress, and open quarantine counts. Credentials are not returned.
+
+`POST /accounts/:id/stores/:store_id/activate`
+- Switches a `ready` store to active and retires the previous one, in one transaction. Direct SQL users must switch to the new store's connection details.
 
 ### 13.4 Authentication
 
@@ -831,7 +909,39 @@ Each has its own role, and the `sw_data` role has no access to `sw_app`. This ke
 
 ### 14.2 Caddy Routing
 
-Caddy terminates TLS and routes `*.api.example.com` to the platform services, setting `X-Account-Slug` from the subdomain (overwriting any client value). Only `/ingest*` goes to the Ingestion Service, which keeps internal routes private; everything else goes to the Custom API App. For development, skip Caddy and send `X-Account-Slug` directly.
+Caddy terminates TLS and routes subdomains to the platform services, passing the account slug as a header. Only `/ingest`, `/ingest/:type`, and Custom API routes are public. Wildcard certificates require a DNS challenge provider.
+
+Example Caddyfile:
+
+```
+*.api.example.com {
+  handle /ingest* {
+    reverse_proxy ingestion:3000 {
+      header_up X-Account-Slug {http.request.host.labels.3}
+    }
+  }
+
+  handle {
+    reverse_proxy custom-api:3001 {
+      header_up X-Account-Slug {http.request.host.labels.3}
+    }
+  }
+}
+```
+
+`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` and `/ingest/:type` are forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly.
+
+### 14.3 sqld Backend Deployment (Later)
+
+- Run `ghcr.io/tursodatabase/libsql-server:latest` as a container, with namespaces enabled.
+- Persist data via volume mount at `/var/lib/sqld`.
+- Expose HTTP on port `8080`, on the internal network only.
+- Optionally enable JWT auth via `SQLD_AUTH_JWT_KEY_FILE`.
+- `provision` creates a namespace through the sqld admin API. Confirm the admin port and request format against current sqld docs when building this backend:
+
+```bash
+curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
+```
 
 ---
 
@@ -858,6 +968,9 @@ Caddy terminates TLS and routes `*.api.example.com` to the platform services, se
 | Worker dies mid-job | Lease expires; job retries; idempotent writes prevent duplicates |
 | Row fails during replay | Log in `replay_log`, update the row's `reason`, and continue; adapter stays active; generator may write a new version, up to the generation cap |
 | Storage backend unavailable during replay | Replay job retries with backoff; rows already released are not repeated |
+| New store unavailable during a rebuild | Active store is written first and stays current; job retries for the new store, then records `write_error` against it after maximum age |
+| Rebuild interrupted | Job resumes from `rebuild_cursor`; the active store is unaffected |
+| Rebuild has failed events | Quarantined against the new store; operator decides whether to activate |
 
 ---
 
@@ -885,7 +998,9 @@ This is a one-day hackathon build at low volume: it needs to work end to end. Wo
 - Opaque paths (§7.1). Without them, a field with varying keys triggers repeated generations.
 - Per-column ordering with `_column_seq` (§11.2).
 - The remaining webhook features: handshakes, signatures, batches, and form bodies (§6.2).
+- Rebuilds between Postgres stores (§5.4).
 - A basic conformance suite (§11.5).
+- The offline no-envelope experiment (§6.1).
 
 **3. Stretch goals.**
 - **Grader LLM:** a second LLM reviews each adapter that passes the validation gate, before activation. It judges what code checks can't, such as whether fields landed in sensible columns and whether table names fit the account's existing schema. It adds cost and some latency per new shape.
@@ -893,7 +1008,9 @@ This is a one-day hackathon build at low volume: it needs to work end to end. Wo
 - **Operator controls:** routes to deactivate an adapter or pause generation for a shape, with rollback to an earlier version, plus alerts on queue age and generation failures.
 - **Recurring LLM jobs:** scheduled jobs that reap old quarantined records and audit an account's tables for quality improvements. Improvements apply through new adapters and a rebuild.
 
-**4. After the hackathon.** Rebuilds (§5.4), the no-type experiment (§6.1), event log pruning, and sqld/ClickHouse backends.
+**4. After the hackathon.**
+- **sqld backend:** the first test of the interface against a second store, and of a rebuild across backends. Treat the interface as unstable until this ships.
+- **ClickHouse backend:** the first backend with `atomicWrites: false` and eventual idempotency. Further backends follow the same path.
 
 ---
 
@@ -916,6 +1033,6 @@ For the hackathon:
 If time allows, and afterward:
 
 - Can rebuild an account into a new store from the event log and switch to it atomically, with no accepted events missing.
-- Can run the no-type experiment offline against the event log and report the results (§6.1).
+- Can run the no-envelope experiment offline against the event log and report the results (§6.1).
 - Custom API App can query the same normalized tables independently.
 - A new storage backend can be added by implementing `StorageBackend` and passing the conformance suite, with no changes to the pipeline or adapters.
