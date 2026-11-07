@@ -166,7 +166,7 @@ export function startWorker(options: WorkerOptions): Worker {
   };
   const slots = Array.from({ length: concurrency }, runSlot);
 
-  // Every worker process sweeps. A repeat only asks for a replay that has little left to do.
+  // Every worker process sweeps. It's harmless, since a sweep leaves a queued replay alone.
   const runSweep = async () => {
     for (;;) {
       await sleep(settings.sweepIntervalMs, undefined, { signal: stopping.signal }).catch(() => {});

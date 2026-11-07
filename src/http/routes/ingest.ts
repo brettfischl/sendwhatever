@@ -197,6 +197,12 @@ async function appendEvent(
 ): Promise<{ id: string; malformed: boolean }> {
   const client = await db.connect();
   let broken = false;
+  // The pool only listens to idle clients. Without this, losing the connection between these statements
+  // would be an unhandled 'error' event that crashes the process. The next query rejects instead.
+  const onError = () => {
+    broken = true;
+  };
+  client.on('error', onError);
   try {
     await client.query('BEGIN');
     const inserted = await client.query<{ id: string }>(
@@ -249,6 +255,7 @@ async function appendEvent(
     }
     throw error;
   } finally {
+    client.removeListener('error', onError);
     client.release(broken ? true : undefined);
   }
 }

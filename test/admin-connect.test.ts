@@ -8,6 +8,7 @@ import { createApp } from '../src/http/app.js';
 import { hashApiKey } from '../src/secrets.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 });
 
@@ -103,7 +104,7 @@ afterAll(async () => {
   await appDb.query('DELETE FROM users WHERE id = ANY($1)', [userIds]);
   for (const id of accountIds) {
     const namespace = `acct_${id.replaceAll('-', '')}_1`;
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
     for (const table of ['quarantine', 'queue', 'events', 'api_keys', 'account_stores']) {
       await appDb.query(`DELETE FROM ${table} WHERE account_id = $1`, [id]);

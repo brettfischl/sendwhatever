@@ -6,11 +6,13 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { CONSOLE_ASSETS, parseConsoleRequest, type SendRaw } from './console.js';
+import { CONSOLE_ASSETS, consoleFlows, parseConsoleRequest, type SendRaw } from './console.js';
 import { HttpError, readBody } from './http.js';
 import type { RequestLog, LogChange } from './ingest-client.js';
 import type { LookalikeKind, SessionTransition } from './payloads.js';
 import { simulateViewers } from './simulate.js';
+import { serveTablesPanel } from './tables-routes.js';
+import type { TablesSource } from './tables.js';
 import type { NewSession, Webinar } from './webinar.js';
 
 export interface ServerDeps {
@@ -20,6 +22,8 @@ export interface ServerDeps {
   target: { mode: 'stub' | 'real'; url: string; accountSlug: string | undefined };
   /** Passed to the simulator, so tests don't wait out its pauses. */
   simulatePauseMs?: number;
+  /** Feeds the live tables panel. Without one, the panel shows the stub notice. */
+  tables?: TablesSource;
   /** Sends from the console. Without it, the console can't send. */
   consoleSend?: SendRaw;
 }
@@ -75,7 +79,7 @@ export function createDemoServer(deps: ServerDeps, events: SiteEvents): Server {
   const routes = buildRoutes(deps);
 
   return createServer((req, res) => {
-    handle(req, res, routes, events).catch((error: unknown) => {
+    (serveTablesPanel(req, res, deps.tables) ?? handle(req, res, routes, events)).catch((error: unknown) => {
       const status = error instanceof HttpError ? error.status : 500;
       if (status === 500) console.error(error);
       const message = status === 500 ? 'internal error' : (error as Error).message;
@@ -156,6 +160,7 @@ function buildRoutes({ webinar, log, target, simulatePauseMs, consoleSend }: Ser
       await webinar.removeComment(id!);
       return {};
     }),
+    route('GET', '/api/console/flows', async () => consoleFlows()),
     ...(consoleSend
       ? [route('POST', '/api/console/send', async (_, body) => consoleSend(parseConsoleRequest(body)))]
       : []),

@@ -8,6 +8,7 @@ import { buildSchemaTables, getPipeline, getTraffic } from '../src/admin/stats.j
 import { encryptJson } from '../src/secrets.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 60_000 });
 
@@ -205,7 +206,7 @@ afterAll(async () => {
   const admin = new pg.Client({ ...connection, ...credentials });
   await admin.connect();
   for (const namespace of namespaces) {
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
   }
   await admin.end();

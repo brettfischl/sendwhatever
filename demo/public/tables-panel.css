@@ -1,0 +1,118 @@
+/* Lives in the panel's shadow root, so it can't touch the page around it. Sized for a projector. */
+:host {
+  --ink: #16202e;
+  --muted: #566476;
+  --line: #d3dae2;
+  --paper: #f1f3f6;
+  --card: #ffffff;
+  --accent: #1f3fc4;
+  --highlight: #ffe58a;
+  --ok: #0f6a31;
+  --ok-bg: #d9f2e2;
+  --warn: #7f4800;
+  --warn-bg: #ffecc7;
+  --bad: #a31524;
+  --bad-bg: #fde0e3;
+  --info: #1f3fc4;
+  --info-bg: #dfe6ff;
+  display: block;
+  height: 100%;
+  min-height: 0;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 18px;
+  line-height: 1.35;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+h2, h3, p, ol { margin: 0; padding: 0; }
+h2 { font-size: 1.15rem; }
+
+.panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.panel-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.75rem; padding: 0.7rem 1rem; background: var(--card); border-bottom: 1px solid var(--line); }
+.panel-head h2 { font-size: 1.35rem; }
+.live { color: var(--muted); font-size: 0.85rem; overflow-wrap: anywhere; }
+.problem { padding: 0.5rem 1rem; color: var(--warn); background: var(--warn-bg); font-weight: 600; }
+
+.scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 1rem; }
+.tables { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+.empty { color: var(--muted); font-size: 1.1rem; }
+.more { margin-top: 0.5rem; color: var(--muted); font-size: 0.85rem; }
+
+.notice { max-width: 38rem; margin: 2rem auto; padding: 1.5rem; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.notice h3 { margin-bottom: 0.5rem; font-size: 1.5rem; }
+.notice p { overflow-wrap: anywhere; }
+
+.table-card { padding: 0.75rem 1rem; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.table-card > header { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; margin-bottom: 0.5rem; }
+.table-card h3 { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 1.25rem; overflow-wrap: anywhere; unicode-bidi: isolate; }
+.counts { margin-left: auto; padding: 0 0.25rem; border-radius: 4px; color: var(--muted); font-size: 0.9rem; }
+
+.grid-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+th, td { padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { white-space: nowrap; }
+.column-name { display: block; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-weight: 700; unicode-bidi: isolate; }
+.column-type { display: block; color: var(--muted); font-size: 0.75rem; font-weight: 400; }
+.cell { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; unicode-bidi: isolate; }
+.cell.null { color: var(--muted); font-style: italic; }
+.no-rows { color: var(--muted); font-style: italic; }
+
+/* _deleted_at reads quieter than the data, and _event_seq quieter still. */
+.platform { color: var(--muted); font-size: 0.8rem; font-weight: 400; }
+th.platform .column-name { font-weight: 400; }
+.seq { opacity: 0.75; }
+
+/* Not by color alone: faded and struck through, with a "deleted" badge on the row. */
+.row-deleted { background: var(--bad-bg); }
+.row-deleted .cell:not(.platform) { color: var(--muted); text-decoration: line-through; }
+.row-deleted .badge { text-decoration: none; }
+
+.badge { display: inline-block; margin-right: 0.35rem; padding: 0 0.4rem; border-radius: 4px; font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: 0.72rem; font-style: normal; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; vertical-align: 0.08em; }
+.column-name .badge { margin: 0 0 0 0.35rem; }
+.badge-new { color: var(--ink); background: var(--highlight); }
+.badge-updated { color: var(--info); background: var(--info-bg); }
+.badge-deleted { color: #fff; background: var(--bad); }
+
+.events { flex: 0 1 38%; min-height: 0; overflow-y: auto; padding: 0.7rem 1rem; background: var(--card); border-top: 2px solid var(--line); }
+.events h2 { margin-bottom: 0.4rem; }
+.events ol { list-style: none; }
+.event { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 0 0.6rem; padding: 0.25rem 0.35rem; border-bottom: 1px solid var(--line); border-radius: 4px; font-size: 0.95rem; }
+.event-seq { color: var(--muted); font-variant-numeric: tabular-nums; }
+.event-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; unicode-bidi: isolate; }
+.event-detail { grid-column: 2 / -1; overflow: hidden; color: var(--muted); font-size: 0.85rem; text-overflow: ellipsis; white-space: nowrap; unicode-bidi: isolate; }
+
+.status { padding: 0 0.5rem; border-radius: 99px; font-size: 0.85rem; font-weight: 700; white-space: nowrap; }
+.status-queued { color: var(--ink); background: var(--paper); box-shadow: inset 0 0 0 1px var(--line); }
+.status-adapter_generating { color: var(--info); background: var(--info-bg); }
+.status-waiting { color: var(--warn); background: var(--warn-bg); }
+.status-quarantined { color: var(--bad); background: var(--bad-bg); }
+.status-written { color: var(--ok); background: var(--ok-bg); }
+
+/* Holds, then fades, so it's still visible after the audience looks over. Delay and duration come from the script. */
+.flash { animation-name: appear; animation-timing-function: linear; animation-fill-mode: backwards; }
+@keyframes appear {
+  0%, 60% { background-color: var(--highlight); }
+  100% { background-color: transparent; }
+}
+/* A row keeps its own background once the highlight is done. */
+.row-deleted.flash { animation-name: appear-deleted; }
+@keyframes appear-deleted {
+  0%, 60% { background-color: var(--highlight); }
+  100% { background-color: var(--bad-bg); }
+}
+.status.flash { animation-name: status-change; }
+@keyframes status-change {
+  0%, 60% { box-shadow: 0 0 0 3px var(--ink); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+
+/* The "new" badges still mark what changed. */
+@media (prefers-reduced-motion: reduce) {
+  .flash { animation: none; }
+  .flash:not(.status) { background-color: var(--highlight); }
+  .status.flash { box-shadow: 0 0 0 3px var(--ink); }
+}
