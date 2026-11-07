@@ -59,6 +59,10 @@ export const connectPage: Handler<AdminEnv> = async (c) => {
         ) : (
           <p class="muted">This account has no active store yet.</p>
         )}
+        <p class="muted">
+          Or read rows over HTTP with a read-only API key. Each table on the{' '}
+          <a href={`/admin/accounts/${account.id}/schema`}>Schema</a> page links to its API docs.
+        </p>
       </section>
     </Layout>,
   );

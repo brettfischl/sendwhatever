@@ -6,6 +6,7 @@ import { HttpError, isConnectionError, type AppDeps, type AppEnv } from './deps.
 import { accountRoutes } from './routes/accounts.js';
 import { adapterRoutes, quarantineRoutes } from './routes/adapters.js';
 import { ingestRoutes } from './routes/ingest.js';
+import { tableRoutes } from './routes/tables.js';
 
 /** The most the adapter sandbox can reliably process (§13.1). Past about this, runs time out or run out of memory. */
 export const MAX_BODY_BYTES = 5 * 1024 * 1024;
@@ -42,6 +43,7 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   // Mount each route module here, one line each.
   app.route('/accounts', accountRoutes);
   app.route('/ingest', ingestRoutes);
+  app.route('/tables', tableRoutes);
   app.route('/adapters', adapterRoutes);
   app.route('/quarantine', quarantineRoutes);
   app.route('/admin', adminRoutes);
