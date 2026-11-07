@@ -5,10 +5,19 @@ import { jsx } from 'hono/jsx';
 import { createUser } from '../src/admin/users.js';
 import {
   activeNav,
+  CodeBlock,
   DataTable,
   EmptyState,
+  fullTime,
+  KeyValueList,
   pipelineStatus,
+  relativeTime,
+  RelativeTime,
+  Section,
+  StatGrid,
+  StatTile,
   StatusPill,
+  Toolbar,
   STYLESHEET_HREF,
   type StatusVariant,
 } from '../src/admin/ui/index.js';
@@ -170,6 +179,151 @@ describe('activeNav', () => {
     expect(activeNav(`/admin/accounts/${id}/events/123`)).toBe('pipeline');
     expect(activeNav('/admin/manage/accounts/abc')).toBe('manage-accounts');
     expect(activeNav('/admin/login')).toBeUndefined();
+  });
+});
+
+describe('rowHref', () => {
+  type Row = { name: string };
+  const columns = [{ header: 'Name', cell: (r: Row) => jsx('a', { href: `/x/${r.name}` }, r.name) }];
+
+  it('makes the row clickable and keeps a real link in the cell', async () => {
+    const html = await render(
+      jsx(DataTable<{ name: string }>, {
+        columns,
+        rows: [{ name: 'a' }],
+        rowHref: (r: Row) => `/x/${r.name}`,
+        rowAttrs: (r: Row) => ({ 'data-row': r.name }),
+      }),
+    );
+    expect(html).toMatch(/<tr[^>]*class="row-link"/);
+    expect(html).toContain('data-href="/x/a"');
+    expect(html).toContain('data-row="a"');
+    expect(html).toContain('<a href="/x/a">a</a>');
+    // Clicks on inner links, buttons and form fields, and on a text selection, are left alone.
+    expect(html).toContain('event.target.closest(&#39;a, button, input, select, textarea&#39;)');
+    expect(html).toContain('window.getSelection()');
+  });
+
+  it('leaves rows plain without rowHref', async () => {
+    const html = await render(jsx(DataTable<{ name: string }>, { columns, rows: [{ name: 'a' }] }));
+    expect(html).not.toContain('row-link');
+    expect(html).not.toContain('data-href');
+    expect(html).not.toContain('onclick');
+  });
+});
+
+describe('StatTile', () => {
+  it('links, tones its number, and dims zero', async () => {
+    const linked = await render(jsx(StatTile, { label: 'Waiting', value: 3, hint: 'x', tone: 'info', href: '/go' }));
+    expect(linked).toMatch(/^<a class="stat stat-info" href="\/go">/);
+    expect(linked).toContain('<div class="stat-value">3</div>');
+
+    for (const tone of ['neutral', 'info', 'progress', 'success', 'warning', 'danger'] as const) {
+      const html = await render(jsx(StatTile, { label: 'L', value: 1, tone }));
+      expect(html).toContain(tone === 'neutral' ? 'class="stat"' : `class="stat stat-${tone}"`);
+    }
+
+    const zero = await render(jsx(StatTile, { label: 'L', value: 0, tone: 'warning', href: '/go' }));
+    expect(zero).toContain('class="stat stat-zero"');
+    expect(zero).not.toContain('stat-warning');
+    expect(await render(jsx(StatTile, { label: 'L', value: '0' }))).toContain('stat-zero');
+
+    expect(await render(jsx(StatTile, { label: 'L', value: 5 }))).toMatch(/^<div class="stat">/);
+  });
+
+  it('lays four tiles out as one row or 2x2, never 3+1', async () => {
+    const css = await (await app.request('/admin/assets/app.css')).text();
+    expect(css).toMatch(/\.stat-grid:has\(> :nth-child\(4\):last-child\) \{ grid-template-columns: repeat\(4,/);
+    expect(css).toMatch(
+      /max-width: 760px\) \{ \.stat-grid:has\(> :nth-child\(4\):last-child\) \{ grid-template-columns: repeat\(2,/,
+    );
+    expect(await render(jsx(StatGrid, {}, jsx(StatTile, { label: 'A', value: 1 })))).toContain('class="stat-grid"');
+  });
+});
+
+describe('KeyValueList, Toolbar, Section, EmptyState, CodeBlock', () => {
+  it('renders KeyValueList as a definition list, with optional attributes on the value', async () => {
+    const html = await render(
+      jsx(KeyValueList, {
+        items: [
+          { label: 'Source', value: 'stripe', attrs: { 'data-field': 'source' } },
+          { label: 'Op', value: 'write' },
+        ],
+      }),
+    );
+    expect(html).toContain('<dl class="kv">');
+    expect(html).toContain('<dt>Source</dt><dd data-field="source">stripe</dd>');
+    expect(html).toContain('<dt>Op</dt><dd>write</dd>');
+  });
+
+  it('wraps Toolbar children in a labelled group', async () => {
+    const html = await render(jsx(Toolbar, { label: 'Filters' }, jsx('button', {}, 'Go')));
+    expect(html).toContain('class="toolbar"');
+    expect(html).toContain('aria-label="Filters"');
+    expect(html).toContain('<button>Go</button>');
+  });
+
+  it('renders Section header-only without a body, and compact', async () => {
+    expect(await render(jsx(Section, { title: 'T' }, 'body'))).toContain('class="section-body"');
+    const headerOnly = await render(jsx(Section, { title: 'T', description: 'd' }));
+    expect(headerOnly).toContain('section-header-only');
+    expect(headerOnly).not.toContain('section-body');
+    const compact = await render(jsx(Section, { title: 'T', compact: true, flush: true }, 'x'));
+    expect(compact).toContain('section-compact');
+    expect(compact).toContain('section-body flush');
+  });
+
+  it('renders a compact EmptyState', async () => {
+    expect(await render(jsx(EmptyState, { title: 'None', compact: true }))).toContain('class="empty empty-compact"');
+    expect(await render(jsx(EmptyState, { title: 'None' }))).toContain('class="empty"');
+  });
+
+  it('gives CodeBlock a caption and a wrap or scroll mode', async () => {
+    const wrapped = await render(jsx(CodeBlock, { value: 'v', label: 'thing', caption: 'Cap' }));
+    expect(wrapped).toContain('<p class="codeblock-caption">Cap</p>');
+    expect(wrapped).not.toContain('codeblock-scroll');
+    const scroll = await render(jsx(CodeBlock, { value: 'v', label: 'thing', overflow: 'scroll' }));
+    expect(scroll).toContain('codeblock-scroll');
+    expect(scroll).not.toContain('codeblock-caption');
+    expect(scroll).toContain('aria-label="Copy thing"');
+  });
+});
+
+describe('relativeTime and fullTime', () => {
+  const now = new Date('2026-11-07T12:00:00Z');
+  const ago = (seconds: number) => new Date(now.getTime() - seconds * 1000);
+
+  it('says seconds, minutes and hours', () => {
+    expect(relativeTime(ago(0), now)).toBe('just now');
+    expect(relativeTime(ago(4), now)).toBe('just now');
+    expect(relativeTime(ago(12), now)).toBe('12s ago');
+    expect(relativeTime(ago(59), now)).toBe('59s ago');
+    expect(relativeTime(ago(60), now)).toBe('1m ago');
+    expect(relativeTime(ago(5 * 60 + 30), now)).toBe('5m ago');
+    expect(relativeTime(ago(3599), now)).toBe('59m ago');
+    expect(relativeTime(ago(3600), now)).toBe('1h ago');
+    expect(relativeTime(ago(23 * 3600 + 3000), now)).toBe('23h ago');
+  });
+
+  it('gives a date for older events, with the year only when it differs', () => {
+    expect(relativeTime(new Date('2026-11-03T08:00:00Z'), now)).toBe('Nov 3');
+    expect(relativeTime(new Date('2026-01-15T08:00:00Z'), now)).toBe('Jan 15');
+    expect(relativeTime(new Date('2025-12-31T08:00:00Z'), now)).toBe('Dec 31, 2025');
+  });
+
+  it('accepts ISO strings and never goes negative for a clock-skewed future time', () => {
+    expect(relativeTime('2026-11-07T11:55:00Z', now)).toBe('5m ago');
+    expect(relativeTime(new Date(now.getTime() + 60_000), now)).toBe('just now');
+  });
+
+  it('formats the tooltip as UTC to the second', () => {
+    expect(fullTime(new Date('2026-11-07T14:03:12.987Z'))).toBe('2026-11-07 14:03:12 UTC');
+    expect(fullTime('2026-01-02T03:04:05Z')).toBe('2026-01-02 03:04:05 UTC');
+  });
+
+  it('renders RelativeTime with the full time as a tooltip', async () => {
+    const html = await render(jsx(RelativeTime, { value: '2026-11-07T11:55:00Z', now }));
+    expect(html).toBe('<time datetime="2026-11-07T11:55:00Z" title="2026-11-07 11:55:00 UTC">5m ago</time>');
   });
 });
 

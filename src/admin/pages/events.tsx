@@ -5,31 +5,27 @@ import type { Handler } from 'hono';
 import type { FC } from 'hono/jsx';
 import { HttpError } from '../../http/deps.js';
 import { getEvent, isUuid, type EventStatus, type EventView } from '../../pipeline/status.js';
-import { reasonLabel, statusLabel } from '../../pipeline/labels.js';
+import { reasonLabel } from '../../pipeline/labels.js';
 import type { AccountAccess, AdminEnv } from '../index.js';
 import type { SessionUser } from '../sessions.js';
 import { Form, Layout } from '../views.js';
+import {
+  Callout,
+  DataTable,
+  EmptyState,
+  KeyValueList,
+  PageHeader,
+  pipelineStatus,
+  RelativeTime,
+  Section,
+  StatusPill,
+} from '../ui/index.js';
+import { fullTime } from '../ui/format.js';
 
 /** The most of a body the payload view shows. */
 export const PAYLOAD_LIMIT = 100 * 1024;
 
 // Only the reason is shown. Details can quote error messages, which may echo payload values.
-
-// Page-local styles: the shared stylesheet in views.tsx is left alone.
-const CSS = `
-dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1rem; margin: 0; }
-dl.facts dt { color: var(--muted); font-weight: 600; font-size: 0.9rem; }
-dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.badge { display: inline-block; border-radius: 99px; padding: 0.05rem 0.65rem; font-size: 0.85rem; font-weight: 600; border: 1px solid var(--line); background: var(--paper); }
-.badge.written { color: var(--ok); }
-.badge.queued, .badge.adapter_generating, .badge.waiting { color: var(--warn); }
-.badge.quarantined { color: var(--live); }
-table.grid { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
-table.grid th, table.grid td { text-align: left; padding: 0.3rem 0.5rem; border-top: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
-table.grid th { color: var(--muted); font-weight: 600; }
-pre.body { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 0.75rem; max-height: 70vh; overflow: auto; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.85rem; }
-.notice { color: var(--warn); font-weight: 600; }
-`;
 
 export interface ReplayEntry {
   status: string;
@@ -103,110 +99,135 @@ export const EventPage: FC<{
   event: EventView;
   size: number;
   replays: ReplayEntry[];
-}> = ({ user, csrf, account, event, size, replays }) => (
-  <Layout title={`Event ${event.id.slice(0, 8)}`} user={user} csrf={csrf}>
-    <style dangerouslySetInnerHTML={{ __html: CSS }} />
-    <section class="card">
-      <h1>Event</h1>
-      <p>
-        <code>{event.id}</code>
-      </p>
-      <p>
-        <span class={`badge ${event.status}`} data-status={event.status}>
-          {statusLabel(event.status)}
-        </span>
-        {event.replayed && <> <span class="tag" data-replayed>replayed</span></>}
-        {event.awaitingApproval && <> <span class="tag" data-awaiting-approval>awaiting approval</span></>}
-      </p>
-      <dl class="facts">
-        <dt>Source</dt>
-        <dd data-field="source">{event.source === '' ? '(no path)' : <code>{event.source}</code>}</dd>
-        <dt>Operation</dt>
-        <dd data-field="op">{event.op}</dd>
-        <dt>Received</dt>
-        <dd data-field="received">
-          <time datetime={event.receivedAt}>{event.receivedAt}</time>
-        </dd>
-        <dt>Fingerprint</dt>
-        <dd data-field="fingerprint">
-          {event.fingerprint === null ? 'none (malformed body)' : <code>{event.fingerprint}</code>}
-        </dd>
-        <dt>Body size</dt>
-        <dd data-field="size">{size.toLocaleString('en-US')} bytes</dd>
-        <dt>Queue job</dt>
-        <dd data-field="job">
-          {event.attempts === null
-            ? 'None: processing has finished.'
-            : `Still queued (${event.attempts} ${event.attempts === 1 ? 'attempt' : 'attempts'} so far).`}
-        </dd>
-        {event.adapterFailure !== null && (
+}> = ({ user, csrf, account, event, size, replays }) => {
+  const { variant, label } = pipelineStatus(event.status);
+  const pipelineHref = `/admin/accounts/${account.id}/pipeline`;
+  return (
+    <Layout title={`Event ${event.id.slice(0, 8)}`} user={user} csrf={csrf}>
+      <PageHeader
+        breadcrumbs={[
+          { label: 'Accounts', href: '/admin' },
+          { label: account.slug, href: `/admin/accounts/${account.id}` },
+          { label: 'Pipeline', href: pipelineHref },
+          { label: `Event ${event.id.slice(0, 8)}` },
+        ]}
+        title={
           <>
-            <dt>Last generation failure</dt>
-            <dd data-field="adapter-failure">{event.adapterFailure}</dd>
+            Event <code>{event.id.slice(0, 8)}</code>
+            <span data-status={event.status}>
+              <StatusPill variant={variant}>{label}</StatusPill>
+            </span>
+            {event.replayed && (
+              <span class="tag" data-replayed>
+                replayed
+              </span>
+            )}
+            {event.awaitingApproval && (
+              <span class="tag" data-awaiting-approval>
+                awaiting approval
+              </span>
+            )}
           </>
+        }
+        description={
+          <>
+            Received <RelativeTime value={event.receivedAt} /> from{' '}
+            {event.source === '' ? '(no path)' : <code>{event.source}</code>}
+          </>
+        }
+      />
+      <div class="stack">
+        {event.quarantine.length > 0 && (
+          <Callout variant={event.status === 'waiting' ? 'info' : 'warning'} title="Why it's held">
+            <ul data-quarantine class="callout-list">
+              {event.quarantine.map((q) => (
+                <li data-reason={q.reason}>
+                  {reasonLabel(q.reason)} <span class="muted">({q.reason})</span>
+                </li>
+              ))}
+            </ul>
+          </Callout>
         )}
-      </dl>
-    </section>
 
-    {event.quarantine.length > 0 && (
-      <section class="card">
-        <h2>Why it's held</h2>
-        <ul data-quarantine>
-          {event.quarantine.map((q) => (
-            <li data-reason={q.reason}>
-              {reasonLabel(q.reason)} <span class="muted">({q.reason})</span>
-            </li>
-          ))}
-        </ul>
-      </section>
-    )}
+        <Section title="Details">
+          <KeyValueList
+            items={[
+              { label: 'Event ID', attrs: { 'data-field': 'id' }, value: <code>{event.id}</code> },
+              {
+                label: 'Source',
+                attrs: { 'data-field': 'source' },
+                value: event.source === '' ? '(no path)' : <code>{event.source}</code>,
+              },
+              { label: 'Operation', attrs: { 'data-field': 'op' }, value: event.op },
+              {
+                label: 'Received',
+                attrs: { 'data-field': 'received' },
+                value: (
+                  <>
+                    <RelativeTime value={event.receivedAt} />
+                    <span class="sub">{fullTime(event.receivedAt)}</span>
+                  </>
+                ),
+              },
+              {
+                label: 'Fingerprint',
+                attrs: { 'data-field': 'fingerprint' },
+                value: event.fingerprint === null ? 'None (malformed body)' : <code>{event.fingerprint}</code>,
+              },
+              { label: 'Body size', attrs: { 'data-field': 'size' }, value: formatBytes(size) },
+              {
+                label: 'Processing',
+                attrs: { 'data-field': 'job' },
+                value:
+                  event.attempts === null
+                    ? 'Processed'
+                    : `Still queued (${event.attempts} ${event.attempts === 1 ? 'attempt' : 'attempts'} so far)`,
+              },
+              ...(event.adapterFailure !== null
+                ? [
+                    {
+                      label: 'Last generation failure',
+                      attrs: { 'data-field': 'adapter-failure' },
+                      value: event.adapterFailure,
+                    },
+                  ]
+                : []),
+            ]}
+          />
+        </Section>
 
-    <section class="card">
-      <h2>Replay history</h2>
-      {replays.length === 0 ? (
-        <p class="muted">This event hasn't been replayed.</p>
-      ) : (
-        <table class="grid" data-replays>
-          <thead>
-            <tr>
-              <th>Attempted</th>
-              <th>Result</th>
-            </tr>
-          </thead>
-          <tbody>
-            {replays.map((r) => (
-              <tr>
-                <td>
-                  <time datetime={r.attemptedAt}>{r.attemptedAt}</time>
-                </td>
-                <td>{r.status}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
+        <Section title="Replay history" flush>
+          <div data-replays>
+            <DataTable
+              rows={replays}
+              caption="Replay history"
+              empty={<EmptyState compact title="This event hasn't been replayed." />}
+              columns={[
+                { header: 'Attempted', cell: (r) => <RelativeTime value={r.attemptedAt} /> },
+                { header: 'Result', cell: (r) => r.status },
+              ]}
+            />
+          </div>
+        </Section>
 
-    <section class="card">
-      <h2>Payload</h2>
-      <p class="muted">
-        The body and request headers can hold personal data and customer secrets, so they're only shown
-        when you ask for them.
-      </p>
-      {account.readOnly ? (
-        <p class="muted">Super admins have read-only access, so they can't view payloads.</p>
-      ) : (
-        <Form action={`${eventPath(account.id, event.id)}/payload`} csrf={csrf}>
-          <button type="submit">View payload and headers</button>
-        </Form>
-      )}
-    </section>
-
-    <p>
-      <a href={`/admin/accounts/${account.id}/pipeline`}>Back to the pipeline</a>
-    </p>
-  </Layout>
-);
+        <Section
+          title="Payload"
+          description="The body and request headers can hold personal data and customer secrets, so they're only shown when you ask for them."
+        >
+          {account.readOnly ? (
+            <p class="muted">Super admins have read-only access, so they can't view payloads.</p>
+          ) : (
+            <Form action={`${eventPath(account.id, event.id)}/payload`} csrf={csrf}>
+              <button type="submit" class="btn btn-secondary">
+                View payload and headers
+              </button>
+            </Form>
+          )}
+        </Section>
+      </div>
+    </Layout>
+  );
+};
 
 export const PayloadPage: FC<{
   user: SessionUser;
@@ -218,67 +239,76 @@ export const PayloadPage: FC<{
   request: { method: string; path: string; query: string; headers: [string, string][] };
 }> = ({ user, csrf, account, eventId, size, body, request }) => (
   <Layout title={`Payload ${eventId.slice(0, 8)}`} user={user} csrf={csrf}>
-    <style dangerouslySetInnerHTML={{ __html: CSS }} />
-    <section class="card">
-      <h1>Payload</h1>
-      <p>
-        <a href={eventPath(account.id, eventId)}>
-          Event <code>{eventId}</code>
-        </a>
-      </p>
-      <p class="muted">Authorization headers and the key parameter are removed before an event is stored.</p>
-    </section>
-    <section class="card">
-      <h2>Request</h2>
-      <dl class="facts">
-        <dt>Method</dt>
-        <dd data-field="method">{request.method}</dd>
-        <dt>Path</dt>
-        <dd data-field="path">
-          <code>{request.path}</code>
-        </dd>
-        <dt>Query string</dt>
-        <dd data-field="query">{request.query === '' ? '(none)' : <code>{request.query}</code>}</dd>
-      </dl>
-    </section>
-    <section class="card">
-      <h2>Headers</h2>
-      {request.headers.length === 0 ? (
-        <p class="muted">No headers were stored.</p>
-      ) : (
-        <table class="grid" data-headers>
-          <tbody>
-            {request.headers.map(([name, value]) => (
-              <tr>
-                <th>
-                  <code>{name}</code>
-                </th>
-                <td>
-                  <code>{value}</code>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
-    <section class="card">
-      <h2>Body</h2>
-      <p class="muted">{size.toLocaleString('en-US')} bytes</p>
-      {body.truncated && (
-        <p class="notice" data-truncated>
-          Truncated: showing the first {PAYLOAD_LIMIT.toLocaleString('en-US')} of {size.toLocaleString('en-US')} bytes
-        </p>
-      )}
-      {body.reformatted && (
-        <p class="muted" data-reformatted>
-          Reformatted as JSON for display; large numbers and duplicate keys may differ from what was sent.
-        </p>
-      )}
-      <pre class="body" data-body>
-        {body.text}
-      </pre>
-    </section>
+    <PageHeader
+      breadcrumbs={[
+        { label: 'Accounts', href: '/admin' },
+        { label: account.slug, href: `/admin/accounts/${account.id}` },
+        { label: 'Pipeline', href: `/admin/accounts/${account.id}/pipeline` },
+        { label: `Event ${eventId.slice(0, 8)}`, href: eventPath(account.id, eventId) },
+        { label: 'Payload' },
+      ]}
+      title="Payload"
+      description={
+        <>
+          For event{' '}
+          <a href={eventPath(account.id, eventId)}>
+            <code>{eventId}</code>
+          </a>
+          . Authorization headers and the key parameter are removed before an event is stored.
+        </>
+      }
+    />
+    <div class="stack">
+      <Section title="Request">
+        <KeyValueList
+          items={[
+            { label: 'Method', attrs: { 'data-field': 'method' }, value: request.method },
+            { label: 'Path', attrs: { 'data-field': 'path' }, value: <code>{request.path}</code> },
+            {
+              label: 'Query string',
+              attrs: { 'data-field': 'query' },
+              value: request.query === '' ? '(none)' : <code>{request.query}</code>,
+            },
+          ]}
+        />
+      </Section>
+      <Section title="Headers" flush={request.headers.length > 0}>
+        {request.headers.length === 0 ? (
+          <p class="muted">No headers were stored.</p>
+        ) : (
+          <div data-headers>
+            <DataTable
+              rows={request.headers}
+              caption="Request headers"
+              columns={[
+                { header: 'Name', mono: true, width: '35%', cell: ([name]) => <code>{name}</code> },
+                { header: 'Value', mono: true, cell: ([, value]) => <code>{value}</code> },
+              ]}
+            />
+          </div>
+        )}
+      </Section>
+      <Section title="Body" description={`${size.toLocaleString('en-US')} bytes`}>
+        <div class="stack">
+          {body.truncated && (
+            <Callout variant="warning">
+              <span data-truncated>
+                Truncated: showing the first {PAYLOAD_LIMIT.toLocaleString('en-US')} of {size.toLocaleString('en-US')}{' '}
+                bytes
+              </span>
+            </Callout>
+          )}
+          {body.reformatted && (
+            <p class="muted" data-reformatted>
+              Reformatted as JSON for display; large numbers and duplicate keys may differ from what was sent.
+            </p>
+          )}
+          <pre class="payload-body" data-body>
+            {body.text}
+          </pre>
+        </div>
+      </Section>
+    </div>
   </Layout>
 );
 

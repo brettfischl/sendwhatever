@@ -57,6 +57,8 @@ async function login(email: string) {
   return { cookie: `sw_admin=${/sw_admin=([^;]+)/.exec(res.headers.get('set-cookie') ?? '')![1]}` };
 }
 
+/** Blank out ticking time text ("12s ago", "oldest 10m 5s") so two requests a moment apart compare equal. */
+const steady = (html: string) => html.replace(/just now|\d+[smh] ago|\d+h \d+m|\d+m \d+s|\b\d+s\b/g, '~');
 const get = (path: string, s: { cookie: string }, fragment = false) =>
   app.request(path, { headers: { cookie: s.cookie, ...(fragment ? { 'x-admin-fragment': '1' } : {}) } });
 
@@ -397,7 +399,7 @@ describe('pipeline page', () => {
     const html = await (await get(`/admin/accounts/${quiet.id}/pipeline`, session)).text();
     expect(html).toMatch(/data-depth="true">0</);
     expect(html).toMatch(/data-oldest="true">—</);
-    expect(html).toContain('No jobs have been retried');
+    expect(html).toContain('0 retries');
   });
 });
 
@@ -417,7 +419,7 @@ describe('live refresh', () => {
       expect(fragment).not.toContain('<html');
       expect(fragment).not.toContain('<script');
       expect(fragment).not.toContain('data-live-region');
-      expect(full).toContain(fragment);
+      expect(steady(full)).toContain(steady(fragment));
     },
   );
 

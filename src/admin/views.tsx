@@ -15,6 +15,8 @@ import {
   LinkGrid,
   MANAGE_NAV,
   PageHeader,
+  StatGrid,
+  StatTile,
   STYLESHEET_HREF,
   StatusPill,
   type NavItem,
@@ -303,15 +305,24 @@ const OVERVIEW_DESCRIPTIONS: Partial<Record<NavKey, string>> = {
   credentials: 'Create and revoke API keys, and get your database login.',
   schema: 'Tables and columns created from the data you send.',
   traffic: 'Requests per minute over the last hour, by source.',
-  pipeline: 'Jobs waiting for the worker, and retries.',
+  pipeline: 'Live status of every event, and what needs your attention.',
 };
+
+export interface AccountGlance {
+  eventsLastHour: number;
+  waitingEvents: number;
+  waitingShapes: number;
+  tables: number;
+  needsAttention: number;
+}
 
 export const AccountHomePage: FC<{
   user: SessionUser;
   csrf: string;
   account: AccountSummary;
   readOnly: boolean;
-}> = ({ user, csrf, account, readOnly }) => (
+  glance?: AccountGlance;
+}> = ({ user, csrf, account, readOnly, glance }) => (
   <Layout title={account.slug} user={user} csrf={csrf}>
     <PageHeader
       breadcrumbs={[{ label: 'Accounts', href: '/admin' }, { label: account.slug }]}
@@ -324,6 +335,36 @@ export const AccountHomePage: FC<{
       }
       description="Overview. Pick a section to get started."
     />
+    {glance && (
+      <StatGrid>
+        <StatTile
+          label="Events, last hour"
+          value={glance.eventsLastHour}
+          href={`/admin/accounts/${account.id}/traffic`}
+          hint="See traffic"
+        />
+        <StatTile
+          label="Waiting for adapter"
+          value={glance.waitingEvents}
+          tone="info"
+          href={`/admin/accounts/${account.id}/pipeline?status=waiting`}
+          hint={`${glance.waitingShapes} new ${glance.waitingShapes === 1 ? 'shape' : 'shapes'}`}
+        />
+        <StatTile
+          label="Tables created"
+          value={glance.tables}
+          href={`/admin/accounts/${account.id}/schema`}
+          hint="See schema"
+        />
+        <StatTile
+          label="Needs attention"
+          value={glance.needsAttention}
+          tone="warning"
+          href={`/admin/accounts/${account.id}/pipeline?status=quarantined`}
+          hint={glance.needsAttention === 0 ? 'All clear' : 'Open the pipeline'}
+        />
+      </StatGrid>
+    )}
     <LinkGrid>
       {accountNav(account.id)
         .filter((item) => item.key !== 'overview')
@@ -335,6 +376,15 @@ export const AccountHomePage: FC<{
             description={OVERVIEW_DESCRIPTIONS[item.key] ?? ''}
           />
         ))}
+      {/* Until the nav lists Adapters itself, so the card appears once and not twice. */}
+      {!accountNav(account.id).some((item) => item.href.endsWith('/adapters')) && (
+        <LinkCard
+          href={`/admin/accounts/${account.id}/adapters`}
+          icon="workflow"
+          title="Adapters"
+          description="The code the AI wrote for each data shape."
+        />
+      )}
     </LinkGrid>
   </Layout>
 );
