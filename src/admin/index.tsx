@@ -1,4 +1,5 @@
 import { Hono, type Context, type ErrorHandler, type MiddlewareHandler } from 'hono';
+import { contextStorage } from 'hono/context-storage';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { csrf } from 'hono/csrf';
 import { HTTPException } from 'hono/http-exception';
@@ -26,6 +27,7 @@ import { hashPassword, verifyPassword } from './users.js';
 import { manageAccountRoutes } from './pages/manage-accounts.js';
 import { manageUserRoutes } from './pages/manage-users.js';
 import { AccountHomePage, AccountsPage, ErrorPage, LoginPage, type AccountSummary } from './views.js';
+import { CSS } from './ui/styles.js';
 
 export interface AccountAccess extends AccountSummary {
   /** True for a super admin who is not a member: they can look but not change anything. */
@@ -67,11 +69,24 @@ function page(c: AdminContext, status: ContentfulStatusCode, message: string) {
   return c.html(<ErrorPage status={status} message={message} user={c.get('user')} />, status);
 }
 
+// Lets Layout read the current user, account, and path without every page passing them.
+adminRoutes.use('*', contextStorage());
+
 // First, so it sees the final 404 from the catch-all: redirects GET/HEAD for a missing path ending in '/'.
 adminRoutes.use('*', trimTrailingSlash());
 
 // Layer 1 of CSRF: reject cross-origin form posts, including the login form, which has no session.
 adminRoutes.use('*', csrf());
+
+// The stylesheet. Registered before the no-store and session middleware, so it's public and cached;
+// Layout links it with a content-hash query string, so a changed stylesheet gets a new URL.
+// Public and cached for a year: only ever serve static content here.
+adminRoutes.get('/assets/app.css', (c) => {
+  c.header('content-type', 'text/css; charset=utf-8');
+  c.header('x-content-type-options', 'nosniff');
+  c.header('cache-control', 'public, max-age=31536000, immutable');
+  return c.body(CSS);
+});
 
 // Admin pages show personal data, so nothing is cached.
 adminRoutes.use('*', async (c, next) => {

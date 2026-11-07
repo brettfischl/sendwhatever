@@ -6,7 +6,7 @@ import { getActiveStore, getRowCounts, getSchemaTables, type SchemaTable } from 
 import { Layout } from '../views.js';
 import { getPipelineSummary } from '../../pipeline/status.js';
 
-// Page-local styles: the shared stylesheet in views.tsx is left alone.
+// Page-local styles: the shared stylesheet in ui/styles.ts is left alone.
 const CSS = `
 table.grid { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
 table.grid th, table.grid td { text-align: left; padding: 0.3rem 0.5rem; border-top: 1px solid var(--line); }

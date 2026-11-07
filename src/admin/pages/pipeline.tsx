@@ -22,7 +22,7 @@ const FEED_SIZE = 25;
 /** The source filter's value for events sent with no path, whose source is ''. Known gap (sw-fm4): a real source of '/' (from /ingest/%2F) shares this value. */
 const NO_PATH = '/';
 
-// Page-local styles: the shared stylesheet in views.tsx is left alone.
+// Page-local styles: the shared stylesheet in ui/styles.ts is left alone.
 const CSS = `
 table.grid { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
 table.grid th, table.grid td { text-align: left; padding: 0.3rem 0.5rem; border-top: 1px solid var(--line); vertical-align: top; }
