@@ -32,7 +32,8 @@ type ShapeRow = { source: string; op: 'write' | 'delete'; fingerprint: string; h
  *   on an auto-activating account isn't waiting for anyone, so `runAttempt` finishes activating it.
  * - a replay that could reach it is queued. It may release these rows, or finish failing them.
  * - only `unknown_fingerprint` rows are open and an active adapter matches exactly. The sweep has those.
- * - it reached the cap, or its last failure's backoff is still running.
+ * - it reached the cap, or its last failure's backoff is still running. The cap counts failures on rows
+ *   still open, so a shape that was fixed starts over if it fails again later.
  *
  * Adapter matching on opaque paths needs the body, so that part is left to `runAttempt`.
  */
@@ -93,7 +94,7 @@ const ELIGIBLE_SHAPES = `
       FROM replay_log l
       JOIN quarantine r ON r.account_id = l.account_id AND r.id = l.quarantine_id
       JOIN events re ON re.account_id = r.account_id AND re.id = r.event_id
-      WHERE l.account_id = s.account_id AND l.status = 'failed'
+      WHERE l.account_id = s.account_id AND l.status = 'failed' AND r.released_at IS NULL
         AND re.source = s.source AND re.op = s.op AND re.fingerprint = s.fingerprint
     ) < $2::int
     AND (

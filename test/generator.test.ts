@@ -20,6 +20,7 @@ import { shapesOverlap } from '../src/generator/overlap.js';
 import { parseReply, parseSameKind, retryMessage, stripFences } from '../src/generator/prompt.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
+import { dropDatabase } from './helpers/drop-database.js';
 import { DEFAULT_SETTINGS, processNextJob, type WorkerContext } from '../src/worker/index.js';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
@@ -243,8 +244,8 @@ afterAll(async () => {
   await db.end();
   await backend.close();
   for (const namespace of scratchDatabases) {
-    await admin.query(`DROP DATABASE IF EXISTS "${namespace}" WITH (FORCE)`);
-    await admin.query(`DROP ROLE IF EXISTS "${readOnlyRoleName(namespace)}"`);
+    await dropDatabase(admin, namespace);
+    await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
   }
   await admin.end();
 });
@@ -453,6 +454,69 @@ function adapt(payload) {
     expect(await inStore(namespace, 'SELECT id FROM users')).toEqual([{ id: '7' }]);
   });
 
+  it('makes a replacement keep the columns of an adapter that reached the shape through reuse', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    // Fails on bodies with a flag, once the columns are decided.
+    const reused = `function adapt(payload) {
+      const d = payload.data;
+      if (d.flag === true) throw new Error('boom');
+      return { table: 'users', rows: [{ id: String(d.id), name: d.name, source_name: 'x' }] };
+    }`;
+    const earlierBody = { id: 1, name: 'Ada' };
+    const shape = { id: 2, name: 'Lin', flag: true };
+    const adapterId = await addAdapter(accountId, earlierBody, reused);
+    await db.query('INSERT INTO adapter_fingerprints (adapter_id, fingerprint) VALUES ($1, $2)', [adapterId, fingerprint(shape)]);
+    await addQuarantined(accountId, shape, { reason: 'adapter_error' });
+    // The earlier version fails on these samples, so give it one it can still run.
+    await db.query(
+      `INSERT INTO events (account_id, body, source, op, fingerprint, request) VALUES ($1, $2, '', 'write', $3, $4)`,
+      [accountId, Buffer.from(JSON.stringify({ id: 3, name: 'Kim', flag: false })), fingerprint(shape), request],
+    );
+    const dropsColumn = `function adapt(payload) { const d = payload.data; return { table: 'users', rows: [{ id: String(d.id), name: d.name, flag: d.flag }] }; }`;
+    const keepsColumn = `function adapt(payload) { const d = payload.data; return { table: 'users', rows: [{ id: String(d.id), name: d.name, flag: d.flag, source_name: 'x' }] }; }`;
+    const llm = script(dropsColumn, keepsColumn);
+
+    await pollOnce(generatorContext(accountId, llm));
+
+    expect(llm.calls).toHaveLength(2);
+    expect(llm.calls[1]!.at(-1)!.content).toContain('dropped_column');
+    expect((await attempts(accountId))[0]!.status).toBe('succeeded');
+  });
+
+  it('leaves out sibling shapes that would make the prompt too big, instead of failing', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await addQuarantined(accountId, userBody);
+    const huge = Object.fromEntries(Array.from({ length: 12_000 }, (_, index) => [`key_${index}_padding_padding`, 1]));
+    await addQuarantined(accountId, huge);
+    const llm = script(userAdapter);
+
+    await pollOnce(generatorContext(accountId, llm));
+
+    expect(llm.calls).toHaveLength(1);
+    expect(llm.calls[0]![1]!.content).toContain('"sibling_shapes": []');
+    expect((await attempts(accountId))[0]!.status).toBe('succeeded');
+  });
+
+  it('tells the LLM why the adapter failed, not why one store did', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    const store = await db.query<{ id: string }>('SELECT id FROM account_stores WHERE account_id = $1', [accountId]);
+    await addAdapter(accountId, userBody, userAdapter);
+    await addQuarantined(accountId, userBody, { reason: 'adapter_error', detail: 'the adapter threw' });
+    await addQuarantined(accountId, userBody, { reason: 'schema_conflict', storeId: store.rows[0]!.id, detail: 'one store only' });
+    await addQuarantined(accountId, { only: 'store' }, { reason: 'schema_conflict', storeId: store.rows[0]!.id });
+    const llm = script(userAdapter);
+
+    await pollOnce(generatorContext(accountId, llm));
+
+    const input = llm.calls[0]![1]!.content;
+    expect(input).toContain('the adapter threw');
+    expect(input).not.toContain('one store only');
+    expect(input).toContain('"sibling_shapes": []');
+  });
+
   it('refuses opaque paths that would lose the match to the adapter being replaced', async () => {
     const accountId = await newAccount();
     await addStore(accountId);
@@ -558,6 +622,43 @@ describe('avoiding an LLM call', () => {
     await drainQueue(accountId);
     expect(await openRows(accountId)).toBe(0);
     expect(await inStore(namespace, 'SELECT id FROM things')).toEqual([{ id: '2' }]);
+  });
+
+  it('skips the same-kind check on events too big to send, and fails on size rather than calling the LLM', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    const big = Object.fromEntries(Array.from({ length: 12_000 }, (_, index) => [`key_${index}_padding_padding`, 'x']));
+    await addHandledEvent(accountId, { id: 1, ...big, extra: 'x' });
+    await addAdapter(accountId, { id: 1, ...big, extra: 'x' }, copyAllAdapter);
+    await addQuarantined(accountId, { id: 2, ...big });
+    const llm = script('same');
+
+    await pollOnce(generatorContext(accountId, llm));
+
+    expect(llm.calls).toHaveLength(0);
+    expect((await attempts(accountId))[0]).toMatchObject({ status: 'failed', detail: 'The sample is too large to send to the LLM.' });
+  });
+
+  it('does not bind a shape to an adapter that stopped being active', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await addHandledEvent(accountId, userBody);
+    const adapterId = await addAdapter(accountId, userBody, userAdapter);
+    await addQuarantined(accountId, { id: 9, email: 'lin@example.com' });
+    // Goes inactive while the same-kind question is out.
+    const llm = new ScriptedLlm(async (_messages, call) => {
+      if (call === 1) {
+        await db.query('UPDATE adapters SET active = false, superseded_at = now() WHERE id = $1', [adapterId]);
+        return 'same';
+      }
+      return userAdapter;
+    });
+
+    await pollOnce(generatorContext(accountId, llm));
+
+    const bound = await db.query('SELECT 1 FROM adapter_fingerprints WHERE adapter_id = $1', [adapterId]);
+    expect(bound.rowCount).toBe(0);
+    expect(llm.calls).toHaveLength(2);
   });
 
   it('does not reuse an adapter that has already failed on this shape', async () => {
@@ -691,6 +792,16 @@ describe('the generation cap', () => {
     const accountId = await newAccount();
     await addStore(accountId);
     await failedAdapters(accountId, userBody, 3, 'store_failed');
+
+    expect(await pollOnce(generatorContext(accountId, script(userAdapter), { generationCap: 3 }))).toBe(1);
+  });
+
+  it('starts the count over once a later adapter has released the failed rows', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await failedAdapters(accountId, userBody, 3);
+    await db.query('UPDATE quarantine SET released_at = now() WHERE account_id = $1', [accountId]);
+    await addQuarantined(accountId, userBody, { reason: 'adapter_error' });
 
     expect(await pollOnce(generatorContext(accountId, script(userAdapter), { generationCap: 3 }))).toBe(1);
   });

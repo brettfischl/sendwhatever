@@ -70,16 +70,20 @@ export interface GenerationInput {
   replaces?: { code: string; reason: string; detail: string | null };
 }
 
-/** The first request of a generation. Returns null if the input is too big to send. */
+/** The first request of a generation. Returns null if its own samples are too big to send. */
 export function generationMessages(input: GenerationInput): LlmMessage[] | null {
-  const content = `Write the adapter for this shape.\n${dataBlock({
-    op: input.op,
-    registered_schema: input.schema,
-    samples: input.samples.slice(0, MAX_SAMPLES).map(describeSample),
-    sample_shape: input.sampleShape,
-    sibling_shapes: input.siblingShapes.slice(0, MAX_SIBLINGS),
-    ...(input.replaces ? { replaces: input.replaces } : {}),
-  })}`;
+  const build = (siblingShapes: readonly string[]) =>
+    `Write the adapter for this shape.\n${dataBlock({
+      op: input.op,
+      registered_schema: input.schema,
+      samples: input.samples.slice(0, MAX_SAMPLES).map(describeSample),
+      sample_shape: input.sampleShape,
+      sibling_shapes: siblingShapes,
+      ...(input.replaces ? { replaces: input.replaces } : {}),
+    })}`;
+  // Sibling shapes are only hints, so another shape's size must not stop this one.
+  let content = build(input.siblingShapes.slice(0, MAX_SIBLINGS));
+  if (content.length > MAX_INPUT_CHARS) content = build([]);
   if (content.length > MAX_INPUT_CHARS) return null;
   return [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -111,16 +115,16 @@ export interface SameKindInput {
   candidate: GateSample;
 }
 
-export function sameKindMessages({ tables, examples, candidate }: SameKindInput): LlmMessage[] {
+/** Returns null if the events are too big to send, which means generating or failing with a clear reason. */
+export function sameKindMessages({ tables, examples, candidate }: SameKindInput): LlmMessage[] | null {
+  const content = dataBlock({
+    existing_adapter: { tables, example_events: examples.map(describeSample) },
+    new_event: describeSample(candidate),
+  });
+  if (content.length > MAX_INPUT_CHARS) return null;
   return [
     { role: 'system', content: SAME_KIND_PROMPT },
-    {
-      role: 'user',
-      content: dataBlock({
-        existing_adapter: { tables, example_events: examples.map(describeSample) },
-        new_event: describeSample(candidate),
-      }),
-    },
+    { role: 'user', content },
   ];
 }
 

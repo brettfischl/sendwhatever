@@ -155,14 +155,15 @@ function tablesOf(output: unknown): string[] {
   return [...new Set(objects.map(({ table }) => table))];
 }
 
-/** Binds the shape to the adapter and asks for the replay together, so neither happens alone. */
+/** Binds the shape and asks for the replay together. An adapter no longer active gets neither. */
 async function bindShape(context: GeneratorContext, adapterId: string, shape: string): Promise<boolean> {
   return inTransaction(context.db, async (client) => {
+    if (!(await enqueueReplay(client, adapterId))) return false;
     await client.query(
       'INSERT INTO adapter_fingerprints (adapter_id, fingerprint) VALUES ($1, $2) ON CONFLICT DO NOTHING',
       [adapterId, shape],
     );
-    return enqueueReplay(client, adapterId);
+    return true;
   });
 }
 
@@ -195,16 +196,15 @@ async function tryReuse(
     });
     if (!gate.ok) continue;
 
+    const question = sameKindMessages({
+      tables: tablesOf(gate.samples[0]!.output),
+      examples: validated.slice(0, MAX_SAME_KIND_EXAMPLES),
+      candidate: samples[0]!,
+    });
+    if (!question) continue;
+
     checks += 1;
-    const answer = await callLlm(
-      context,
-      sameKindMessages({
-        tables: tablesOf(gate.samples[0]!.output),
-        examples: validated.slice(0, MAX_SAME_KIND_EXAMPLES),
-        candidate: samples[0]!,
-      }),
-      signal,
-    );
+    const answer = await callLlm(context, question, signal);
     if (answer.finishReason === 'length' || !parseSameKind(answer.content)) continue;
 
     if (await bindShape(context, candidate.id, claim.fingerprint)) {
@@ -221,7 +221,7 @@ async function loadSiblingShapes(context: GeneratorContext, claim: Claim): Promi
      FROM quarantine q
      JOIN events e ON e.account_id = q.account_id AND e.id = q.event_id
      WHERE q.account_id = $1 AND e.source = $2 AND e.op = $3 AND e.fingerprint <> $4
-       AND q.released_at IS NULL AND q.reason IN ('unknown_fingerprint', 'adapter_error', 'schema_conflict')
+       AND q.released_at IS NULL AND q.store_id IS NULL AND q.reason IN ('unknown_fingerprint', 'adapter_error', 'schema_conflict')
      ORDER BY e.fingerprint, e.seq DESC
      LIMIT 10`,
     [claim.accountId, claim.source, claim.op, claim.fingerprint],
@@ -235,7 +235,7 @@ async function loadReplacedFailure(context: GeneratorContext, claim: Claim, curr
      FROM quarantine q
      JOIN events e ON e.account_id = q.account_id AND e.id = q.event_id
      WHERE q.account_id = $1 AND e.source = $2 AND e.op = $3 AND e.fingerprint = $4 AND q.released_at IS NULL
-       AND q.reason IN ('adapter_error', 'schema_conflict')
+       AND q.store_id IS NULL AND q.reason IN ('adapter_error', 'schema_conflict')
      ORDER BY e.seq DESC
      LIMIT 1`,
     [claim.accountId, claim.source, claim.op, claim.fingerprint],
@@ -395,6 +395,24 @@ async function checkDraft(
     code,
   });
   if (!gate.ok) return { errors: gate.failures };
+
+  // The gate only compares versions of one fingerprint. An adapter that reached this shape through reuse or
+  // opaque paths has another, and its columns must still be kept (§12.1).
+  if (current && current.fingerprint !== collapsed) {
+    const kept = await runGate({
+      adapter: { code, op: claim.op, opaquePaths },
+      // Handled events too, since the earlier version may fail on every open row, leaving nothing to compare.
+      samples: await loadSamples(
+        context.db,
+        { account_id: claim.accountId, source: claim.source, op: claim.op, fingerprint: claim.fingerprint, opaque_paths: [], code },
+        undefined,
+        { includeHandled: true },
+      ),
+      registries: await loadRegistries(context.db, claim.accountId),
+      earlier: { id: current.id, code: current.code, opaquePaths: current.opaque_paths },
+    });
+    if (!kept.ok) return { errors: kept.failures };
+  }
   return { draft: { code, opaquePaths, fingerprint: collapsed }, replacing: gate.replacing };
 }
 
