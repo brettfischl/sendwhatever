@@ -236,6 +236,71 @@ describe('CSRF', () => {
     expect(res.headers.get('set-cookie')).toBeNull();
   });
 
+  describe('behind a TLS proxy', () => {
+    // Caddy passes Host through and speaks plain HTTP to the app, so the app sees http:// while the
+    // browser's Origin is https://. No Sec-Fetch-Site here, so only the Origin check decides.
+    const PUBLIC = 'https://app.example.test';
+    const SEEN = 'http://app.example.test';
+    const publicApp = createApp({
+      appDb,
+      backend: new PostgresBackend(),
+      config: { ...config, publicBaseUrl: PUBLIC },
+    });
+    const login = (target: typeof app, email: string, headers: Record<string, string>) =>
+      target.request(`${SEEN}/admin/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+        body: form({ email, password: PASSWORD }),
+      });
+
+    it('rejects the public origin when PUBLIC_BASE_URL is unset', async () => {
+      const user = await newUser('tls-unset');
+      expect((await login(app, user.email, { origin: PUBLIC })).status).toBe(403);
+    });
+
+    it('accepts the public origin when PUBLIC_BASE_URL is set, with a Secure cookie', async () => {
+      const user = await newUser('tls-set');
+      const res = await login(publicApp, user.email, { origin: PUBLIC });
+      expect(res.status).toBe(303);
+      expect(res.headers.get('set-cookie')).toContain('Secure');
+
+      // A logged-in form post from the public origin works too.
+      const cookie = /sw_admin=([^;]+)/.exec(res.headers.get('set-cookie')!)![1]!;
+      const headers = { cookie: `sw_admin=${cookie}` };
+      const html = await (await publicApp.request(`${SEEN}/admin`, { headers })).text();
+      const csrf = /name="_csrf" value="([^"]+)"/.exec(html)![1]!;
+      const out = await publicApp.request(`${SEEN}/admin/logout`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded', origin: PUBLIC },
+        body: form({ _csrf: csrf }),
+      });
+      expect(out.status).toBe(303);
+    });
+
+    it('rejects any other origin when PUBLIC_BASE_URL is set, including the request URL', async () => {
+      const user = await newUser('tls-other');
+      for (const origin of ['https://evil.example', SEEN, 'https://app.example.test:8443']) {
+        const res = await login(publicApp, user.email, { origin });
+        expect(res.status, origin).toBe(403);
+        expect(res.headers.get('set-cookie')).toBeNull();
+      }
+      expect((await login(publicApp, user.email, {})).status).toBe(403);
+    });
+
+    it('ignores client-supplied forwarded headers', async () => {
+      const user = await newUser('tls-spoof');
+      const spoof = {
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'evil.example',
+        forwarded: 'proto=https;host=evil.example',
+      };
+      expect((await login(publicApp, user.email, { ...spoof, origin: 'https://evil.example' })).status).toBe(403);
+      // Nor do they make the public origin pass when PUBLIC_BASE_URL is unset.
+      const unset = { ...spoof, 'x-forwarded-host': 'app.example.test', forwarded: 'proto=https;host=app.example.test' };
+      expect((await login(app, user.email, { ...unset, origin: PUBLIC })).status).toBe(403);
+    });
+  });
+
   it('allows a logged-in POST to /admin/login without _csrf (login CSRF is covered by the Origin check)', async () => {
     const user = await newUser('login-exempt');
     const s = await session(user.email);

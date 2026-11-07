@@ -3,6 +3,7 @@ import type { FC } from 'hono/jsx';
 import { AccountError, createAccount, type CreatedAccount } from '../../accounts/create.js';
 import { HttpError } from '../../http/deps.js';
 import type { AdminEnv } from '../index.js';
+import { publicDbAddress, type PublicDbAddress } from '../public-addresses.js';
 import type { SessionUser } from '../sessions.js';
 import { CopyBlock, Form, Layout } from '../views.js';
 
@@ -95,11 +96,13 @@ const AccountsListPage: FC<{
   </Layout>
 );
 
-const AccountCreatedPage: FC<{ user: SessionUser; csrf: string; created: CreatedAccount }> = ({
-  user,
-  csrf,
-  created,
-}) => (
+// `db` replaces created.database's host and port, which are the store's own connection.
+const AccountCreatedPage: FC<{
+  user: SessionUser;
+  csrf: string;
+  created: CreatedAccount;
+  db: PublicDbAddress;
+}> = ({ user, csrf, created, db }) => (
   <Layout title="Account created" user={user} csrf={csrf}>
     <section class="card">
       <h1>Account {created.slug} created</h1>
@@ -111,11 +114,16 @@ const AccountCreatedPage: FC<{ user: SessionUser; csrf: string; created: Created
       <h2>Read-only database login</h2>
       <ul class="list">
         <li>
-          Host <code>{created.database.host}</code>
+          Host <code>{db.host}</code>
         </li>
         <li>
-          Port <code>{String(created.database.port)}</code>
+          Port <code>{String(db.port)}</code>
         </li>
+        {db.requireSsl && (
+          <li>
+            SSL mode <code>require</code>
+          </li>
+        )}
         <li>
           Database <code>{String(created.database.database)}</code>
         </li>
@@ -271,7 +279,12 @@ manageAccountRoutes.post('/', async (c) => {
     const created = await createAccount(c.get('deps'), { slug });
     // Rendered in this response only. Never redirect with the secrets.
     return c.html(
-      <AccountCreatedPage user={c.get('user')!} csrf={c.get('csrf')!} created={created} />,
+      <AccountCreatedPage
+        user={c.get('user')!}
+        csrf={c.get('csrf')!}
+        created={created}
+        db={publicDbAddress(c.get('deps').config, created.database)}
+      />,
     );
   } catch (error) {
     if (error instanceof AccountError) {

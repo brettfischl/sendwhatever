@@ -111,6 +111,9 @@ describe('manage accounts', () => {
     expect(html).toContain('Read-only database login');
     expect(html).toContain('Credentials page');
     expect(html).not.toMatch(/database password.{0,40}cannot be shown again/);
+    expect(html).toContain('Host <code>localhost</code>');
+    expect(html).toContain(`Port <code>${config.postgresPort}</code>`);
+    expect(html).not.toContain('SSL mode');
 
     expect((await ingest(slug, apiKey)).status).toBe(202);
 
@@ -148,6 +151,30 @@ describe('manage accounts', () => {
     const removed = await post(`/admin/manage/accounts/${id}/members/${member.id}/remove`, s);
     expect(removed.status).toBe(303);
     expect((await app.request(`/admin/accounts/${id}`, { headers: m.headers })).status).toBe(404);
+  });
+
+  it('shows the public database address on the created page when it is set', async () => {
+    const PUBLIC_ORIGIN = 'https://app.example.test';
+    const publicApp = createApp({
+      appDb,
+      backend: new PostgresBackend({ idleTimeoutMs: 50 }),
+      config: { ...config, publicBaseUrl: PUBLIC_ORIGIN, publicDbHost: 'db.example.test', publicDbPort: 5432 },
+    });
+    const admin = await newUser('acct-public', true);
+    const s = await session(admin.email);
+    const slug = `mgpub-${tag}`;
+    slugs.push(slug);
+    const res = await publicApp.request('/admin/manage/accounts', {
+      method: 'POST',
+      headers: { ...s.headers, 'content-type': 'application/x-www-form-urlencoded', origin: PUBLIC_ORIGIN },
+      body: form({ _csrf: s.csrf, slug }),
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('Host <code>db.example.test</code>');
+    expect(html).toContain('Port <code>5432</code>');
+    expect(html).toContain('SSL mode <code>require</code>');
+    expect(html).not.toContain('localhost');
   });
 
   it('maps account errors to friendly messages', async () => {
