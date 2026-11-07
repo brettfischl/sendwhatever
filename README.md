@@ -52,6 +52,7 @@ INGEST_URL=http://localhost:3000/ingest INGEST_API_KEY=your-key ACCOUNT_SLUG=you
 | `ACCOUNT_SLUG` | `demo` | Sent as `X-Account-Slug`, as in development without Caddy. Set it empty to leave the header out when a subdomain names the account. |
 | `DEMO_PORT` | `3100` | Port for the site. |
 | `DEMO_HOST` | `127.0.0.1` | Address for the site. It has no login, so think before exposing it. |
+| `DEMO_APP_DATABASE_URL` | none | Turns on the live tables panel against a real service: a `postgres://` URL for `sw_app` on localhost, used read-only for event progress and to find the store. It needs `SW_ENCRYPTION_KEY` to open the store's read-only login, and `DEMO_HOST` must stay on loopback, or the demo won't start. |
 
 The panel on every page shows each request and its response. The site's own data lives in memory and is gone on restart. If ingest rejects a request or can't be reached, the action still happens on the site and the panel shows the failure.
 
