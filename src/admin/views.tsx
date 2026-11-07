@@ -154,6 +154,12 @@ export const AccountHomePage: FC<{
       </p>
       <ul class="account-nav">
         <li>
+          <a href={`/admin/accounts/${account.id}/connect`}>Connect</a>
+        </li>
+        <li>
+          <a href={`/admin/accounts/${account.id}/credentials`}>Credentials</a>
+        </li>
+        <li>
           <a href={`/admin/accounts/${account.id}/schema`}>Schema</a>
         </li>
         <li>
