@@ -15,6 +15,7 @@ import {
   type WorkerContext,
 } from '../src/worker/index.js';
 import { claimJob, finishReplay } from '../src/worker/queue.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 // Databases and child processes add up, particularly when other test files are busy too.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 });
@@ -272,7 +273,7 @@ afterAll(async () => {
   await db.end();
   await realBackend.close();
   for (const namespace of scratchDatabases) {
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
   }
   await admin.end();

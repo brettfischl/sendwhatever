@@ -7,6 +7,7 @@ import type { LogicalType, StoreConfig, TableRow } from '../src/contracts/index.
 import { isRetryable } from '../src/storage/postgres/errors.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
+import { dropDatabase } from './helpers/drop-database.js';
 
 const dataUrl = new URL(loadConfig().dataDatabaseUrl);
 const connection = {
@@ -108,7 +109,7 @@ afterAll(async () => {
   await backend.close();
   for (const namespace of scratch) {
     // Dropping the database removes the grants that would otherwise block dropping the role.
-    await admin.query(`DROP DATABASE IF EXISTS ${pg.escapeIdentifier(namespace)} WITH (FORCE)`);
+    await dropDatabase(admin, namespace);
     await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
   }
   await admin.end();
