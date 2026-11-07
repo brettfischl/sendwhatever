@@ -1,5 +1,5 @@
 import type { Handler } from 'hono';
-import { Layout } from '../views.js';
+import { CopyBlock, Layout } from '../views.js';
 import type { AdminEnv } from '../index.js';
 import { connectionString, loadReadLogin } from './credentials.js';
 
@@ -32,18 +32,7 @@ export const connectPage: Handler<AdminEnv> = async (c) => {
           POST any JSON to <code>{endpoint}</code>. Every request needs the header{' '}
           <code>X-Account-Slug: {account.slug}</code> and an API key.
         </p>
-        <pre id="curl-example">
-          <code>{curl}</code>
-        </pre>
-        <p>
-          <button
-            type="button"
-            class="quiet"
-            onclick="navigator.clipboard.writeText(document.getElementById('curl-example').textContent)"
-          >
-            Copy
-          </button>
-        </p>
+        <CopyBlock value={curl} label="curl example" />
         <p class="muted">
           Replace <code>$API_KEY</code> with a key from <a href={credentialsUrl}>Credentials</a>.
         </p>
@@ -62,9 +51,7 @@ export const connectPage: Handler<AdminEnv> = async (c) => {
         <h2>Read your data</h2>
         {login ? (
           <>
-            <p>
-              <code>{connectionString(login, false)}</code>
-            </p>
+            <CopyBlock value={connectionString(login, false)} label="connection string" />
             <p class="muted">
               The password is not shown here. <a href={credentialsUrl}>Reveal it on Credentials</a>.
             </p>

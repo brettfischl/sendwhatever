@@ -11,7 +11,12 @@ h1 { font-size: 1.5rem; line-height: 1.2; margin: 0 0 0.35rem; }
 h2 { font-size: 1.05rem; margin: 0 0 0.6rem; }
 p { margin: 0 0 0.6rem; }
 a { color: var(--accent); }
-code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.9em; }
+code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.9em; overflow-wrap: anywhere; }
+pre { margin: 0 0 0.6rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.copy { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; width: 100%; margin: 0 0 0.6rem; padding: 0.55rem 0.7rem; text-align: left; font-weight: 400; color: var(--ink); background: var(--paper); border: 1px solid var(--line); border-radius: 6px; user-select: text; }
+.copy:hover { border-color: var(--accent); }
+.copy code { flex: 1; min-width: 0; white-space: pre-wrap; }
+.copy-hint { flex: none; font-size: 0.82rem; font-weight: 600; color: var(--accent); user-select: none; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.8rem 1.5rem; background: var(--card); border-bottom: 1px solid var(--line); }
 .brand { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--ink); font-weight: 700; text-decoration: none; }
 .brand-dot { width: 0.65rem; height: 0.65rem; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 22%, transparent); }
@@ -29,12 +34,27 @@ input:focus-visible, button:focus-visible, a:focus-visible { outline: 2px solid 
 button { font: inherit; font-weight: 600; cursor: pointer; color: var(--accent-ink); background: var(--accent); border: 0; border-radius: 6px; padding: 0.45rem 0.9rem; }
 button.quiet { color: var(--ink); background: var(--paper); border: 1px solid var(--line); padding: 0.25rem 0.65rem; font-weight: 500; }
 ul.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+ul.list li > code { min-width: 0; text-align: right; }
 ul.list li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.55rem 0; border-top: 1px solid var(--line); }
 ul.list li:first-child { border-top: 0; }
 .tag { background: var(--paper); border: 1px solid var(--line); border-radius: 99px; padding: 0.05rem 0.6rem; font-size: 0.82rem; color: var(--muted); }
 .tag.active { color: var(--ok); }
 .tag.provisioning { color: var(--warn); }
 `;
+
+// Inline like the page's other handlers. Clipboard access needs HTTPS or localhost, so say so if it's missing.
+const COPY_HANDLER = `var hint = this.querySelector('.copy-hint');
+var show = function (text) { hint.textContent = text; setTimeout(function () { hint.textContent = 'Copy'; }, 1500); };
+if (!navigator.clipboard) { show('Select to copy'); return; }
+navigator.clipboard.writeText(this.querySelector('code').textContent).then(function () { show('Copied'); }, function () { show('Select to copy'); });`;
+
+/** A value that wraps inside its card and copies when clicked. */
+export const CopyBlock: FC<{ value: string; label: string }> = ({ value, label }) => (
+  <button type="button" class="copy" aria-label={`Copy ${label}`} onclick={COPY_HANDLER}>
+    <code>{value}</code>
+    <span class="copy-hint">Copy</span>
+  </button>
+);
 
 export const Layout: FC<PropsWithChildren<{ title: string; user?: SessionUser; csrf?: string }>> = ({
   title,
