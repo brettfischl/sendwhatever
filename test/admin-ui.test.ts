@@ -3,7 +3,6 @@ import pg from 'pg';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { jsx } from 'hono/jsx';
 import { createUser } from '../src/admin/users.js';
-import { ErrorPage } from '../src/admin/views.js';
 import {
   activeNav,
   DataTable,
@@ -101,8 +100,16 @@ describe('stylesheet', () => {
 
   it('leaves the sidebar off logged-out pages', async () => {
     expect(await page('/admin/login', {})).not.toContain('class="sidebar"');
-    const html = await render(jsx(ErrorPage, { status: 404, message: 'Page not found' }));
-    expect(html).toContain('Page not found');
+    // A cross-origin POST is refused by csrf() before any session exists, so this is the real
+    // logged-out error page.
+    const res = await app.request(`${ORIGIN}/admin/login`, {
+      method: 'POST',
+      headers: { origin: 'http://evil.test', 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'email=x&password=y',
+    });
+    expect(res.status).toBe(403);
+    const html = await res.text();
+    expect(html).toContain('Request refused');
     expect(html).not.toContain('class="sidebar"');
   });
 });

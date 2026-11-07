@@ -30,7 +30,7 @@ navigator.clipboard.writeText(this.querySelector('code').textContent).then(funct
 /**
  * A value that wraps inside its card and copies when clicked anywhere on it. Kept as one button so a
  * single click copies (e.g. a password in a list row). `CodeBlock` in ./ui is the same idea for
- * multi-line samples; pages move onto it as they're restyled (sw-rb2.14).
+ * multi-line samples; pages move onto it as they're restyled.
  */
 export const CopyBlock: FC<{ value: string; label: string }> = ({ value, label }) => (
   <button type="button" class="copy" aria-label={`Copy ${label}`} onclick={COPY_HANDLER}>
