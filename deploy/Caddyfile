@@ -7,13 +7,7 @@ app.__DOMAIN__ {
 	# Default deny. /accounts, /adapters and /quarantine are internal and never forwarded.
 	@public path /ingest /ingest/* /admin /admin/* /healthz /tables /tables/*
 	handle @public {
-		reverse_proxy 127.0.0.1:3000 {
-			# Stopgap until sw-zs8.5.1 (PUBLIC_BASE_URL for CSRF) is deployed. The admin's CSRF check
-			# compares Origin with the request URL, which the app sees as http://. This rewrites only
-			# our own exact origin, so every other origin still mismatches and is rejected.
-			# Remove it in the same deploy as sw-zs8.5.1, or the login fails again.
-			header_up Origin https://app.__DOMAIN__ http://app.__DOMAIN__
-		}
+		reverse_proxy 127.0.0.1:3000
 	}
 	handle {
 		respond 404
