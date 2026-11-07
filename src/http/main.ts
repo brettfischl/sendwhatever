@@ -10,6 +10,9 @@ const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl });
 // An idle connection that drops would otherwise crash the process.
 appDb.on('error', (error) => console.error('app database pool error:', error.message));
 
+if (!config.internalApiToken) {
+  console.warn('INTERNAL_API_TOKEN is not set, so the adapter and quarantine routes refuse every request.');
+}
 await ensureSuperAdmin(appDb, config.adminEmail, config.adminPassword);
 
 const app = createApp({ appDb, backend: new PostgresBackend(), config });

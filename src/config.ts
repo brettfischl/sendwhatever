@@ -12,6 +12,8 @@ export interface Config {
   port: number;
   /** Defaults to loopback: internal routes have no auth. */
   host: string;
+  /** Bearer token for the adapter and quarantine routes. Undefined means they refuse every request. */
+  internalApiToken: string | undefined;
   /** Seed for the first super admin; both optional. */
   adminEmail: string | undefined;
   adminPassword: string | undefined;
@@ -44,6 +46,7 @@ export function loadConfig(): Config {
     encryptionKey: parseEncryptionKey(required('SW_ENCRYPTION_KEY')),
     port: Number(process.env.PORT || 3000),
     host: process.env.HOST || '127.0.0.1',
+    internalApiToken: process.env.INTERNAL_API_TOKEN || undefined,
     adminEmail: process.env.ADMIN_EMAIL || undefined,
     adminPassword: process.env.ADMIN_PASSWORD || undefined,
     fireworksApiKey: process.env.FIREWORKS_API_KEY || undefined,
