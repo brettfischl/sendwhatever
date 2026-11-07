@@ -30,6 +30,8 @@ const CLIENT_TIMEOUT_MARGIN_MS = 5_000;
 /** Limits for customer logins (§14.1). An idle open transaction would block DDL just like a query. */
 const READ_ONLY_STATEMENT_TIMEOUT = '30s';
 const READ_ONLY_IDLE_IN_TRANSACTION_TIMEOUT = '60s';
+/** So one customer can't use up the server's `max_connections`. */
+const READ_ONLY_CONNECTION_LIMIT = 10;
 
 /** Concurrent grants on the database row fail with "tuple concurrently updated", even across stores. */
 const PROVISION_LOCK = 'sendwhatever:provision';
@@ -94,7 +96,10 @@ export class PostgresBackend implements StorageBackend {
         if (existing.rowCount === 0) await client.query(`CREATE ROLE ${role}`);
 
         // These statements can't take bind parameters. The password is hex we generated above.
-        await client.query(`ALTER ROLE ${role} LOGIN PASSWORD ${pg.escapeLiteral(password)}`);
+        await client.query(
+          `ALTER ROLE ${role} LOGIN CONNECTION LIMIT ${READ_ONLY_CONNECTION_LIMIT}
+           PASSWORD ${pg.escapeLiteral(password)}`,
+        );
         await client.query(
           `ALTER ROLE ${role} SET statement_timeout = '${READ_ONLY_STATEMENT_TIMEOUT}'`,
         );

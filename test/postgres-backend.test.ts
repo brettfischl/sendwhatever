@@ -232,6 +232,29 @@ describe('provision', () => {
     });
   });
 
+  it('refuses a login past its connection limit, without affecting the platform', async () => {
+    const store = newStore();
+    await backend.provision(store);
+    const login = await backend.provision(store);
+
+    const open: pg.Client[] = [];
+    try {
+      for (let count = 0; count < 10; count += 1) {
+        const client = new pg.Client({
+          ...connection,
+          user: login.user as string,
+          password: login.password as string,
+        });
+        await client.connect();
+        open.push(client);
+      }
+      await expect(asLogin(login, async () => undefined)).rejects.toMatchObject({ code: '53300' });
+      await expect(backend.health(store)).resolves.toBeUndefined();
+    } finally {
+      await Promise.all(open.map((client) => client.end()));
+    }
+  });
+
   it('bounds the role name for a long namespace', async () => {
     const long = `t_${randomBytes(6).toString('hex')}_${'n'.repeat(48)}`;
     expect(long).toHaveLength(63);
@@ -397,12 +420,18 @@ describe('applySchema', () => {
     try {
       await holder.query('BEGIN');
       await holder.query(`LOCK TABLE ${pg.escapeIdentifier(store.namespace)}."item"`);
-      const error = await failure(
-        backend.applySchema(store, [
-          { kind: 'add_column', table: 'item', column: 'x', type: 'string' },
-        ]),
-      );
-      expect(error.retryable).toBe(true);
+      const started = Date.now();
+      const errors = await Promise.all([
+        failure(
+          backend.applySchema(store, [
+            { kind: 'add_column', table: 'item', column: 'x', type: 'string' },
+          ]),
+        ),
+        failure(backend.applySchema(store, [{ kind: 'add_index', table: 'item', column: 'id' }])),
+      ]);
+      for (const error of errors) expect(error.retryable).toBe(true);
+      // The 5s lock timeout, not the 10-minute DDL statement timeout.
+      expect(Date.now() - started).toBeLessThan(8_000);
     } finally {
       await holder.query('ROLLBACK');
       await holder.end();
