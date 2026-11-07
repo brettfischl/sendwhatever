@@ -23,7 +23,16 @@ import { findAdapter } from '../worker/match.js';
 import { backoffMs, enqueueReplay } from '../worker/queue.js';
 import { LlmUnavailableError, type LlmCompletion, type LlmMessage } from './llm.js';
 import { shapesOverlap } from './overlap.js';
-import { finishAttempt, inTransaction, linkAttempt, stillRunning, type AttemptOutcome, type Claim } from './poll.js';
+import {
+  finishAttempt,
+  GAVE_UP,
+  inTransaction,
+  linkAttempt,
+  REUSE_NEEDS_OPERATOR,
+  stillRunning,
+  type AttemptOutcome,
+  type Claim,
+} from './poll.js';
 import { generationMessages, parseReply, parseSameKind, retryMessage, sameKindMessages } from './prompt.js';
 import type { GeneratorContext } from './settings.js';
 
@@ -196,6 +205,9 @@ async function tryReuse(
     });
     if (!gate.ok) continue;
 
+    // Binding would start writing this shape with nobody having looked at it (§12.1).
+    if (!claim.autoActivate) return { status: 'succeeded', adapterId: candidate.id, detail: REUSE_NEEDS_OPERATOR };
+
     const question = sameKindMessages({
       tables: tablesOf(gate.samples[0]!.output),
       examples: validated.slice(0, MAX_SAME_KIND_EXAMPLES),
@@ -353,7 +365,11 @@ async function generate(
     problems.push(...checked.errors.map(({ code }) => code));
     messages.push({ role: 'assistant', content: completion.content }, retryMessage(checked.errors));
   }
-  return { status: 'failed', detail: `Gave up after ${settings.llmTries} tries: ${summarize(problems)}.` };
+  // Only an answer that failed says something about the shape. An outage says nothing, so it isn't counted.
+  if (problems.every((problem) => problem === 'llm_unavailable')) {
+    return { status: 'failed', detail: `The LLM was unavailable for all ${settings.llmTries} tries.` };
+  }
+  return { status: 'failed', detail: `${GAVE_UP} ${settings.llmTries} tries: ${summarize(problems)}.` };
 }
 
 type DraftCheck =

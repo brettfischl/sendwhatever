@@ -49,16 +49,21 @@ async function waitFor<T>(what: string, check: () => Promise<T | undefined>, run
   }
 }
 
+/** Set in the environment, it wins over .env. Tests must never run the generator with the real key. */
+const NO_KEY = '';
+/** The generator starts with this, and only ever gets a random account, so it never calls the LLM. */
+const FAKE_KEY = 'entrypoints-test-key';
+
 /**
  * Other test files share this queue, so the worker only ever gets the account named here. Without an
  * account yet, a random id makes it claim nothing.
  */
-function npmRun(script: string, workerAccountId: string, port: number): Running {
+function npmRun(script: string, workerAccountId: string, port: number, fireworksKey = NO_KEY): Running {
   const command = spawn('npm', ['run', '--silent', script], {
     cwd: ROOT,
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: String(port), WORKER_ACCOUNT_ID: workerAccountId, INTERNAL_API_TOKEN: INTERNAL_TOKEN },
+    env: { ...process.env, PORT: String(port), WORKER_ACCOUNT_ID: workerAccountId, INTERNAL_API_TOKEN: INTERNAL_TOKEN, FIREWORKS_API_KEY: fireworksKey },
   });
   let output = '';
   command.stdout.on('data', (chunk) => (output += chunk));
@@ -74,8 +79,8 @@ function npmRun(script: string, workerAccountId: string, port: number): Running 
   return started;
 }
 
-async function startDev(workerAccountId: string = randomUUID()): Promise<Running> {
-  const dev = npmRun('dev', workerAccountId, await freePort());
+async function startDev(workerAccountId: string = randomUUID(), fireworksKey = NO_KEY): Promise<Running> {
+  const dev = npmRun('dev', workerAccountId, await freePort(), fireworksKey);
   await waitForStart(dev, 'sendwhatever worker started');
   await waitForStart(dev, 'sendwhatever listening');
   return dev;
@@ -271,6 +276,30 @@ describe('npm run dev', () => {
   });
 });
 
+describe('npm run dev and the generator', () => {
+  it('warns and runs without the generator when there is no Fireworks key', async () => {
+    const dev = await startDev();
+
+    expect(dev.output()).toContain('FIREWORKS_API_KEY is not set, so running without the generator');
+    expect(dev.output()).not.toContain('generator started');
+
+    process.kill(dev.group, 'SIGTERM');
+    await expectAllStopped(dev, 0);
+  });
+
+  it('runs the generator as a third process, and stops everything if it dies', async () => {
+    const dev = await startDev(randomUUID(), FAKE_KEY);
+    await waitForStart(dev, 'sendwhatever generator started');
+    const pid = /generator started with pid (\d+)/.exec(dev.output())?.[1];
+    expect(pid).toBeDefined();
+
+    process.kill(Number(pid), 'SIGKILL');
+
+    await expectAllStopped(dev, 1);
+    expect(dev.output()).toContain('[dev] generator exited (SIGKILL), so stopping everything');
+  });
+});
+
 describe('npm start', () => {
   it('finishes a request in flight when Ctrl-C arrives twice, then exits cleanly', async () => {
     const port = await freePort();
@@ -314,5 +343,23 @@ describe('npm run worker', () => {
     process.kill(worker.group, 'SIGTERM');
 
     await expectAllStopped(worker, 0);
+  });
+});
+
+describe('npm run generator', () => {
+  it('runs alone and stops cleanly', async () => {
+    const generator = npmRun('generator', randomUUID(), await freePort(), FAKE_KEY);
+    await waitForStart(generator, 'sendwhatever generator started');
+
+    process.kill(generator.group, 'SIGTERM');
+
+    await expectAllStopped(generator, 0);
+  });
+
+  it('exits with an error when there is no Fireworks key', async () => {
+    const generator = npmRun('generator', randomUUID(), await freePort());
+
+    await expectAllStopped(generator, 1);
+    expect(generator.output()).toContain('FIREWORKS_API_KEY is not set');
   });
 });

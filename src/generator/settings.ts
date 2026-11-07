@@ -10,6 +10,11 @@ export interface GeneratorSettings {
   accountConcurrency: number;
   /** Adapters that may pass validation and then fail in replay before a shape waits for an operator. */
   generationCap: number;
+  /**
+   * Consecutive attempts a shape may fail before it waits for an operator, which bounds LLM cost for a
+   * shape that never passes. An LLM outage doesn't count, or a short one would park every open shape.
+   */
+  maxFailedAttempts: number;
   /** LLM requests one attempt may make for an adapter, retrying with gate errors. */
   llmTries: number;
   /** The wait between tries, which then doubles. */
@@ -34,6 +39,7 @@ export const DEFAULT_GENERATOR_SETTINGS: GeneratorSettings = {
   concurrency: 4,
   accountConcurrency: 2,
   generationCap: 3,
+  maxFailedAttempts: 5,
   llmTries: 3,
   tryBackoffBaseMs: 2_000,
   tryBackoffMaxMs: 30_000,

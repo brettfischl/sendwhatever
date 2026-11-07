@@ -406,7 +406,7 @@ describe('generating an adapter', () => {
     await pollOnce(context);
 
     expect((await attempts(accountId))[0]).toMatchObject({ status: 'failed' });
-    expect((await attempts(accountId))[0]!.detail).toContain('llm_unavailable (3)');
+    expect((await attempts(accountId))[0]!.detail).toContain('unavailable for all 3 tries');
     expect(await pollOnce(context)).toBe(0);
   });
 
@@ -761,6 +761,95 @@ describe('which rows it reads', () => {
   });
 });
 
+describe('the consecutive failure limit', () => {
+  /** Failed attempts long enough ago that backoff is over. */
+  async function addFailures(accountId: string, body: unknown, count: number, detail: string): Promise<void> {
+    for (let index = 0; index < count; index += 1) {
+      await db.query(
+        `INSERT INTO adapter_attempts (account_id, source, op, fingerprint, status, detail, started_at, finished_at)
+         VALUES ($1, '', 'write', $2, 'failed', $3, now() - interval '1 year', now() - interval '1 year')`,
+        [accountId, fingerprint(body), detail],
+      );
+    }
+  }
+  const gaveUp = 'Gave up after 3 tries: dropped_field (3).';
+
+  it('stops really failing shapes at the limit, with the LLM\'s calls as the count', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await addQuarantined(accountId, { id: 7, name: 'Ada', email: 'a@example.com' });
+    const llm = script(dropsEmailAdapter);
+    const context = generatorContext(accountId, llm, { maxFailedAttempts: 2 });
+
+    await pollOnce(context);
+    await expireBackoff(accountId);
+    await pollOnce(context);
+    expect(llm.calls).toHaveLength(6);
+    await expireBackoff(accountId);
+
+    expect(await pollOnce(context)).toBe(0);
+    expect(llm.calls).toHaveLength(6);
+  });
+
+  it('defaults to 5, and a new event of the shape does not reset it', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await addQuarantined(accountId, userBody);
+    await addFailures(accountId, userBody, 4, gaveUp);
+    const context = generatorContext(accountId, script(userAdapter), { maxFailedAttempts: DEFAULT_GENERATOR_SETTINGS.maxFailedAttempts });
+    const claim = await claimNext(db, context.settings);
+    expect(claim).not.toBeNull();
+    await db.query(
+      `UPDATE adapter_attempts SET status = 'failed', detail = $2, finished_at = now() - interval '1 year', started_at = now() - interval '1 year'
+       WHERE id = $1`,
+      [claim!.attemptId, gaveUp],
+    );
+
+    await addQuarantined(accountId, userBody);
+    expect(await pollOnce(context)).toBe(0);
+  });
+
+  it('counts attempts that timed out, which could be a shape crashing the process', async () => {
+    const accountId = await newAccount();
+    await addQuarantined(accountId, userBody);
+    await addFailures(accountId, userBody, 2, 'Timed out: no result after the attempt limit.');
+    const settings = { ...DEFAULT_GENERATOR_SETTINGS, ...QUICK, accountId, maxFailedAttempts: 2 };
+
+    expect(await claimNext(db, settings)).toBeNull();
+  });
+
+  it('does not count an LLM outage, so a short one cannot park every shape', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await addQuarantined(accountId, userBody);
+    const down = script(new LlmUnavailableError('Fireworks returned 503'));
+    const context = generatorContext(accountId, down, { maxFailedAttempts: 1 });
+
+    await pollOnce(context);
+    expect((await attempts(accountId))[0]!.detail).toBe('The LLM was unavailable for all 3 tries.');
+    await expireBackoff(accountId);
+
+    // Up again, and the shape is still offered.
+    expect(await pollOnce(generatorContext(accountId, script(userAdapter), { maxFailedAttempts: 1 }))).toBe(1);
+    expect((await attempts(accountId)).at(-1)!.status).toBe('succeeded');
+  });
+
+  it('starts over after an attempt succeeds', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    await addAdapter(accountId, userBody, `function adapt() { throw new Error('boom'); }`);
+    await addFailures(accountId, userBody, 2, gaveUp);
+    await db.query(
+      `INSERT INTO adapter_attempts (account_id, source, op, fingerprint, status, started_at, finished_at)
+       VALUES ($1, '', 'write', $2, 'succeeded', now() - interval '1 day', now() - interval '1 day')`,
+      [accountId, fingerprint(userBody)],
+    );
+    await addQuarantined(accountId, userBody, { reason: 'adapter_error' });
+
+    expect(await pollOnce(generatorContext(accountId, script(userAdapter), { maxFailedAttempts: 2 }))).toBe(1);
+  });
+});
+
 describe('the generation cap', () => {
   async function failedAdapters(accountId: string, body: unknown, count: number, status = 'failed'): Promise<void> {
     const { rowId } = await addQuarantined(accountId, body, { reason: 'adapter_error' });
@@ -881,6 +970,56 @@ function adapt(payload) { return { table: 'things', rows: [{ id: String(payload.
     expect(llm.calls).toHaveLength(1);
     expect(await pollOnce(generatorContext(accountId, llm))).toBe(0);
     expect(await adapters(accountId)).toHaveLength(1);
+  });
+
+  it('does not bind a reuse match with auto_activate off, makes no same-kind call, and waits', async () => {
+    const accountId = await newAccount({ autoActivate: false });
+    await addStore(accountId);
+    await addHandledEvent(accountId, userBody);
+    const adapterId = await addAdapter(accountId, userBody, userAdapter);
+    await addQuarantined(accountId, { id: 9, email: 'lin@example.com' });
+    const llm = script('same');
+    const context = generatorContext(accountId, llm);
+
+    await pollOnce(context);
+
+    expect(llm.calls).toHaveLength(0);
+    expect(await adapters(accountId)).toHaveLength(1);
+    const bound = await db.query('SELECT 1 FROM adapter_fingerprints WHERE adapter_id = $1', [adapterId]);
+    expect(bound.rowCount).toBe(0);
+    const queued = await db.query('SELECT 1 FROM queue WHERE account_id = $1', [accountId]);
+    expect(queued.rowCount).toBe(0);
+    const [attempt] = await attempts(accountId);
+    expect(attempt).toMatchObject({ status: 'succeeded', adapter_id: adapterId });
+    expect(attempt!.detail).toContain('needs an operator');
+    expect(await openRows(accountId)).toBe(1);
+
+    // It stays waiting, with no more attempts or model calls.
+    await expireBackoff(accountId);
+    expect(await pollOnce(context)).toBe(0);
+    expect(llm.calls).toHaveLength(0);
+
+    // Turning auto_activate on lets ordinary reuse take over.
+    await db.query('UPDATE accounts SET auto_activate = true WHERE id = $1', [accountId]);
+    await pollOnce(context);
+    expect(llm.calls).toHaveLength(1);
+    expect((await db.query('SELECT 1 FROM adapter_fingerprints WHERE adapter_id = $1', [adapterId])).rowCount).toBe(1);
+  });
+
+  it('still writes a draft for the operator when nothing matches with auto_activate off', async () => {
+    const accountId = await newAccount({ autoActivate: false });
+    await addStore(accountId);
+    await addHandledEvent(accountId, userBody);
+    await addAdapter(accountId, userBody, userAdapter);
+    await addQuarantined(accountId, { sku: 'A1' });
+    const draft = `function adapt(payload) { return { table: 'products', rows: [{ sku: payload.data.sku }] }; }`;
+    const llm = script(draft);
+
+    await pollOnce(generatorContext(accountId, llm));
+
+    expect(llm.calls).toHaveLength(1);
+    expect(llm.calls[0]![0]!.content).toContain('You write adapters');
+    expect((await adapters(accountId)).at(-1)!.active).toBe(false);
   });
 
   it('leaves an operator\'s validated adapter alone on an auto-activating account', async () => {

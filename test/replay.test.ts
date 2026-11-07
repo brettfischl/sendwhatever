@@ -279,6 +279,68 @@ afterAll(async () => {
   await admin.end();
 });
 
+describe('what a failure says about the adapter', () => {
+  it('logs store_failed when the only store refuses a row for all stores', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    const adapterId = await addAdapter(accountId);
+    const { rowId } = await addQuarantined(accountId, userBody('a'));
+    await addJob(accountId, adapterId);
+    backend.beforeWrite = async () => {
+      throw new StorageError('rejected', { retryable: false });
+    };
+
+    await processNextJob(context(), { accountId });
+
+    expect(await row(rowId)).toMatchObject({ released_at: null, reason: 'write_error' });
+    expect(await logFor(rowId)).toMatchObject([{ status: 'store_failed' }]);
+  });
+
+  it('logs store_failed when the only store is still down at the maximum age', async () => {
+    const accountId = await newAccount();
+    await addStore(accountId);
+    const adapterId = await addAdapter(accountId);
+    const { rowId } = await addQuarantined(accountId, userBody('a'));
+    await addJob(accountId, adapterId, 100);
+    backend.beforeWrite = async () => {
+      throw new StorageError('down', { retryable: true });
+    };
+
+    await processNextJob(context({ maxAgeMs: 60_000 }), { accountId });
+
+    expect(await row(rowId)).toMatchObject({ released_at: null, reason: 'write_error' });
+    expect(await logFor(rowId)).toMatchObject([{ status: 'store_failed' }]);
+  });
+
+  it('still logs failed for an adapter error or schema conflict on a row for all stores', async () => {
+    const accountId = await newAccount();
+    const { id: storeId } = await addStore(accountId);
+    await db.query(
+      `INSERT INTO data_columns (store_id, table_name, column_name, logical_type) VALUES ($1, 'user', 'name', 'number')`,
+      [storeId],
+    );
+    const conflicting = await addAdapter(accountId);
+    const conflict = await addQuarantined(accountId, userBody('a'));
+    await addJob(accountId, conflicting);
+
+    await processNextJob(context(), { accountId });
+
+    expect(await row(conflict.rowId)).toMatchObject({ reason: 'schema_conflict' });
+    expect(await logFor(conflict.rowId)).toMatchObject([{ status: 'failed' }]);
+
+    const other = await newAccount();
+    await addStore(other);
+    const throwing = await addAdapter(other, { code: `function adapt() { throw new Error('boom'); }` });
+    const thrown = await addQuarantined(other, userBody('b'));
+    await addJob(other, throwing);
+
+    await processNextJob(context(), { accountId: other });
+
+    expect(await row(thrown.rowId)).toMatchObject({ reason: 'adapter_error' });
+    expect(await logFor(thrown.rowId)).toMatchObject([{ status: 'failed' }]);
+  });
+});
+
 describe('releasing rows', () => {
   it('writes each row, releases it, logs it under its account, and deletes the job', async () => {
     const accountId = await newAccount();
@@ -725,7 +787,7 @@ describe('which stores', () => {
       ]);
     });
 
-    it('keeps the row, logged as failed, when no store took the write', async () => {
+    it('keeps the row, logged as store_failed, when no store took the write', async () => {
       const accountId = await newAccount();
       const active = await addStore(accountId);
       const building = await addStore(accountId, 'building');
@@ -741,7 +803,7 @@ describe('which stores', () => {
       expect(await row(rowId)).toMatchObject({ released_at: null, reason: 'write_error' });
       expect((await row(rowId)).detail).toBe(`Store ${active.id}: rejected; Store ${building.id}: rejected`);
       expect(await openRows(eventId)).toHaveLength(1);
-      expect(await logFor(rowId)).toMatchObject([{ status: 'failed' }]);
+      expect(await logFor(rowId)).toMatchObject([{ status: 'store_failed' }]);
     });
   });
 });

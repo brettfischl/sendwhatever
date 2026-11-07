@@ -22,8 +22,14 @@ export type AttemptOutcome = { status: 'succeeded' | 'failed'; adapterId?: strin
 
 type ShapeRow = { source: string; op: 'write' | 'delete'; fingerprint: string; has_failure: boolean; auto_activate: boolean };
 
+/** How an attempt's `detail` starts when the LLM answered but its adapter never passed. */
+export const GAVE_UP = 'Gave up after';
+/** The attempt's `detail` when a shape matched an adapter, on an account that reviews what goes live. */
+export const REUSE_NEEDS_OPERATOR = 'An existing adapter fits, but with auto_activate off it needs an operator.';
+const TIMED_OUT = 'Timed out';
+
 /**
- * Open shapes that are ready for work. Takes an account (or null for all) as $1, then $2 to $4 from
+ * Open shapes that are ready for work. Takes an account (or null for all) as $1, then $2 to $5 from
  * `eligibleParams`. A shape is left out if:
  * - its rows name a store. Those are one store's failures, which a new adapter can't fix.
  * - its source and op have a generation running. A shape's variations often arrive together, and going one
@@ -32,6 +38,9 @@ type ShapeRow = { source: string; op: 'write' | 'delete'; fingerprint: string; h
  *   on an auto-activating account isn't waiting for anyone, so `runAttempt` finishes activating it.
  * - a replay that could reach it is queued. It may release these rows, or finish failing them.
  * - only `unknown_fingerprint` rows are open and an active adapter matches exactly. The sweep has those.
+ * - with auto_activate off, it matched an adapter that's still active, which is an operator's call.
+ * - it failed too many attempts in a row. Only one that spent model calls or timed out counts, so an outage
+ *   can't park it, and a new event doesn't reset this.
  * - it reached the cap, or its last failure's backoff is still running. The cap counts failures on rows
  *   still open, so a shape that was fixed starts over if it fails again later.
  *
@@ -53,7 +62,8 @@ const ELIGIBLE_SHAPES = `
   )
   SELECT s.* FROM open_shapes s
   LEFT JOIN LATERAL (
-    SELECT count(*)::int AS failures, MAX(t.finished_at) AS last_finished
+    SELECT count(*)::int AS failures, MAX(t.finished_at) AS last_finished,
+      count(*) FILTER (WHERE t.detail LIKE '${GAVE_UP}%' OR t.detail LIKE '${TIMED_OUT}%')::int AS counted
     FROM adapter_attempts t
     WHERE t.account_id = s.account_id AND t.source = s.source AND t.op = s.op AND t.fingerprint = s.fingerprint
       AND t.status = 'failed'
@@ -97,14 +107,21 @@ const ELIGIBLE_SHAPES = `
       WHERE l.account_id = s.account_id AND l.status = 'failed' AND r.released_at IS NULL
         AND re.source = s.source AND re.op = s.op AND re.fingerprint = s.fingerprint
     ) < $2::int
+    AND recent.counted < $5::int
+    AND NOT (NOT s.auto_activate AND EXISTS (
+      SELECT 1 FROM adapter_attempts t
+      JOIN adapters a ON a.id = t.adapter_id AND a.active
+      WHERE t.account_id = s.account_id AND t.source = s.source AND t.op = s.op AND t.fingerprint = s.fingerprint
+        AND t.status = 'succeeded' AND t.detail = '${REUSE_NEEDS_OPERATOR}'
+    ))
     AND (
       recent.failures = 0 OR recent.last_finished +
         LEAST($4::double precision, $3::double precision * 2 ^ LEAST(recent.failures - 1, 30))
         * interval '1 millisecond' <= now()
     )`;
 
-function eligibleParams(settings: GeneratorSettings): [number, number, number] {
-  return [settings.generationCap, settings.attemptBackoffBaseMs, settings.attemptBackoffMaxMs];
+function eligibleParams(settings: GeneratorSettings): [number, number, number, number] {
+  return [settings.generationCap, settings.attemptBackoffBaseMs, settings.attemptBackoffMaxMs, settings.maxFailedAttempts];
 }
 
 export async function inTransaction<T>(db: pg.Pool, work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
@@ -144,7 +161,7 @@ async function claimForAccount(db: pg.Pool, accountId: string, settings: Generat
     await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [`sw_generator:${accountId}`]);
     await client.query(
       `UPDATE adapter_attempts
-       SET status = 'failed', finished_at = now(), detail = 'Timed out: no result after the attempt limit.'
+       SET status = 'failed', finished_at = now(), detail = '${TIMED_OUT}: no result after the attempt limit.'
        WHERE account_id = $1 AND status = 'running'
          AND started_at < now() - $2::double precision * interval '1 millisecond'`,
       [accountId, settings.staleAttemptMs],
@@ -190,7 +207,7 @@ export async function claimNext(db: pg.Pool, settings: GeneratorSettings): Promi
        SELECT account_id FROM (${ELIGIBLE_SHAPES}) eligible
        UNION
        SELECT account_id FROM adapter_attempts
-       WHERE status = 'running' AND started_at < now() - $5::double precision * interval '1 millisecond'
+       WHERE status = 'running' AND started_at < now() - $6::double precision * interval '1 millisecond'
          AND ($1::uuid IS NULL OR account_id = $1::uuid)
      )
      SELECT c.account_id FROM candidates c
