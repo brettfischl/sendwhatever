@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-Build a platform that accepts arbitrary JSON payloads sent to per-account endpoints, classifies their structure, and writes them into per-account storage. When an unrecognized payload structure arrives, the system quarantines it, and a continuously running LLM process writes a new data adapter for it. Once the adapter passes validation, it is activated and all matching quarantined payloads are replayed through it, so the delay for a new shape is essentially the time it takes to generate the adapter. A human operator can step in at any point.
+Build a platform that accepts arbitrary JSON payloads sent to per-account endpoints, classifies their structure, and writes them into per-account storage. When an unrecognized payload structure arrives, the system quarantines it, and a continuously running LLM process writes a new data adapter for it. Once the adapter passes validation, it is activated (or waits for an operator, if the account's `auto_activate` setting is off) and all matching quarantined payloads are replayed through it, so the delay for a new shape is essentially the time it takes to generate the adapter. A human operator can step in at any point.
 
 The platform gives each account one way in and two ways to use the result:
 1. **Direct adapter-driven ingestion** — raw `{ type, data }` JSON payloads are classified and written automatically.
@@ -37,7 +37,7 @@ Every accepted payload is kept in an append-only ingress event log. Normalized t
 
 ## 3. Non-Goals (MVP)
 
-- User logins, roles, or authorization beyond per-account API keys (§13.4).
+- User logins, roles, or authorization beyond per-account API keys and webhook signatures (§13.4).
 - Billing, usage metering, or rate limiting.
 - Payload size limits and throughput targets. This is a low-volume, one-day hackathon build (§17).
 - Customer-supplied databases. Storage connections are set by the platform, and customers only receive read-only access.
@@ -116,7 +116,7 @@ System tables live outside the account's storage namespace, so a payload with `t
 
 1. Client POSTs `{ "type": "user", "data": { ... } }` to `https://account-123.api.example.com/ingest`.
 2. Caddy routes the request to the Ingestion Service with the account slug.
-3. Ingestion Service resolves the account in the application database, checks the API key (§13.4), checks the envelope, and computes a structural fingerprint of `data` (sorted keys, nesting shape, array/object kinds) ignoring values.
+3. Ingestion Service resolves the account in the application database, checks the API key (§13.4), checks the envelope (or takes `type` from the path, §6.2), and computes a structural fingerprint of `data` (sorted keys, nesting shape, array/object kinds) ignoring values.
 4. In one transaction, it appends the raw body to `events` and inserts an `ingest` job into `queue`. It then returns `202 Accepted` with the `event_id`. A repeated `Idempotency-Key` creates nothing and returns the original `event_id` (§13.1).
 5. A worker claims the job.
 6. It queries the application database for an active adapter matching `(account_id, type, fingerprint)`, taking opaque paths into account (§7.1).
@@ -171,7 +171,7 @@ A rebuild uses current adapters, so it also serves to reprocess an account's his
 
 ## 6. Payload Envelope
 
-All ingestion requests must use this envelope:
+Requests to `/ingest` use this envelope. Webhook sources post to `/ingest/:type` instead (§6.2).
 
 ```json
 {
@@ -211,6 +211,24 @@ We want to test how well the LLM does without the `{ type, data }` convention, a
 - Fingerprinting the whole body.
 - Making `type` optional on `events` and `adapters`, with adapters required to set `table`.
 - A new rule for what `malformed` means, since only JSON scalars would still fail the envelope check.
+
+### 6.2 Webhook Sources
+
+Third-party tools (Stripe, Shopify, GitHub, …) send their own formats and usually let you set only a URL, with no custom headers.
+
+**Core:**
+- **Typed path.** They post to `/ingest/:type`. The path supplies `type` (identifier rules in §9), and the whole body, which must be an object or array, is `data`. Envelope parsing applies only to bare `/ingest`, so a Stripe body with its own `type` and `data` keys isn't misread.
+- **Key in the URL.** Since most providers can't send `Authorization`, the API key may be passed as `?key=` instead (§13.4). It is removed before the request is logged.
+- **Request context.** `events.request` stores the method, path, query, and headers, minus credentials. Adapters receive it as `payload.request`, to tell event kinds apart (e.g., `X-GitHub-Event`) and detect deletes.
+- **Duplicate deliveries.** Providers retry, so delivery is at least once. A known delivery header (`X-GitHub-Delivery`, `X-Shopify-Webhook-Id`, …) is used as the `Idempotency-Key` when none is sent.
+
+**If time allows:**
+- **Setup handshakes.** Built-in responders answer provider verification synchronously and log nothing: Slack `url_verification`, Microsoft Graph `validationToken`, and Meta `hub.challenge` (a `GET`).
+- **Signatures.** An optional secret per `(account, type)` checks provider signatures (Stripe, Shopify, GitHub HMAC) against the raw bytes, replacing the URL key for that source. Failures get `401`.
+- **Batches.** A top-level array body is logged as one event per element, so batches that mix event kinds (e.g., SendGrid) don't produce a new fingerprint for every combination (§7).
+- **Form bodies.** `application/x-www-form-urlencoded` bodies (Twilio, Slack commands) are parsed into a JSON object. The raw bytes are still what's logged.
+
+**Out of scope:** thin events, which carry only an ID and expect the receiver to fetch the resource.
 
 ---
 
@@ -264,6 +282,7 @@ An exact match takes priority, so a specific adapter can still be added for a sh
 Adapters transform the raw payload into an intermediate object. The platform turns that object into storage backend writes.
 
 ```typescript
+// An adapter returns IntermediateObject | IntermediateObject[]
 interface IntermediateObject {
   table?: string;       // override top-level table name; default = payload.type
   rows: IntermediateRow[];
@@ -273,6 +292,7 @@ interface IntermediateObject {
 
 interface IntermediateRow {
   id?: string;          // if omitted, platform injects a deterministic UUID
+  _deleted?: true;      // mark this record deleted instead of writing it
   [column: string]: any;
   children?: Record<string, IntermediateObject>;
 }
@@ -282,9 +302,12 @@ Rules:
 - `table` is optional. If omitted, the platform uses the payload `type`.
 - `rows` is required. Each row represents one record in the table. One ingress event can produce any number of rows: `{ "messages": [{ "msg": "hi" }, { "msg": "hello!" }] }` can become two `messages` rows.
 - `id` is optional on each row, including child rows. If missing, the platform injects a UUIDv5, so reprocessing the same event produces the same IDs:
-  - A child of a parent with an adapter-supplied `id` derives from `(parent id, table, position)`, so a repeat of the parent updates its children instead of adding more. If a later event has fewer children, the extra rows stay, since the platform never deletes data.
+  - A child of a parent with an adapter-supplied `id` derives from `(parent id, table, position)`, so a repeat of the parent updates its children instead of adding more.
+  - A parent row that includes a child table replaces that set: the parent's children from earlier events that this event doesn't write are marked deleted (§9). A parent row that omits the child table leaves it alone. Tables with `append: true` are never replaced.
   - Every other row, and any child table with `append: true`, derives from `(event_id, table, row path)`.
 - An adapter-supplied `id` is treated as the record's identity, and writes to it merge: columns in the write are updated, and columns absent from it keep their values. An explicit `null` clears a column. When events conflict on a column, the one latest in the log wins (§11.2).
+- `_deleted: true` marks the record deleted rather than writing it. A later write for the same `id` restores it. Rows are never physically removed.
+- Returning an array writes several top-level tables from one event, such as an order and the customer embedded in it. An entity with its own identity belongs in its own table, referenced by a column like `customer_id`, rather than repeated as a child of each parent.
 - Column values are strings, numbers, booleans, or `null`, plus objects or arrays at declared opaque paths (§9). A `timestamp` column is declared in `column_types`, and its values must be ISO 8601 strings with a timezone.
 - `children` is reserved, as are injected foreign key names. An adapter must rename payload fields that collide with them, and a collision fails with `adapter_error`.
 - `children` is optional. Each key becomes a child table named `{parent_table}_{key}` (or uses the adapter hint if provided).
@@ -346,7 +369,7 @@ The platform then:
 
 The platform uses a lazy, additive schema strategy, defined in logical types so it behaves the same on every storage backend.
 
-- Tables are created on first write if they do not exist. Every table has an `id` primary key and a platform-managed `_event_seq` column holding the highest `events.seq` that has written the row.
+- Tables are created on first write if they do not exist. Every table has an `id` primary key and platform-managed columns: `_event_seq` (the highest `events.seq` that has written the row), `_column_seq` (the same, per column, §11.2), and `_deleted_at` (set when the record is marked deleted, §8).
 - Columns are added on first non-null value if they do not exist. A value that is always `null` creates no column.
 - Column types are inferred from the first non-null value seen, unless the adapter declares them:
   - `number` → `number`
@@ -386,6 +409,7 @@ CREATE TABLE accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   slug TEXT NOT NULL UNIQUE,            -- subdomain label
   active_store_id UUID,                 -- the store custom APIs read from; see account_stores
+  auto_activate BOOLEAN NOT NULL DEFAULT true,  -- activate adapters that pass validation (§12.1)
   status TEXT NOT NULL DEFAULT 'provisioning'
     CHECK (status IN ('provisioning', 'active', 'disabled')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -455,7 +479,8 @@ CREATE TABLE events (
   body BYTEA NOT NULL,                            -- exact bytes received
   type TEXT,                                      -- NULL when malformed
   fingerprint TEXT,                               -- NULL when malformed
-  idempotency_key TEXT,                           -- from the optional Idempotency-Key header
+  idempotency_key TEXT,                           -- Idempotency-Key header, or a webhook delivery ID (§6.2)
+  request JSONB NOT NULL,                         -- method, path, query, headers; credentials removed
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -616,7 +641,7 @@ interface StoreConfig {
 }
 
 type SchemaChange =
-  | { kind: 'create_table'; table: string }   // includes id and _event_seq
+  | { kind: 'create_table'; table: string }   // includes id and the platform columns (§9)
   | { kind: 'add_column'; table: string; column: string; type: LogicalType }
   | { kind: 'add_index'; table: string; column: string };
 
@@ -624,6 +649,7 @@ interface TableRows {
   table: string;
   columns: Record<string, LogicalType>;       // the columns these rows use
   rows: Record<string, unknown>[];            // every row has id and _event_seq; an absent key keeps the stored value
+  replaceChildrenOf?: { column: string; ids: string[] };  // mark deleted rows whose column is in ids and that this write doesn't include (§8)
 }
 
 interface StorageBackend {
@@ -648,9 +674,9 @@ class StorageError extends Error {
 - `provision` and `applySchema` must be idempotent.
 - `write` receives all rows for one event and must be idempotent on `id`: writing the same row twice leaves one logical row.
 - `write` merges into existing rows, so a store's final state doesn't depend on the order workers ran in or on when a quarantined event is released:
-  - A write with an equal or higher `_event_seq` updates the columns it includes and leaves the others alone.
-  - A write with a lower `_event_seq` only fills columns that are currently `NULL`. Late events can add data but never override newer values.
-  - The row keeps the higher `_event_seq`.
+  - Each included column is updated only if the write's `_event_seq` is at least that column's entry in `_column_seq`; other columns are left alone. Out-of-order partial updates therefore all land, and a late event never overrides a newer value.
+  - The row keeps the higher `_event_seq`. Deletes and child-set replacement (§8) compare it.
+  - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns. A rebuild, which runs in order, corrects anything missed.
 - `provision` must also create read-only credentials limited to that store's namespace, and they must keep working for tables and columns added later.
 - `write` must classify every failure as retryable or permanent through `StorageError`.
 - Backends do not validate identifiers or types, since the platform has already done so, but must quote identifiers and bind values as parameters.
@@ -676,7 +702,9 @@ No distributed transaction spans the application database and a backend, and a s
 | `timestamp` | `TIMESTAMPTZ` | `TEXT` | `Nullable(DateTime64)` |
 | `json` | `JSONB` | `TEXT` | `Nullable(String)` |
 | `_event_seq` | `BIGINT` | `INTEGER` | `Int64` |
-| Merging write | `INSERT ... ON CONFLICT (id) DO UPDATE`, with each included column set by comparing `_event_seq` | Same as Postgres | Needs design: `ReplacingMergeTree` replaces whole rows, so merging likely means `AggregatingMergeTree` with per-column latest values |
+| `_column_seq` | `JSONB` | `TEXT` | `Map(String, Int64)` |
+| `_deleted_at` | `TIMESTAMPTZ` | `TEXT` | `Nullable(DateTime64)` |
+| Merging write | `INSERT ... ON CONFLICT (id) DO UPDATE`, with each included column set by comparing its `_column_seq` entry | Same as Postgres | Needs design: `ReplacingMergeTree` replaces whole rows, so merging likely means `AggregatingMergeTree` with per-column latest values |
 | `add_index` | `CREATE INDEX IF NOT EXISTS` | `CREATE INDEX IF NOT EXISTS` | No-op at first; ClickHouse relies on its sort order |
 | `atomicWrites` | true | true | false |
 | `idempotency` | immediate | immediate | eventual: duplicates remain until merge unless read with `FINAL` |
@@ -692,8 +720,8 @@ The backend is part of the account object in the application database, set when 
   "slug": "account-123",
   "storage": {
     "backend": "postgres",
-    "connection": { "host": "pg-data", "port": 5432, "database": "omni_data" },
-    "credentials": { "user": "omni_data", "password": "..." }
+    "connection": { "host": "pg-data", "port": 5432, "database": "sw_data" },
+    "credentials": { "user": "sw_data", "password": "..." }
   }
 }
 ```
@@ -719,7 +747,8 @@ MVP approach:
 - The worker runs them in `isolated-vm` with no access to network, filesystem, or globals other than a provided `payload` argument, and with an execution timeout.
 - `Date.now()`, `new Date()` without arguments, and `Math.random()` are removed from the sandbox. Replays depend on an adapter producing the same output for the same event.
 - Integers too large for a JavaScript number are passed to adapters as strings, so long numeric IDs aren't rounded.
-- The function must return an `IntermediateObject`.
+- `payload` is `{ type, data, request }`, where `request` is the logged method, path, query, and headers (§6.2).
+- The function must return an `IntermediateObject` or an array of them.
 - Adapters should normalize values to consistent types, such as casting `5` to `"5"` for a text column. The platform never coerces values (§9), so this is where mixed types get resolved.
 
 Example adapter code:
@@ -749,7 +778,7 @@ function adapt(payload) {
 }
 ```
 
-Security note: Adapter code is written by an LLM from client-supplied payloads and activated without human review, so it must be treated as untrusted from the MVP onward. A payload can contain text aimed at steering the LLM, which makes a basic VM wrapper insufficient. Sample payloads are passed to the LLM as data, never as instructions.
+Security note: Adapter code is written by an LLM from client-supplied payloads and can be activated without human review (§12.1), so it must be treated as untrusted from the MVP onward. A payload can contain text aimed at steering the LLM, which makes a basic VM wrapper insufficient. Sample payloads are passed to the LLM as data, never as instructions.
 
 ### 12.1 Adapter Generator
 
@@ -761,7 +790,7 @@ A continuously running process that turns quarantined shapes into active adapter
    - Otherwise it runs the type's active adapters against a sample of the shape, through the validation gate below. If one passes, the fingerprint is added to `adapter_fingerprints` and a replay is enqueued. A later version of that adapter doesn't inherit these entries; those shapes pass through this step again.
 3. If neither applies, it samples rows and asks the LLM for an adapter. It includes the account's full schema (`data_columns`), so that new adapters reuse existing tables and types, and the type's other open fingerprints, so the LLM can spot fields whose keys vary.
 4. It validates the adapter against the sample, using the same checks as `POST /adapters/:id/test`.
-5. If validation passes, the adapter is activated and its replay enqueued (§5.2). If it fails, the LLM retries with the errors, with backoff between attempts.
+5. If validation passes and the account has `auto_activate` on (the default), the adapter is activated and its replay enqueued (§5.2). With it off, the adapter waits for an operator to call `POST /adapters/:id/activate`. If validation fails, the LLM retries with the errors, with backoff between attempts.
 
 A configurable cap limits generations per shape, and the shape then waits for an operator. The cap counts adapters that passed validation and then failed during replay, so a shape can't loop through generations indefinitely.
 
@@ -777,6 +806,8 @@ A configurable cap limits generations per shape, and the shape then waits for an
 - Pass `null` through only when the source means to clear a value.
 - Give child rows a natural `id` where one exists, such as a SKU. Set `append: true` for lists where each event adds new items, such as messages.
 - Declare date and time fields as `timestamp`, and normalize them to ISO 8601 with a timezone.
+- Give an embedded entity with its own identity, such as a customer inside an order, its own table.
+- Use `payload.request` (method, headers) to tell event kinds apart and to mark deletes with `_deleted`.
 
 Prompts are guidance, so the rules that matter are also enforced in code, by the gate below and the schema layer (§9).
 
@@ -799,9 +830,9 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 
 ### 13.1 Ingestion Service
 
-`POST /ingest`
+`POST /ingest`, `POST /ingest/:type`
 - Requires an API key (§13.4).
-- Accepts `{ type, data }` JSON, and an optional `Idempotency-Key` header. A repeated key creates nothing and returns `202` with the original `event_id`, so clients can retry safely.
+- Accepts `{ type, data }` JSON on `/ingest`, or any JSON object or array on `/ingest/:type` (§6.2), and an optional `Idempotency-Key` header. A repeated key creates nothing and returns `202` with the original `event_id`, so clients can retry safely.
 - Returns `202 Accepted` once the payload is committed to the event log, and queued if well formed.
 - Returns `400` if the body isn't valid JSON. Nothing is stored.
 - Returns `401` if the API key is missing, invalid, or belongs to another account, `403` if the account is disabled, and `404` if the subdomain matches no account.
@@ -858,7 +889,7 @@ These routes are internal only and not routed through Caddy.
 
 ### 13.4 Authentication
 
-Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. A key must belong to the account named by the subdomain. Only a hash of each key is stored. There are no user logins or roles.
+Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on `/ingest/:type`, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain. Only a hash of each key is stored. There are no user logins or roles.
 
 ---
 
@@ -868,22 +899,22 @@ Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. A
 
 Postgres 16 or later, with two separate databases, even when they share a server in development:
 
-- `omni_app`: the application database.
-- `omni_data`: the Postgres storage backend, with one schema per store.
+- `sw_app`: the application database.
+- `sw_data`: the Postgres storage backend, with one schema per store.
 
-Each has its own role, and the `omni_data` role has no access to `omni_app`. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
+Each has its own role, and the `sw_data` role has no access to `sw_app`. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
 
-**Direct customer access.** Customers connect straight to `omni_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a statement timeout so heavy queries can't starve ingestion. `omni_app` is not reachable from outside. The `_event_seq` column is visible to customers in the MVP.
+**Direct customer access.** Customers connect straight to `sw_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a statement timeout so heavy queries can't starve ingestion. `sw_app` is not reachable from outside. The `_event_seq` column is visible to customers in the MVP.
 
 ### 14.2 Caddy Routing
 
-Caddy terminates TLS and routes subdomains to the platform services, passing the account slug as a header. Only `/ingest` and Custom API routes are public. Wildcard certificates require a DNS challenge provider.
+Caddy terminates TLS and routes subdomains to the platform services, passing the account slug as a header. Only `/ingest`, `/ingest/:type`, and Custom API routes are public. Wildcard certificates require a DNS challenge provider.
 
 Example Caddyfile:
 
 ```
 *.api.example.com {
-  handle /ingest {
+  handle /ingest* {
     reverse_proxy ingestion:3000 {
       header_up X-Account-Slug {http.request.host.labels.3}
     }
@@ -897,7 +928,7 @@ Example Caddyfile:
 }
 ```
 
-`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` is forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly.
+`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` and `/ingest/:type` are forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly.
 
 ### 14.3 sqld Backend Deployment (Later)
 
@@ -927,7 +958,8 @@ curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
 | Adapter returns invalid intermediate object or identifier | Quarantine with `adapter_error` |
 | Value conflicts with registered column type | Quarantine with `schema_conflict` |
 | Generated adapter fails validation | Not activated; LLM retries with the errors, up to the generation cap, then the shape waits for an operator |
-| Quarantined event released after newer writes to the same row | Fills only columns that are still `NULL`; newer values are kept |
+| Quarantined event released after newer writes to the same row | Updates only columns no newer event has written; newer values are kept |
+| Parent resent with fewer children | Missing children are marked deleted; nothing is removed |
 | LLM provider unavailable | Generator retries with backoff; events stay safely in quarantine |
 | Application database unavailable at ingest | Return `503`; client retries |
 | Storage backend unavailable or times out | Job stays queued with backoff; `write_error` after maximum age |
@@ -944,6 +976,7 @@ curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
 ## 16. Open Questions
 
 - Which Fireworks model does the generator use?
+- Providers don't guarantee delivery order, and `_event_seq` is arrival order, so a late `customer.updated` can overwrite a newer one. Should adapters be able to supply a source version (e.g., Stripe `created`, Shopify `updated_at`) that takes precedence?
 
 Released quarantine rows, `replay_log` entries, and retired stores are kept indefinitely for now.
 
@@ -954,14 +987,16 @@ Released quarantine rows, `replay_log` entries, and retired stores are kept inde
 This is a one-day hackathon build at low volume: it needs to work end to end. Work proceeds in this order.
 
 **1. Core (must work on the day).** A payload of an unknown shape arrives, an adapter is generated, and the customer queries clean tables over SQL.
-- `POST /ingest` with API keys and `Idempotency-Key`.
+- `POST /ingest` and `/ingest/:type` with API keys (header or `?key=`) and `Idempotency-Key`, including webhook delivery IDs (§6.2).
 - Event log, Postgres queue, and worker.
 - Fingerprinting, Adapter Generator, validation gate, and `isolated-vm` sandbox.
-- `StorageBackend` interface and Postgres implementation, including merging writes, timestamps, indexes, and read-only credentials.
+- `StorageBackend` interface and Postgres implementation, including merging writes (the §11.2 MVP option is acceptable), soft deletes and child-set replacement, timestamps, indexes, and read-only credentials.
 - Quarantine and replay.
 
 **2. If time allows.**
 - Opaque paths (§7.1). Without them, a field with varying keys triggers repeated generations.
+- Per-column ordering with `_column_seq` (§11.2).
+- The remaining webhook features: handshakes, signatures, batches, and form bodies (§6.2).
 - Rebuilds between Postgres stores (§5.4).
 - A basic conformance suite (§11.5).
 - The offline no-envelope experiment (§6.1).
@@ -987,6 +1022,8 @@ For the hackathon:
 - An unknown shape reaches relational tables with no human involvement, delayed only by adapter generation and replay.
 - A customer can connect with read-only credentials and query normalized tables with typed timestamps and indexed joins.
 - Partial updates to the same record merge into one row without losing earlier values.
+- Resending a parent with fewer children marks the missing ones deleted.
+- A third-party webhook (e.g., GitHub or Shopify) pointed at `/ingest/:type?key=…` reaches tables with no client changes.
 - Can replay quarantined rows transactionally after adapter activation, with repeated or interrupted replays producing no duplicate rows.
 - A client retry with the same `Idempotency-Key` creates no duplicate data.
 - Every accepted payload is retained in the event log, including malformed ones.
