@@ -17,7 +17,8 @@ export function connectionString(login: ReadLogin, withPassword: boolean): strin
   const auth = withPassword
     ? `${encodeURIComponent(login.user)}:${encodeURIComponent(login.password)}`
     : encodeURIComponent(login.user);
-  return `postgres://${auth}@${login.host}:${login.port}/${encodeURIComponent(login.database)}`;
+  const ssl = login.requireSsl ? '?sslmode=require' : '';
+  return `postgres://${auth}@${login.host}:${login.port}/${encodeURIComponent(login.database)}${ssl}`;
 }
 
 interface KeyRow {
@@ -179,6 +180,11 @@ const LoginDetails = ({ login }: { login: ReadLogin }) => (
       <li>
         Port <code>{String(login.port)}</code>
       </li>
+      {login.requireSsl && (
+        <li>
+          SSL mode <code>require</code>
+        </li>
+      )}
     </ul>
     <p>Connection string</p>
     <CopyBlock value={connectionString(login, true)} label="connection string" />

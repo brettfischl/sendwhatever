@@ -1,13 +1,13 @@
 import type { Handler } from 'hono';
+import { ingestEndpoint } from '../public-addresses.js';
 import { CopyBlock, Layout } from '../views.js';
 import type { AdminEnv } from '../index.js';
 import { connectionString, loadReadLogin } from './credentials.js';
 
 export const connectPage: Handler<AdminEnv> = async (c) => {
   const account = c.get('account')!;
-  const { config } = c.get('deps');
   const login = await loadReadLogin(c);
-  const endpoint = `http://localhost:${config.port}/ingest`;
+  const endpoint = ingestEndpoint(c.get('deps').config);
   const curl = [
     `curl -X POST ${endpoint} \\`,
     `  -H 'X-Account-Slug: ${account.slug}' \\`,

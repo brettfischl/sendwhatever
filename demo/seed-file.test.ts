@@ -14,7 +14,7 @@ const seed: SeedFile = {
   ingestUrl: 'http://localhost:3000/ingest',
   apiKey: 'seeded-key',
   appDatabaseUrl: 'postgres://sw_app:secret@localhost:5432/sw_app',
-  database: { user: 'r', password: 'p', database: 'd', host: 'localhost', port: 5432 },
+  database: { user: 'r', password: 'p', database: 'd', host: 'localhost', port: 5432, requireSsl: false },
 };
 const mode = (path: string) => statSync(path).mode & 0o777;
 

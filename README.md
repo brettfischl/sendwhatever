@@ -92,6 +92,9 @@ The worker processes the event within a second. Nothing writes adapters yet, so 
 | --- | --- | --- |
 | `PORT` | `3000` | Port for the server. |
 | `HOST` | `127.0.0.1` | Address for the server. Internal routes have no auth, so think before exposing it. |
+| `PUBLIC_BASE_URL` | none | For a deploy behind a TLS proxy: the origin customers use, such as `https://app.example.com`. The Connect page shows it as the ingest endpoint, and it's the only `Origin` admin forms accept, since the app sees `http://` behind the proxy. Forwarded headers are never trusted. Unset, pages show `http://localhost:PORT` and `Origin` must match the request URL. Either way, a browser's `Sec-Fetch-Site: same-origin` also passes. The server won't start if it isn't a bare http or https origin. |
+| `PUBLIC_DB_HOST` | `localhost` | The Postgres host shown on the Connect, Credentials and account-created pages. Setting it adds `?sslmode=require` to connection strings. Stores still connect on localhost, and a store on an external server shows its own address. |
+| `PUBLIC_DB_PORT` | `POSTGRES_PORT` | The Postgres port shown on those pages. |
 | `WORKER_ACCOUNT_ID` | every account | Limits the worker to one account's jobs. `test/entrypoints.test.ts` uses it, because test files share a queue. |
 
 ## Demo site
