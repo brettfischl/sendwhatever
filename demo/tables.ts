@@ -96,6 +96,8 @@ export interface EventView {
 export type EventsResponse = PanelNotice | { state: 'ready'; events: EventView[] };
 
 export interface TablesSource {
+  /** It reads real data, so its routes only answer on loopback. A notice has nothing to protect. */
+  loopbackOnly: boolean;
   tables(): Promise<TablesResponse>;
   events(): Promise<EventsResponse>;
   close(): Promise<void>;
@@ -109,7 +111,7 @@ export interface TablesConfig {
 
 /** A source that always shows the same notice, for when there's nothing to read. */
 export function noticeSource(notice: PanelNotice): TablesSource {
-  return { tables: async () => notice, events: async () => notice, close: async () => {} };
+  return { loopbackOnly: false, tables: async () => notice, events: async () => notice, close: async () => {} };
 }
 
 const STUB_NOTICE: PanelNotice = {
@@ -272,6 +274,7 @@ export function createTablesSource(config: TablesConfig): TablesSource {
   }
 
   return {
+    loopbackOnly: true,
     tables: coalesce(() =>
       guarded<TablesResponse>(async () => {
         const login = await loadLogin();
@@ -320,43 +323,39 @@ interface ColumnRow {
 /**
  * Separate statements rather than one transaction, so no table stays locked while the next is read: a
  * worker's `ALTER TABLE` would wait on it. A count can be a row off from its rows until the next poll.
+ * `pool.query` also watches each connection while it's in use, so losing one can't crash the demo.
  */
 async function readTables(pool: pg.Pool): Promise<{ tables: TableView[]; omittedTables: number }> {
-  const client = await pool.connect();
-  try {
-    // information_schema only lists what this login can read.
-    const { rows } = await client.query<ColumnRow>(
-      `SELECT c.table_name, c.column_name, c.data_type
-       FROM information_schema.columns c
-       JOIN information_schema.tables t USING (table_schema, table_name)
-       WHERE c.table_schema = 'public' AND t.table_type = 'BASE TABLE'
-       ORDER BY c.table_name, c.ordinal_position`,
-    );
-    const byTable = new Map<string, ColumnView[]>();
-    for (const row of rows) {
-      const columns = byTable.get(row.table_name) ?? [];
-      columns.push({ name: row.column_name, type: row.data_type });
-      byTable.set(row.table_name, columns);
-    }
-
-    const tables: TableView[] = [];
-    for (const [name, columns] of [...byTable].slice(0, MAX_TABLES)) {
-      tables.push(await readTable(client, name, columns));
-    }
-    return { tables, omittedTables: Math.max(0, byTable.size - MAX_TABLES) };
-  } finally {
-    client.release();
+  // information_schema only lists what this login can read. Newest first by oid, so that past the
+  // limit it's old tables that go unshown and a table that just appeared is always there.
+  const { rows } = await pool.query<ColumnRow>(
+    `SELECT c.table_name, c.column_name, c.data_type
+     FROM information_schema.columns c
+     JOIN information_schema.tables t USING (table_schema, table_name)
+     WHERE c.table_schema = 'public' AND t.table_type = 'BASE TABLE'
+     ORDER BY format('%I.%I', c.table_schema, c.table_name)::regclass::oid::bigint DESC, c.ordinal_position`,
+  );
+  const byTable = new Map<string, ColumnView[]>();
+  for (const row of rows) {
+    const columns = byTable.get(row.table_name) ?? [];
+    columns.push({ name: row.column_name, type: row.data_type });
+    byTable.set(row.table_name, columns);
   }
+
+  const shown = [...byTable].slice(0, MAX_TABLES).sort(([a], [b]) => (a < b ? -1 : 1));
+  const tables: TableView[] = [];
+  for (const [name, columns] of shown) tables.push(await readTable(pool, name, columns));
+  return { tables, omittedTables: Math.max(0, byTable.size - MAX_TABLES) };
 }
 
-async function readTable(client: pg.PoolClient, name: string, columns: ColumnView[]): Promise<TableView> {
+async function readTable(pool: pg.Pool, name: string, columns: ColumnView[]): Promise<TableView> {
   const target = `"public".${quote(name)}`;
   const position = (column: string) => columns.findIndex((candidate) => candidate.name === column);
   const idAt = position('id');
   const seqAt = position('_event_seq');
   const deletedAt = position('_deleted_at');
 
-  const counts = await client.query<{ total: string; deleted: string }>(
+  const counts = await pool.query<{ total: string; deleted: string }>(
     `SELECT count(*) AS total, ${deletedAt < 0 ? '0' : 'count(*) FILTER (WHERE "_deleted_at" IS NOT NULL)'} AS deleted
      FROM ${target}`,
   );
@@ -365,7 +364,7 @@ async function readTable(client: pg.PoolClient, name: string, columns: ColumnVie
   // Text keeps BIGINT and NUMERIC exact. One extra character shows when a value was cut.
   const list = columns.map(({ name: column }) => `left(${quote(column)}::text, ${MAX_VALUE_LENGTH + 1})`);
   // Arrays, not objects: a column can be called __proto__, and values line up with `columns` either way.
-  const recent = await client.query<(string | null)[]>({
+  const recent = await pool.query<(string | null)[]>({
     text: `SELECT ${list.join(', ')} FROM ${target}
       ${order.length > 0 ? `ORDER BY ${order.join(', ')}` : ''} LIMIT ${RECENT_ROWS}`,
     rowMode: 'array',

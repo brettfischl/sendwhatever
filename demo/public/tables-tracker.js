@@ -7,6 +7,14 @@ export const HIGHLIGHT_MS = 9000;
 
 const rowKey = (row) => row.id ?? JSON.stringify(row.values);
 
+/** By column name and without nulls, so adding a column doesn't count as changing every row. */
+const rowContent = (row, columns) =>
+  JSON.stringify([
+    row.seq,
+    row.deleted,
+    columns.flatMap(({ name }, index) => (row.values[index] === null ? [] : [[name, row.values[index]]])),
+  ]);
+
 export function createTracker() {
   let database;
   let baseline = true;
@@ -31,6 +39,9 @@ export function createTracker() {
 
       for (const table of response.tables) {
         let seen = tables.get(table.name);
+        // Only the latest rows are sent, so a row not seen before may be an old one that was just
+        // merged into. Only as many as the count grew by can really be new.
+        let newRows = Math.max(0, table.rowCount - (seen?.count ?? 0));
         if (!seen) {
           // Tables from the baseline stay alphabetical. After that, the newest goes on top.
           seen = { order: stamp === null ? 0 : ++appeared, since: stamp, count: table.rowCount, countSince: null, columns: new Map(), rows: new Map() };
@@ -45,14 +56,15 @@ export function createTracker() {
         for (const row of table.rows) {
           const key = rowKey(row);
           const known = seen.rows.get(key);
-          if (!known) seen.rows.set(key, { since: stamp, kind: 'new', seq: row.seq, deleted: row.deleted });
-          else if (known.seq !== row.seq || known.deleted !== row.deleted) {
-            seen.rows.set(key, {
-              since: now,
-              kind: row.deleted && !known.deleted ? 'deleted' : 'updated',
-              seq: row.seq,
-              deleted: row.deleted,
-            });
+          const content = rowContent(row, table.columns);
+          if (!known && newRows > 0) {
+            newRows -= 1;
+            seen.rows.set(key, { since: stamp, kind: 'new', content, deleted: row.deleted });
+          } else if (!known) {
+            seen.rows.set(key, { since: stamp, kind: row.deleted ? 'deleted' : 'updated', content, deleted: row.deleted });
+          } else if (known.content !== content) {
+            const kind = row.deleted && !known.deleted ? 'deleted' : 'updated';
+            seen.rows.set(key, { since: now, kind, content, deleted: row.deleted });
           }
         }
       }

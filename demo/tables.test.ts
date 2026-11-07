@@ -1,7 +1,7 @@
 // The parts of the live tables panel that need no Postgres. test/live-tables.test.ts covers the rest.
 import { readFile } from 'node:fs/promises';
 import { request, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { connect, type AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RequestLog } from './ingest-client.js';
 import { createDemoServer, SiteEvents } from './server.js';
@@ -130,20 +130,34 @@ describe('the panel on the demo server, in stub mode', () => {
     expect((await fetch(`${base()}/api/tables`, { method: 'DELETE' })).status).toBe(404);
   });
 
-  it('refuses a request whose Host is not loopback, so DNS rebinding cannot read it', async () => {
+  const tablesPath = '/api/tables';
+
+  it('checks Host only for a source with real data, so a stub viewer still sees the notice', async () => {
     const statusFor = (host: string) =>
       new Promise<number>((resolve, reject) => {
-        request({ port, path: '/api/tables', headers: { host } }, (res) => {
+        request({ port, path: tablesPath, headers: { host } }, (res) => {
           res.resume();
           resolve(res.statusCode ?? 0);
         })
           .on('error', reject)
           .end();
       });
-    expect(await statusFor('evil.example')).toBe(403);
-    expect(await statusFor('evil.example:3100')).toBe(403);
+    expect(await statusFor('192.168.1.5:3100')).toBe(200);
     expect(await statusFor(`localhost:${port}`)).toBe(200);
-    expect(await statusFor(`127.0.0.1:${port}`)).toBe(200);
+  });
+
+  it('survives a request target that is not a valid URL', async () => {
+    const answer = await new Promise<string>((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => {
+        socket.write('GET // HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
+      });
+      let text = '';
+      socket.on('data', (chunk) => (text += chunk));
+      socket.on('end', () => resolve(text));
+      socket.on('error', reject);
+    });
+    expect(answer).toMatch(/^HTTP\/1\.1 500/);
+    expect((await fetch(`${base()}/api/tables`)).status).toBe(200);
   });
 });
 
@@ -159,12 +173,13 @@ describe('the panel script', () => {
 describe('the tracker', () => {
   const column = (name: string) => ({ name, type: 'text' });
   const row = (id: string, seq = '1', deleted = false) => ({ id, seq, deleted, values: [id] });
-  const table = (name: string, columns: string[], rows: object[]) => ({
+  const table = (name: string, columns: string[], rows: { values: (string | null)[] }[]) => ({
     name,
     columns: columns.map(column),
     rowCount: rows.length,
     deletedCount: 0,
-    rows,
+    // As the server sends them: one value for every column.
+    rows: rows.map((row) => ({ ...row, values: columns.map((_, index) => row.values[index] ?? null) })),
   });
   const ready = (...tables: object[]) => ({ state: 'ready', database: 'db', tables, omittedTables: 0 });
 
@@ -212,6 +227,34 @@ describe('the tracker', () => {
     t.tables(ready(table('a', ['id'], [row('1')])), 1000);
     expect(t.tables(ready(table('a', ['id'], [row('1', '2')])), 2000)[0].rows[0]).toMatchObject({ kind: 'updated', since: 2000 });
     expect(t.tables(ready(table('a', ['id'], [row('1', '3', true)])), 3000)[0].rows[0]).toMatchObject({ kind: 'deleted', since: 3000 });
+  });
+
+  it('does not call an older row new when a merge brings it into the latest rows', () => {
+    const t = tracker.createTracker();
+    const many = (rows: { values: (string | null)[] }[]) => ({ ...table('a', ['id'], rows), rowCount: 50 });
+    t.tables(ready(many([row('50')])), 1000);
+    expect(t.tables(ready(many([row('3', '60'), row('50')])), 2000)[0].rows[0]).toMatchObject({ kind: 'updated', since: 2000 });
+    expect(t.tables(ready(many([row('2', '61', true), row('3', '60')])), 3000)[0].rows[0]).toMatchObject({ kind: 'deleted', since: 3000 });
+  });
+
+  it('calls only as many unseen rows new as the count grew by', () => {
+    const t = tracker.createTracker();
+    t.tables(ready({ ...table('a', ['id'], [row('9')]), rowCount: 9 }), 1000);
+    const [view] = t.tables(ready({ ...table('a', ['id'], [row('10'), row('3', '20')]), rowCount: 10 }), 2000);
+    expect(view.rows.map(({ kind }: { kind: string }) => kind)).toEqual(['new', 'updated']);
+  });
+
+  it('notices a value that changes at the same seq, but not a new empty column', () => {
+    const t = tracker.createTracker();
+    const withValues = (columns: string[], values: (string | null)[]) => [
+      { id: '1', seq: '5', deleted: false, values },
+    ];
+    t.tables(ready(table('a', ['id', 'email'], withValues(['id', 'email'], ['1', null]))), 1000);
+    const filled = t.tables(ready(table('a', ['id', 'email'], withValues(['id', 'email'], ['1', 'x']))), 2000);
+    expect(filled[0].rows[0]).toMatchObject({ kind: 'updated', since: 2000 });
+
+    const wider = t.tables(ready(table('a', ['id', 'email', 'age'], withValues(['id', 'email', 'age'], ['1', 'x', null]))), 2000 + tracker.HIGHLIGHT_MS);
+    expect(wider[0].rows[0].since).toBeNull();
   });
 
   it('starts a new baseline when the store changes', () => {

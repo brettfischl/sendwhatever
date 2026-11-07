@@ -9,7 +9,7 @@ const POLL_MS = 1500;
 const STYLESHEET = '/assets/tables-panel.css';
 
 /** Platform columns go last, so the audience reads the data first. */
-const PLATFORM_ORDER = { _deleted_at: 1, _event_seq: 2 };
+const PLATFORM_ORDER = new Map([['_deleted_at', 1], ['_event_seq', 2]]);
 const isIdColumn = (name) => name === 'id';
 
 const STATUS_LABELS = {
@@ -33,7 +33,7 @@ function displayColumns(columns) {
   return columns
     .map((column, index) => ({ ...column, index }))
     .sort((a, b) => {
-      const rank = (name) => (isIdColumn(name) ? -1 : (PLATFORM_ORDER[name] ?? 0));
+      const rank = (name) => (isIdColumn(name) ? -1 : (PLATFORM_ORDER.get(name) ?? 0));
       return rank(a.name) - rank(b.name) || a.index - b.index;
     });
 }
@@ -45,7 +45,7 @@ function plural(count, one, many = `${one}s`) {
 function renderCell(column, row, now) {
   const value = row.values[column.index];
   const classes = ['cell'];
-  if (column.name in PLATFORM_ORDER) classes.push('platform');
+  if (PLATFORM_ORDER.has(column.name)) classes.push('platform');
   if (column.name === '_event_seq') classes.push('seq');
   if (value === null) classes.push('null');
   const cell = h('td', { className: classes.join(' '), title: value ?? 'null' }, value ?? 'null');
@@ -66,7 +66,7 @@ function renderTable(table, now) {
   const columns = displayColumns(table.columns).map((column) =>
     column.since === table.since ? { ...column, since: null } : column,
   );
-  const dataColumns = table.columns.filter(({ name }) => !(name in PLATFORM_ORDER)).length;
+  const dataColumns = table.columns.filter(({ name }) => !PLATFORM_ORDER.has(name)).length;
   const counts = [plural(table.rowCount, 'row'), table.deletedCount > 0 ? `${table.deletedCount.toLocaleString()} deleted` : null, plural(dataColumns, 'column')];
 
   const head = h(
@@ -76,7 +76,7 @@ function renderTable(table, now) {
       flash(
         h(
           'th',
-          { className: column.name in PLATFORM_ORDER ? 'platform' : '', scope: 'col' },
+          { className: PLATFORM_ORDER.has(column.name) ? 'platform' : '', scope: 'col' },
           h('span', { className: 'column-name' }, column.name, column.since !== null ? h('span', { className: 'badge badge-new' }, 'new') : null),
           h('span', { className: 'column-type' }, column.type),
         ),
@@ -110,11 +110,12 @@ function renderTable(table, now) {
 }
 
 function eventDetail(event) {
-  if (event.status === 'queued') return event.attempts > 0 ? `Attempt ${event.attempts}` : null;
   if (event.status === 'written') return event.replayed ? 'Replayed from quarantine' : null;
-  const reasons = event.quarantine.map(({ reason, detail }) => (detail ? `${reason}: ${detail}` : reason));
-  if (event.adapterFailure) reasons.push(`Last attempt failed: ${event.adapterFailure}`);
-  return reasons.join(' · ');
+  // A job can be retrying for one store with another's failure already open.
+  const parts = event.quarantine.map(({ reason, detail }) => (detail ? `${reason}: ${detail}` : reason));
+  if (event.status === 'queued' && event.attempts > 0) parts.unshift(`Attempt ${event.attempts}`);
+  if (event.adapterFailure && event.status !== 'queued') parts.push(`Last attempt failed: ${event.adapterFailure}`);
+  return parts.join(' · ') || null;
 }
 
 function renderEvent(event, now) {

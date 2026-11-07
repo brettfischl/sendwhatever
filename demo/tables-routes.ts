@@ -23,17 +23,23 @@ export function serveTablesPanel(
   source: TablesSource = stub,
 ): Promise<void> | undefined {
   if (req.method !== 'GET') return undefined;
-  const { pathname } = new URL(req.url ?? '/', 'http://localhost');
+  // This runs before the server's error handling, so a target like `//` must not throw here.
+  const pathname = URL.parse(req.url ?? '/', 'http://localhost')?.pathname;
 
-  const asset = Object.hasOwn(FILES, pathname) ? FILES[pathname] : undefined;
+  const asset = pathname && Object.hasOwn(FILES, pathname) ? FILES[pathname] : undefined;
   if (asset) return sendFile(res, asset.file, asset.type);
-  if (pathname === '/api/tables') return sendData(req, res, () => source.tables());
-  if (pathname === '/api/tables/events') return sendData(req, res, () => source.events());
+  if (pathname === '/api/tables') return sendData(req, res, source, () => source.tables());
+  if (pathname === '/api/tables/events') return sendData(req, res, source, () => source.events());
   return undefined;
 }
 
-async function sendData(req: IncomingMessage, res: ServerResponse, read: () => Promise<unknown>): Promise<void> {
-  assertLoopbackRequest(req);
+async function sendData(
+  req: IncomingMessage,
+  res: ServerResponse,
+  source: TablesSource,
+  read: () => Promise<unknown>,
+): Promise<void> {
+  if (source.loopbackOnly) assertLoopbackRequest(req);
   const body = JSON.stringify(await read());
   res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(body);

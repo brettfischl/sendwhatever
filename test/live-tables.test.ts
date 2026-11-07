@@ -1,7 +1,7 @@
 // The live tables panel against real Postgres (PRD §20). This lives in test/ so that `vitest run demo`
 // still needs no database.
 import { randomBytes } from 'node:crypto';
-import type { Server } from 'node:http';
+import { request, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -337,6 +337,38 @@ describe('how the panel reaches the store', () => {
     await otherSource.close();
   });
 
+  it('refuses a request whose Host is not loopback, so DNS rebinding cannot read it', async () => {
+    const statusFor = (host: string) =>
+      new Promise<number>((resolve, reject) => {
+        request(`${base}/api/tables`, { headers: { host } }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        })
+          .on('error', reject)
+          .end();
+      });
+    expect(await statusFor('evil.example')).toBe(403);
+    expect(await statusFor('evil.example:3100')).toBe(403);
+    expect(await statusFor('127.0.0.1')).toBe(200);
+    expect(await statusFor('localhost:3100')).toBe(200);
+  });
+
+  it('keeps the newest tables past the limit, listed by name', async () => {
+    const crowded = await createAccount();
+    const names = Array.from({ length: 41 }, (_, index) => `t${String(index).padStart(2, '0')}`);
+    // Sorts last, so a limit taken alphabetically would drop it.
+    await backend.applySchema(crowded.store, names.map((table) => ({ kind: 'create_table', table })));
+    await backend.applySchema(crowded.store, [{ kind: 'create_table', table: 'zebra' }]);
+    const crowdedSource = sourceFor(crowded);
+    const { tables, omittedTables } = ready(await crowdedSource.tables());
+    await crowdedSource.close();
+    expect(omittedTables).toBe(2);
+    expect(tables).toHaveLength(40);
+    expect(tables.map(({ name }) => name)).toContain('zebra');
+    expect(tables.map(({ name }) => name)).not.toContain('t00');
+    expect(tables.map(({ name }) => name)).toEqual(tables.map(({ name }) => name).sort());
+  });
+
   it('sends no credentials to the browser', async () => {
     const text = JSON.stringify([await poll('/api/tables'), await poll('/api/tables/events')]);
     expect(text).not.toContain(account.readPassword);
@@ -426,6 +458,17 @@ describe('event progress', () => {
     const retrying = await addEvent(shape('fp'));
     await addJob(retrying, 3);
     expect(await view(retrying)).toMatchObject({ status: 'queued', attempts: 3 });
+  });
+
+  it('keeps showing an open failure while the job retries for another store', async () => {
+    const eventId = await addEvent(shape('fp'));
+    await addJob(eventId, 2);
+    await quarantine(eventId, 'write_error', 'down', account.storeId);
+    expect(await view(eventId)).toMatchObject({
+      status: 'queued',
+      attempts: 2,
+      quarantine: [{ reason: 'write_error', detail: 'down' }],
+    });
   });
 
   it('calls a job gone with nothing open written, and only then', async () => {
