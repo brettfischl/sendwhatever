@@ -232,6 +232,7 @@ describe('copying the output out', () => {
     ['a non-enumerable property', 'Object.defineProperty({}, "x", { value: 1 })'],
     ['an array with a named property', 'Object.assign([], { extra: 1 })'],
     ['an array with a key past the index range', 'Object.assign([], { 4294967295: 1 })'],
+    ['an array with a non-enumerable item', 'Object.defineProperty([], "0", { value: 1, enumerable: false })'],
     ['an array subclass', 'new (class L extends Array {})()'],
     ['a promise', 'Promise.resolve(1)'],
   ])('refuses %s', async (_name, expression) => {
@@ -452,6 +453,19 @@ describe('failure kinds', () => {
     expect(detail).toMatch(/adapter\.js:\d+/);
   });
 
+  it('reports a syntax error that quotes a timeout message as a syntax error', async () => {
+    expectFailure(await run('const r = /timed out(/; function adapt() { return 1; }'), 'syntax_error');
+  });
+
+  it.each([
+    ['a huge message', `new Error('x'.repeat(2 ** 29 - 24))`],
+    ['a message that doubles when escaped', `new Error('\\\\'.repeat(2 ** 28))`],
+    ['a huge string', `'x'.repeat(2 ** 29 - 24)`],
+  ])('reports a throw of %s, without overflowing', async (_name, thrown) => {
+    const detail = expectFailure(await run(`function adapt() { throw ${thrown}; }`, '{}', { memoryLimitMb: 1024 }), 'threw');
+    expect(detail.length).toBeLessThanOrEqual(2000);
+  });
+
   it('does not run code that fails to parse', async () => {
     expectFailure(await run('while (true) {}\nfunction ('), 'syntax_error');
   });
@@ -498,6 +512,37 @@ describe('failure kinds', () => {
       const code = `function adapt() { throw new Error(${JSON.stringify(message)}); }`;
       expect(expectFailure(await run(code), 'threw')).toContain(message);
     }
+  });
+});
+
+describe('promises left rejected', () => {
+  it('keeps the returned output', async () => {
+    const code = `function adapt() { Promise.reject(new Error('boom')); return 1; }`;
+    expect(await run(code)).toEqual({ ok: true, output: 1 });
+  });
+
+  it('cannot forge a timeout or memory failure', async () => {
+    for (const message of ['Script execution timed out.', 'Isolate was disposed during execution due to memory limit']) {
+      const code = `function adapt() { Promise.reject(new Error(${JSON.stringify(message)})); return 1; }`;
+      expect(await run(code)).toEqual({ ok: true, output: 1 });
+    }
+  });
+
+  it('reports an async adapter that rejects as returning a promise', async () => {
+    const code = `async function adapt() { throw new Error('Script execution timed out.'); }`;
+    expectFailure(await run(code), 'invalid_output');
+  });
+
+  it('keeps the output when a getter on the rejected value finishes', async () => {
+    const code = `function adapt() { Promise.reject({ get message() { return 'x'; } }); return 1; }`;
+    expect(await run(code)).toEqual({ ok: true, output: 1 });
+  });
+
+  it('kills a getter on the rejected value that never finishes', async () => {
+    const code = `function adapt() { Promise.reject({ get message() { for (;;); } }); return 1; }`;
+    const started = Date.now();
+    expectFailure(await run(code, '{}', { timeoutMs: 100, killGraceMs: 300 }), 'timeout');
+    expect(Date.now() - started).toBeLessThan(3000);
   });
 });
 

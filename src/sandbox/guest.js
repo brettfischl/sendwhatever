@@ -1,5 +1,5 @@
 // Runs inside the isolate, before any adapter code. It hardens the context and returns the function
-// that child.mjs calls. Adapter code is hostile and can change every builtin it can reach, so `run`
+// s that child.mjs calls. Adapter code is hostile and can change every builtin it can reach, so `run`
 // and `encode` only use the functions captured below, and never for-of, spread, array methods, or a
 // property that could be inherited from a tampered prototype. This code must stay strict, so a stack
 // trace's CallSite.getFunction() can't hand these functions to an adapter.
@@ -7,11 +7,12 @@
   'use strict';
 
   const global = globalThis;
-  const { construct, defineProperty, deleteProperty, getOwnPropertyDescriptor, getPrototypeOf, ownKeys } = Reflect;
+  const { apply, construct, defineProperty, deleteProperty, getOwnPropertyDescriptor, getPrototypeOf, ownKeys } = Reflect;
   const { parse, stringify } = JSON;
   const { isArray } = Array;
   const { hasOwn } = Object;
   const { isSafeInteger } = Number;
+  const { slice } = String.prototype;
   const toStr = String;
   const ObjectPrototype = Object.prototype;
   const ArrayPrototype = Array.prototype;
@@ -20,6 +21,7 @@
   const globalEval = eval;
 
   const MAX_DEPTH = 256;
+  const MAX_DETAIL_LENGTH = 2000;
 
   // An allowlist, so a builtin added by a future V8 stays out until someone looks at it. Left out on
   // purpose: WebAssembly (its memory isn't counted by the memory limit), SharedArrayBuffer and Atomics,
@@ -68,6 +70,7 @@
     const descriptor = getOwnPropertyDescriptor(object, key);
     if (descriptor === undefined) return undefined;
     if (!hasOwn(descriptor, 'value')) throw path + ': getters and setters cannot leave the sandbox';
+    if (!descriptor.enumerable) throw path + ': non-enumerable properties cannot leave the sandbox';
     return descriptor.value;
   }
 
@@ -104,7 +107,7 @@
     const keys = ownKeys(value);
     if (isArray(value)) {
       if (prototype !== ArrayPrototype) throw path + ': only plain arrays can leave the sandbox';
-      const length = readData(value, 'length', path);
+      const length = getOwnPropertyDescriptor(value, 'length').value;
       for (let i = 0; i < keys.length; i += 1) {
         const key = keys[i];
         if (key === 'length') continue;
@@ -128,8 +131,6 @@
       const key = keys[i];
       if (typeof key !== 'string') throw path + ': symbol keys cannot leave the sandbox';
       const childPath = path + '.' + key;
-      const descriptor = getOwnPropertyDescriptor(value, key);
-      if (!descriptor.enumerable) throw childPath + ': non-enumerable properties cannot leave the sandbox';
       out += ',' + stringify(key) + ',' + encode(readData(value, key, childPath), childPath, depth + 1);
     }
     return out + ']';
@@ -146,23 +147,28 @@
     return undefined;
   }
 
+  /** Caps adapter-controlled text first, so joining or escaping it can't overflow the string limit. */
+  function cap(text) {
+    return apply(slice, text, [0, MAX_DETAIL_LENGTH]);
+  }
+
   function describeThrown(thrown) {
-    if ((typeof thrown !== 'object' && typeof thrown !== 'function') || thrown === null) return toStr(thrown);
+    if ((typeof thrown !== 'object' && typeof thrown !== 'function') || thrown === null) return cap(toStr(thrown));
     const message = findString(thrown, 'message');
     const name = findString(thrown, 'name');
-    if (message === undefined) return name === undefined ? 'threw a value that is not an Error' : name;
-    return name === undefined ? message : name + ': ' + message;
+    if (message === undefined) return name === undefined ? 'threw a value that is not an Error' : cap(name);
+    return name === undefined ? cap(message) : cap(name) + ': ' + cap(message);
   }
 
   function failure(tag, detail) {
-    return '[' + stringify(tag) + ',' + stringify(detail) + ']';
+    return '[' + stringify(tag) + ',' + stringify(cap(detail)) + ']';
   }
 
   /** Returns the result as a string, the only thing that crosses back to the host. */
-  return function run(code, body, requestJson) {
+  function execute(code, body, payloadRequest) {
     let payload;
     try {
-      payload = { data: body === '' ? null : parse(body, keepLargeIntegers), request: parse(requestJson) };
+      payload = { data: body === '' ? null : parse(body, keepLargeIntegers), request: payloadRequest };
     } catch (error) {
       return failure('invalid_body', describeThrown(error));
     }
@@ -184,5 +190,17 @@
     } catch (error) {
       return failure('invalid_output', typeof error === 'string' ? error : describeThrown(error));
     }
+  }
+
+  let result;
+  return {
+    run(code, body, requestJson) {
+      result = execute(code, body, parse(requestJson));
+      return result;
+    },
+    /** isolated-vm fails a call when a promise is left rejected, so `run`'s return value can be lost. */
+    takeResult() {
+      return result;
+    },
   };
 })();

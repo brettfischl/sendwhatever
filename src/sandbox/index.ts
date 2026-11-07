@@ -3,13 +3,15 @@
 // instead of tripping isolated-vm's memory limit. A separate process means that kills one run rather
 // than the worker, and gives a way to stop code V8 can't interrupt. Only the child loads isolated-vm,
 // so callers don't need `--no-node-snapshot`.
-import { spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { AdapterRequest } from '../contracts/index.js';
 
 const CHILD_PATH = fileURLToPath(new URL('./child.mjs', import.meta.url));
 const MAX_DETAIL_LENGTH = 2000;
 const MAX_STDERR_LENGTH = 16_384;
+/** Sent by the child once it has loaded and received the run, before any adapter code. */
+const STARTED = 'started';
 
 export type SandboxFailureKind =
   /** The code doesn't parse. */
@@ -44,11 +46,10 @@ export interface SandboxLimits {
   timeoutMs?: number;
   /** Treat this as a guideline, since a determined adapter can reach 2-3 times this. */
   memoryLimitMb?: number;
-  /**
-   * How long past `timeoutMs` the process may live before it is killed, as a backstop for code V8
-   * can't interrupt. It also covers process startup, so it shouldn't be tight.
-   */
+  /** How long past `timeoutMs` the process may live before it is killed, as a backstop for code V8 can't interrupt. */
   killGraceMs?: number;
+  /** How long the process may take to load, before it is counted as unavailable rather than a slow adapter. */
+  startupTimeoutMs?: number;
 }
 
 /** The sandbox itself couldn't run, so the event says nothing about the adapter and should be retried. */
@@ -60,25 +61,35 @@ export class SandboxUnavailableError extends Error {
  * Runs adapter code against one event. A fault in the adapter or the body resolves to `ok: false`, and
  * the promise rejects with `SandboxUnavailableError` only when the sandbox itself can't run.
  */
-export function runAdapter(run: AdapterRun, limits: SandboxLimits = {}): Promise<SandboxResult> {
+export async function runAdapter(run: AdapterRun, limits: SandboxLimits = {}): Promise<SandboxResult> {
   const timeoutMs = limits.timeoutMs ?? 1000;
   const memoryLimitMb = limits.memoryLimitMb ?? 128;
-  const killGraceMs = limits.killGraceMs ?? 5000;
+  const killGraceMs = limits.killGraceMs ?? 1000;
+  const startupTimeoutMs = limits.startupTimeoutMs ?? 30_000;
+  const job = { code: run.code, body: run.body ?? '', requestJson: JSON.stringify(run.request), timeoutMs, memoryLimitMb };
 
   return new Promise((resolve, reject) => {
-    // An empty environment keeps secrets away from the process if adapter code ever escapes V8. TZ and
-    // LC_ALL are fixed because date and locale methods read them, and replays must match on any host.
-    const child = spawn(process.execPath, ['--no-node-snapshot', CHILD_PATH], {
-      cwd: '/',
-      env: { TZ: 'UTC', LC_ALL: 'C' },
-      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
-    });
+    let child: ChildProcess;
+    try {
+      // An empty environment keeps secrets away from the process if adapter code ever escapes V8. TZ and
+      // LC_ALL are fixed because date and locale methods read them, and replays must match on any host.
+      child = spawn(process.execPath, ['--no-node-snapshot', CHILD_PATH], {
+        cwd: '/',
+        env: { TZ: 'UTC', LC_ALL: 'C' },
+        stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+      });
+    } catch (error) {
+      reject(new SandboxUnavailableError(`Could not start the sandbox process: ${(error as Error).message}`));
+      return;
+    }
 
-    let timedOut = false;
-    const killTimer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, timeoutMs + killGraceMs);
+    let killedFor: 'startup' | 'time limit' | undefined;
+    const killAfter = (ms: number, reason: 'startup' | 'time limit') =>
+      setTimeout(() => {
+        killedFor = reason;
+        child.kill('SIGKILL');
+      }, ms);
+    let killTimer = killAfter(startupTimeoutMs, 'startup');
 
     let stderr = '';
     child.stderr?.setEncoding('utf8');
@@ -92,18 +103,25 @@ export function runAdapter(run: AdapterRun, limits: SandboxLimits = {}): Promise
       reject(new SandboxUnavailableError(`Could not start the sandbox process: ${error.message}`));
     });
 
-    child.once('message', (message) => {
+    child.on('message', (message) => {
       clearTimeout(killTimer);
+      if (message === STARTED) {
+        killTimer = killAfter(timeoutMs + killGraceMs, 'time limit');
+        return;
+      }
       child.kill('SIGKILL');
       resolve(decodeResult(message));
     });
 
-    // After a message this does nothing, because the promise has already settled.
+    // After a result this does nothing, because the promise has already settled.
     child.once('close', (code, signal) => {
       clearTimeout(killTimer);
-      if (timedOut) {
+      if (killedFor === 'time limit') {
         resolve(failed('timeout', `The adapter exceeded the ${timeoutMs} ms time limit.`));
-      } else if (signal === 'SIGTERM' || signal === 'SIGINT' || signal === 'SIGHUP') {
+      } else if (killedFor === 'startup') {
+        reject(new SandboxUnavailableError(`The sandbox process did not start within ${startupTimeoutMs} ms.`));
+      } else if (signal === 'SIGTERM' || signal === 'SIGINT' || signal === 'SIGHUP' || signal === 'SIGKILL') {
+        // Something outside the sandbox stopped it, such as a shutdown or the kernel's OOM killer.
         reject(new SandboxUnavailableError(`The sandbox process was stopped by ${signal}.`));
       } else if (signal !== null) {
         resolve(classifyAbort(signal, stderr, memoryLimitMb));
@@ -113,10 +131,7 @@ export function runAdapter(run: AdapterRun, limits: SandboxLimits = {}): Promise
     });
 
     // A failed send means the child died, which the close handler reports.
-    child.send(
-      { code: run.code, body: run.body ?? '', requestJson: JSON.stringify(run.request), timeoutMs, memoryLimitMb },
-      () => {},
-    );
+    child.send(job, () => {});
   });
 }
 
