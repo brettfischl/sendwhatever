@@ -21,7 +21,7 @@ function otherDatabase(url: string, database: string): string {
 }
 
 describe('local Postgres', () => {
-  it('runs Postgres 16 or later, with sw_app on its own database and role', async () => {
+  it('runs Postgres 18 or later, with sw_app on its own database and role', async () => {
     const row = await withClient(config.appDatabaseUrl, async (client) => {
       const result = await client.query(
         `SELECT current_database() AS db, current_user AS role,
@@ -31,7 +31,7 @@ describe('local Postgres', () => {
     });
     expect(row.db).toBe('sw_app');
     expect(row.role).toBe('sw_app');
-    expect(row.version).toBeGreaterThanOrEqual(160000);
+    expect(row.version).toBeGreaterThanOrEqual(180000);
   });
 
   it('has the baseline migration applied', async () => {
