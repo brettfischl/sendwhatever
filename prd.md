@@ -117,7 +117,7 @@ System tables live outside the account's storage namespace, so an adapter that w
 1. Client POSTs any JSON object or array, such as `{ "email": "ada@example.com" }`, to `https://account-123.api.example.com/ingest`.
 2. Caddy routes the request to the Ingestion Service with the account slug.
 3. Ingestion Service resolves the account in the application database, checks the API key (§13.4), derives `source` and `op` from the path and method (§6), and computes a structural fingerprint of the body (sorted keys, nesting shape, array/object kinds) ignoring values.
-4. In one transaction, it appends the raw body and request context to `events` and inserts an `ingest` job into `queue`. It then returns `202 Accepted` with the `event_id`. A repeated `Idempotency-Key` creates nothing and returns the original `event_id` (§13.1).
+4. In one transaction, it appends the raw body and request context to `events` and inserts an `ingest` job into `queue`. It then returns `202 Accepted` with the `event_id`. An `Idempotency-Key` repeated for the same `(source, op)` creates nothing and returns the original `event_id` (§13.1).
 5. A worker claims the job.
 6. It queries the application database for an active adapter matching `(account_id, source, op, fingerprint)`, taking opaque paths into account (§7.1).
 7. If found, it runs the adapter to produce an intermediate object.
@@ -135,8 +135,8 @@ The write in step 10 and the delete in step 11 are not atomic. If a worker dies 
 3. A `quarantine` row referencing the event is inserted with `reason = 'unknown_fingerprint'`, and the queue job is deleted in the same transaction.
 4. The Adapter Generator (§12.1), which runs continuously, picks up the new shape and samples quarantined rows for that `(source, op, fingerprint)`.
 5. The LLM writes an adapter that normalizes the shape into the intermediate object format.
-6. Adapter is inserted with `active = false` and validated against the sample.
-7. If validation passes and the account has `auto_activate` on, adapter is set `active = true` (deactivating any earlier version for the same `(source, op, fingerprint)` in the same transaction) and a `replay` job is enqueued. With it off, the adapter waits for an operator.
+6. Adapter is inserted with `active = false` and validated against the sample. If it passes, `validated_at` is set.
+7. If validation passes and the account has `auto_activate` on, adapter is set `active = true` (in the same transaction, deactivating any earlier version for the same `(source, op, fingerprint)` and setting `superseded_at` on every other version of that shape) and a `replay` job is enqueued. With it off, the adapter waits for an operator.
 8. The worker pages through matching unreleased rows in batches, reading each payload from `events`. Each event is written through the storage backend, to the store its quarantine row names or to all live stores if it names none. It is then marked released and logged in `replay_log` in one application database transaction.
 
 An event that fails during replay stays open, and its `reason` and `detail` are updated to the new failure, such as `adapter_error`.
@@ -161,7 +161,7 @@ An account's data can be rebuilt from the event log into a new store, on any bac
    - Malformed events and events with no active adapter are skipped. Their quarantine rows stay open, and they reach all live stores when released.
    - An event that fails goes to quarantine against the new store, and the rebuild continues.
 4. The store moves to `ready`. Operator reviews any failures.
-5. Operator activates the store. One application database transaction points `accounts.active_store_id` at it, marks the old store `retired`, and closes quarantine rows that name the old store. A retired store receives no further writes and is kept until an operator removes it.
+5. Operator activates the store. One application database transaction marks the old store `retired`, then marks the new store `active`, in that order because `account_stores_one_active` allows only one at any moment, and closes quarantine rows that name the old store. A retired store receives no further writes and is kept until an operator removes it.
 
 No event can be missed. An event that isn't yet visible to the scan in step 3 commits after the store exists, so the worker that handles it sees the new store and writes to it. Any other event is already in the log for the scan to find. `_event_seq` stops the rebuild from overwriting newer live writes with older events (§11.2).
 
@@ -186,7 +186,7 @@ There is no required envelope or type. Any JSON object or array can be sent to `
 
 Everything else about the request is optional, and all of it is shown to the LLM as context:
 
-- **Path.** Anything after `/ingest`, such as `/ingest/users` or `/ingest/customers/123`. The first segment is the event's `source`, and an event with no path has an empty `source`. Any string works, since a table name comes from the adapter rather than the path.
+- **Path.** Anything after `/ingest`, such as `/ingest/users` or `/ingest/customers/123`. The first segment is the event's `source`, and an event with no path has an empty `source`. Any string of up to 255 bytes works, since a table name comes from the adapter rather than the path. A segment that is longer, or that percent-decodes to invalid UTF-8 or a NUL byte, gets `400` and nothing is stored. `events.request` keeps the path as received, without decoding it, so it can't introduce a NUL that `JSONB` would reject.
 - **Method.** `POST`, `PUT`, and `PATCH` are writes. `DELETE` is a delete (below). Other methods get `405`.
 - **Headers.** Available to the LLM and to adapters, for signals like `X-GitHub-Event`, but never used for matching.
 
@@ -205,7 +205,7 @@ Third-party tools (Stripe, Shopify, GitHub, …) send their own formats and usua
 **Core:**
 - **Key in the URL.** Since most providers can't send `Authorization`, the API key may be passed as `?key=` instead (§13.4). It is removed before the request is logged, and Caddy's access logs must not record query strings.
 - **Request context.** `events.request` stores the method, path, raw query string, and headers. Obvious auth is stripped first: the `Authorization`, `Proxy-Authorization`, `Cookie`, and `X-Api-Key` headers, and the `key` query parameter. Adapters receive it as `payload.request`, and the LLM sees it in samples.
-- **Duplicate deliveries.** Providers retry, so delivery is at least once. A known delivery header (`X-GitHub-Delivery`, `X-Shopify-Webhook-Id`, …) is used as the `Idempotency-Key` when none is sent.
+- **Duplicate deliveries.** Providers retry, so delivery is at least once. A known delivery header (`X-GitHub-Delivery`, `X-Shopify-Webhook-Id`, …) is used as the `Idempotency-Key` when none is sent. Keys apply per `(source, op)`, so two providers on different paths can't collide, and are limited to 255 bytes; a longer key gets `400`.
 
 **If time allows:**
 - **Setup handshakes.** Built-in responders answer provider verification synchronously and log nothing: Slack `url_verification`, Microsoft Graph `validationToken`, and Meta `hub.challenge` (a `GET`).
@@ -389,8 +389,8 @@ Postgres, managed with versioned migrations.
 ```sql
 CREATE TABLE accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  slug TEXT NOT NULL UNIQUE,            -- subdomain label
-  active_store_id UUID,                 -- the store custom APIs read from; see account_stores
+  slug TEXT NOT NULL UNIQUE             -- subdomain label: one lowercase DNS label
+    CHECK (slug ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'),
   auto_activate BOOLEAN NOT NULL DEFAULT true,  -- activate adapters that pass validation (§12.1)
   status TEXT NOT NULL DEFAULT 'provisioning'
     CHECK (status IN ('provisioning', 'active', 'disabled')),
@@ -411,12 +411,12 @@ CREATE TABLE account_stores (
   rebuild_through_seq BIGINT,           -- end of the rebuild's scan
   rebuild_cursor BIGINT,                -- last seq the rebuild has processed
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (account_id, generation)
+  UNIQUE (account_id, generation),
+  UNIQUE (account_id, id)               -- target for same-account foreign keys
 );
 
-ALTER TABLE accounts
-  ADD FOREIGN KEY (active_store_id) REFERENCES account_stores(id);
-
+-- The store custom APIs read from. A partial unique index can't be deferred, so
+-- activation retires the old store before marking the new one active (§5.4).
 CREATE UNIQUE INDEX account_stores_one_active
   ON account_stores (account_id) WHERE status = 'active';
 
@@ -431,15 +431,19 @@ CREATE TABLE api_keys (
 CREATE TABLE adapters (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES accounts(id),
-  source TEXT NOT NULL DEFAULT '',      -- first path segment; empty when there is no path (§6)
+  source TEXT NOT NULL DEFAULT ''       -- first path segment; empty when there is no path (§6)
+    CHECK (octet_length(source) <= 255),
   op TEXT NOT NULL CHECK (op IN ('write', 'delete')),
   fingerprint TEXT NOT NULL,            -- computed with opaque_paths collapsed (§7.1)
   opaque_paths TEXT[] NOT NULL DEFAULT '{}',
   version INTEGER NOT NULL,
   code TEXT NOT NULL,
   active BOOLEAN NOT NULL DEFAULT false,
+  validated_at TIMESTAMPTZ,             -- passed the validation gate; NULL for drafts that didn't (§12.1)
+  superseded_at TIMESTAMPTZ,            -- another version of this shape was activated
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (account_id, source, op, fingerprint, version)
+  UNIQUE (account_id, source, op, fingerprint, version),
+  UNIQUE (account_id, id)               -- target for same-account foreign keys
 );
 
 -- At most one active adapter per shape
@@ -460,16 +464,19 @@ CREATE TABLE events (
   seq BIGINT GENERATED ALWAYS AS IDENTITY UNIQUE, -- replay order; decides last-write-wins
   account_id UUID NOT NULL REFERENCES accounts(id),
   body BYTEA NOT NULL,                            -- exact bytes received
-  source TEXT NOT NULL DEFAULT '',                -- first path segment; empty when there is no path (§6)
+  source TEXT NOT NULL DEFAULT ''                 -- first path segment; empty when there is no path (§6)
+    CHECK (octet_length(source) <= 255),
   op TEXT NOT NULL CHECK (op IN ('write', 'delete')),
   fingerprint TEXT,                               -- NULL when malformed
-  idempotency_key TEXT,                           -- Idempotency-Key header, or a webhook delivery ID (§6.2)
-  request JSONB NOT NULL,                         -- method, path, raw query string, headers; obvious auth removed
-  received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  idempotency_key TEXT                            -- Idempotency-Key header, or a webhook delivery ID (§6.2)
+    CHECK (octet_length(idempotency_key) <= 255),
+  request JSONB NOT NULL,                         -- method, path as received, raw query string, headers; obvious auth removed
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (account_id, id)                         -- target for same-account foreign keys
 );
 
 CREATE UNIQUE INDEX events_idempotency
-  ON events (account_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+  ON events (account_id, source, op, idempotency_key) WHERE idempotency_key IS NOT NULL;
 CREATE INDEX events_account_seq ON events (account_id, seq);
 CREATE INDEX events_shape ON events (account_id, source, op, fingerprint);
 
@@ -477,36 +484,45 @@ CREATE TABLE queue (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES accounts(id),
   kind TEXT NOT NULL CHECK (kind IN ('ingest', 'replay', 'rebuild')),
-  event_id UUID REFERENCES events(id),            -- event to process (ingest)
-  adapter_id UUID REFERENCES adapters(id),        -- adapter to replay (replay)
-  store_id UUID REFERENCES account_stores(id),    -- store to fill (rebuild)
+  event_id UUID,                                  -- event to process (ingest)
+  adapter_id UUID,                                -- adapter to replay (replay)
+  store_id UUID,                                  -- store to fill (rebuild)
   run_at TIMESTAMPTZ NOT NULL DEFAULT now(),      -- next eligible time; doubles as lease and backoff
   attempts INTEGER NOT NULL DEFAULT 0,
+  rerun_requested BOOLEAN NOT NULL DEFAULT false, -- run this replay again when it finishes (§10.1)
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  FOREIGN KEY (account_id, event_id) REFERENCES events(account_id, id),
+  FOREIGN KEY (account_id, adapter_id) REFERENCES adapters(account_id, id),
+  FOREIGN KEY (account_id, store_id) REFERENCES account_stores(account_id, id),
   CHECK (
-    (kind = 'ingest' AND event_id IS NOT NULL) OR
-    (kind = 'replay' AND adapter_id IS NOT NULL) OR
-    (kind = 'rebuild' AND store_id IS NOT NULL)
-  )
+    (kind = 'ingest' AND event_id IS NOT NULL AND adapter_id IS NULL AND store_id IS NULL) OR
+    (kind = 'replay' AND adapter_id IS NOT NULL AND event_id IS NULL AND store_id IS NULL) OR
+    (kind = 'rebuild' AND store_id IS NOT NULL AND event_id IS NULL AND adapter_id IS NULL)
+  ),
+  CHECK (kind = 'replay' OR NOT rerun_requested)
 );
 
 CREATE INDEX queue_ready ON queue (run_at);
 
--- At most one replay per adapter and one rebuild per store at a time
+-- At most one job per event, one replay per adapter, and one rebuild per store at a time
+CREATE UNIQUE INDEX queue_one_ingest ON queue (event_id) WHERE kind = 'ingest';
 CREATE UNIQUE INDEX queue_one_replay ON queue (adapter_id) WHERE kind = 'replay';
 CREATE UNIQUE INDEX queue_one_rebuild ON queue (store_id) WHERE kind = 'rebuild';
 
 CREATE TABLE quarantine (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  event_id UUID NOT NULL REFERENCES events(id),
+  event_id UUID NOT NULL,
   account_id UUID NOT NULL REFERENCES accounts(id),
-  store_id UUID REFERENCES account_stores(id),    -- store the failure applies to; NULL = all live stores
+  store_id UUID,                                  -- store the failure applies to; NULL = all live stores
   reason TEXT NOT NULL CHECK (reason IN
     ('unknown_fingerprint', 'malformed', 'adapter_error', 'schema_conflict', 'write_error')),
   detail TEXT,
   quarantined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   released_at TIMESTAMPTZ,
-  released_by_adapter_id UUID REFERENCES adapters(id)
+  released_by_adapter_id UUID,
+  FOREIGN KEY (account_id, event_id) REFERENCES events(account_id, id),
+  FOREIGN KEY (account_id, store_id) REFERENCES account_stores(account_id, id),
+  FOREIGN KEY (account_id, released_by_adapter_id) REFERENCES adapters(account_id, id)
 );
 
 CREATE INDEX quarantine_unreleased
@@ -528,14 +544,16 @@ CREATE TABLE replay_log (
 CREATE TABLE adapter_attempts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES accounts(id),
-  source TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT ''
+    CHECK (octet_length(source) <= 255),
   op TEXT NOT NULL CHECK (op IN ('write', 'delete')),
   fingerprint TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
-  adapter_id UUID REFERENCES adapters(id),
+  adapter_id UUID,
   detail TEXT,
   started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  finished_at TIMESTAMPTZ
+  finished_at TIMESTAMPTZ,
+  FOREIGN KEY (account_id, adapter_id) REFERENCES adapters(account_id, id)
 );
 
 -- At most one generation in progress per shape
@@ -563,6 +581,7 @@ CREATE TABLE data_columns (
 - **Transient errors** (backend unreachable, timeout): the job stays in the queue and `run_at` moves forward with capped exponential backoff, so a backend outage delays writes without filling quarantine. After a configurable maximum age (default 72 hours), the event moves to quarantine with `reason = 'write_error'`.
 - **Permanent errors** go to quarantine immediately (§15).
 - **Completion:** jobs are deleted when done. The payload stays in `events`, and outcomes live in the data tables, `quarantine`, or `replay_log`.
+- **Replay requested during a replay:** a running replay may already have paged past rows that a new fingerprint now matches. A replay enqueue therefore uses `ON CONFLICT (adapter_id) WHERE kind = 'replay' DO UPDATE SET rerun_requested = true`. When the replay finishes, the worker deletes the job only if `rerun_requested` is false. Otherwise it clears the flag and sets `run_at = now()` in one statement, so the replay runs again from the start and no request is lost.
 
 ### 10.2 Dynamic Data Tables
 
@@ -710,7 +729,7 @@ The backend is part of the account object in the application database, set when 
 }
 ```
 
-- Settings are stored in `account_stores`, and `accounts.active_store_id` selects the current one. A separate table is needed because a rebuild has two stores live at once, each with its own column registry.
+- Settings are stored in `account_stores`, and the row with `status = 'active'` is the current one. A separate table is needed because a rebuild has two stores live at once, each with its own column registry.
 - Workers load an account's stores from the application database at the start of each job, so a new store takes effect without a deployment.
 - `credentials` are encrypted by the platform before storage. The encryption key comes from the service environment and is never stored in the database. They are never returned by the API.
 - Changing an account's backend means rebuilding into a new store (§5.4), not editing settings in place.
@@ -768,7 +787,7 @@ Security note: Adapter code is written by an LLM from client-supplied payloads a
 
 A continuously running process that turns quarantined shapes into active adapters. It calls its LLM through Fireworks, using `accounts/fireworks/models/deepseek-v4p1-flash` by default, set by the `FIREWORKS_MODEL` config value. This is a reasoning model, and reasoning counts against `max_tokens`, so requests need a generous limit. An empty reply with `finish_reason: length` means the limit was too low.
 
-1. It polls for `(account_id, source, op, fingerprint)` shapes with open quarantine rows, no generation in progress, and no validated adapter awaiting an operator, and records a `running` row in `adapter_attempts`. An attempt left `running` past a timeout is treated as failed.
+1. It polls for `(account_id, source, op, fingerprint)` shapes with open quarantine rows, no generation in progress, and no validated adapter awaiting an operator, and records a `running` row in `adapter_attempts`. A validated adapter is awaiting an operator when `validated_at` is set, `active` is false, and `superseded_at` is null. An attempt left `running` past a timeout blocks the shape until it is updated, so the poll marks it `failed` in the same transaction that records the new attempt. The timeout must be longer than a generation's retries and backoff, so a live attempt isn't failed.
 2. It first tries to avoid an LLM call:
    - If an active adapter now covers the shape through opaque paths (§7.1), it enqueues a replay.
    - Otherwise it runs the active adapters for that `(source, op)` against a sample of the shape, through the validation gate below. If one passes, the fingerprint is added to `adapter_fingerprints` and a replay is enqueued. A later version of that adapter doesn't inherit these entries; those shapes pass through this step again.
@@ -818,9 +837,9 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 
 `POST`, `PUT`, `PATCH`, or `DELETE` to `/ingest`, optionally followed by any path
 - Requires an API key (§13.4).
-- Accepts any JSON object or array (§6). The body is optional on `DELETE`. The path and all headers are optional. An `Idempotency-Key` header is also optional. A repeated key creates nothing and returns `202` with the original `event_id`, so clients can retry safely.
+- Accepts any JSON object or array (§6). The body is optional on `DELETE`. The path and all headers are optional. An `Idempotency-Key` header is also optional. A key repeated for the same `(source, op)` creates nothing and returns `202` with the original `event_id`, so clients can retry safely.
 - Returns `202 Accepted` once the payload is committed to the event log, and queued if well formed.
-- Returns `400` if the body isn't valid JSON. Nothing is stored.
+- Returns `400` if the body isn't valid JSON, the first path segment or `Idempotency-Key` is over 255 bytes, or the first path segment percent-decodes to invalid UTF-8 or a NUL byte. Nothing is stored.
 - Returns `401` if the API key is missing, invalid, or belongs to another account, `403` if the account is disabled, and `404` if the subdomain matches no account.
 - Returns `503` if the application database is unavailable, and the client should retry.
 - Response body:
@@ -859,7 +878,7 @@ Looks up the account's active store on each request through an internal Ingestio
 These routes are internal only and not routed through Caddy.
 
 `POST /accounts`
-- Body: `slug`, `storage` (§11.4).
+- Body: `slug`, `storage` (§11.4). `slug` must be one lowercase DNS label; anything else gets `400`.
 - Inserts the account as `provisioning` with its first store, calls `StorageBackend.provision`, and sets both `active`. Safe to retry if provisioning fails.
 - Returns the account's first API key, shown once, and its read-only database connection details (§14.1).
 
@@ -939,11 +958,12 @@ curl -X POST http://sqld:8080/v1/namespaces/acct_0f3a..._1/create
 | Known source, op, and fingerprint | Write via adapter |
 | Unknown shape | Quarantine with `unknown_fingerprint` |
 | Body isn't valid JSON | Reject with `400`; nothing stored |
+| Path segment or `Idempotency-Key` over 255 bytes, or a path segment that decodes to invalid UTF-8 or a NUL byte | Reject with `400`; nothing stored |
 | Valid JSON that isn't an object or array | Quarantine with `malformed` |
 | Unsupported HTTP method | Reject with `405`; nothing stored |
 | `DELETE` for a record that was never written | Row is created and marked deleted; a later write restores it |
 | Missing or invalid API key | Reject with `401`; nothing stored |
-| Client retries with the same `Idempotency-Key` | Return the original `event_id`; nothing new is stored |
+| Client retries with the same `Idempotency-Key`, `source`, and `op` | Return the original `event_id`; nothing new is stored |
 | Adapter throws or times out | Quarantine with `adapter_error` |
 | Adapter returns invalid intermediate object or identifier | Quarantine with `adapter_error` |
 | Value conflicts with registered column type | Quarantine with `schema_conflict` |
