@@ -46,6 +46,8 @@ interface Sent {
   allow?: string;
 }
 
+const ignoreLateError = () => {};
+
 /** Sends a real HTTP request, so the path, query and headers reach the app exactly as written. */
 function send(
   method: string,
@@ -82,6 +84,12 @@ function send(
       );
     });
     req.on('error', reject);
+    // On a 413 the server answers and closes while a large body is still being written. The response
+    // has already arrived by then, and the socket's late EPIPE would otherwise go uncaught. Sockets
+    // are reused between requests, so each gets this listener only once.
+    req.on('socket', (socket) => {
+      if (!socket.listeners('error').includes(ignoreLateError)) socket.on('error', ignoreLateError);
+    });
     req.end(options.body);
   });
 }
