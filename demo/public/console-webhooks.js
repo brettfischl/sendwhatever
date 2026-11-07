@@ -30,7 +30,7 @@ function resendLine({ kind, count, eventId, summary }) {
     'p',
     { className: 'flow-result flow-result-fail' },
     `Sent again${times}: a different event_id came back, so ingest did not treat it as a duplicate. `,
-    h('code', {}, eventId ?? 'none'),
+    h('code', {}, eventId),
   );
 }
 
@@ -40,7 +40,7 @@ function stepRow(run, step, index, noteLabel) {
   const resend = run.state.resends[index];
   return h(
     'li',
-    { className: `flow-step flow-step-${status}`, ...(status === 'next' || status === 'sending' ? { 'aria-current': 'step' } : {}) },
+    { className: `flow-step flow-step-${status}`, ...(status === 'next' || status === 'sending' || status === 'failed' ? { 'aria-current': 'step' } : {}) },
     h(
       'div',
       { className: 'flow-step-head' },
@@ -56,10 +56,10 @@ function stepRow(run, step, index, noteLabel) {
           'p',
           { className: 'flow-result flow-result-ok' },
           `${outcome.status}${outcome.ingestStatus ? ` ${outcome.ingestStatus}` : ''}, event_id `,
-          h('code', {}, outcome.eventId ?? 'none'),
+          h('code', {}, outcome.eventId),
         )
       : null,
-    outcome && !outcome.ok ? h('p', { className: 'flow-result flow-result-fail' }, outcome.summary) : null,
+    outcome && !outcome.ok && status === 'failed' ? h('p', { className: 'flow-result flow-result-fail' }, outcome.summary) : null,
     resend ? resendLine(resend) : null,
   );
 }
@@ -68,15 +68,43 @@ function startPanel(slot, flows, loadFlows, ctx) {
   const noteLabel = ctx.target.mode === 'stub' ? 'Full pipeline' : 'Pipeline';
   const modeNote = MODE_NOTES[ctx.target.mode];
 
-  // Controls are kept and updated rather than redrawn, so they hold focus through a run.
+  const isVisible = () => slot.getClientRects().length > 0;
+
+  // Controls are kept and updated rather than redrawn, so they hold focus through a run. For the same
+  // reason they use aria-disabled: a browser moves focus off a disabled button, and the next key press
+  // would be lost.
+  const control = (props, action, ...children) =>
+    h(
+      'button',
+      {
+        type: 'button',
+        ...props,
+        onclick: (event) => {
+          if (event.currentTarget.getAttribute('aria-disabled') !== 'true') action();
+        },
+      },
+      ...children,
+    );
+  const setDisabled = (button, disabled) => button.setAttribute('aria-disabled', String(disabled));
   const pickers = new Map();
   const description = h('p', { className: 'flow-description' });
-  const sendButton = h('button', { type: 'button', className: 'primary', onclick: () => active.sendNext() });
-  const playButton = h('button', { type: 'button', onclick: () => (active.state.playing ? active.stop() : active.play()) });
-  const resendButton = h('button', { type: 'button', onclick: () => active.resend() }, 'Resend same delivery');
-  const resetButton = h('button', { type: 'button', onclick: () => active.reset() }, 'Reset');
+  const sendButton = control({ className: 'primary' }, () => active.sendNext());
+  const playButton = control({}, () => (active.state.playing ? active.stop() : active.play()));
+  const resendButton = control({}, resend, 'Resend same delivery');
+  const resetButton = control({}, () => active.reset(), 'Reset');
   const status = h('div', { className: 'flow-status', role: 'status' });
   const stepList = h('ol', { className: 'flow-steps' });
+
+  /** Only when the list scrolls by itself: when the page stacks, this would pull the page away. */
+  function reveal(row) {
+    if (row && stepList.scrollHeight > stepList.clientHeight) row.scrollIntoView({ block: 'nearest' });
+  }
+
+  async function resend() {
+    const index = active.state.next - 1;
+    await active.resend();
+    reveal(stepList.children[index]);
+  }
 
   let countdownTimer;
   let drawnPauseEnd = null;
@@ -91,6 +119,8 @@ function startPanel(slot, flows, loadFlows, ctx) {
     if (resumesAt !== null) {
       const seconds = h('span', { 'aria-hidden': 'true' });
       const tick = () => {
+        // Leaving the tab ends the run, even if the viewer is back before the pause is over.
+        if (!isVisible()) return run.stop();
         seconds.textContent = ` in ${Math.max(1, Math.ceil((resumesAt - Date.now()) / 1000))}s`;
       };
       tick();
@@ -126,28 +156,25 @@ function startPanel(slot, flows, loadFlows, ctx) {
 
     for (const [id, button] of pickers) {
       button.setAttribute('aria-pressed', String(id === flow.id));
-      button.disabled = locked;
+      setDisabled(button, locked);
     }
     description.textContent = flow.description;
 
-    sendButton.disabled = locked || run.isDone();
+    setDisabled(sendButton, locked || run.isDone());
     sendButton.textContent = run.isDone()
       ? 'All steps sent'
       : `${outcomes[next]?.ok === false ? 'Retry' : 'Send'} step ${next + 1}: ${step.topic}`;
     playButton.textContent = playing ? 'Stop auto-play' : 'Auto-play';
-    playButton.disabled = playing ? false : Boolean(busy) || run.isDone();
+    setDisabled(playButton, !playing && (Boolean(busy) || run.isDone()));
     const last = run.lastDelivered();
     resendButton.title = last ? `Sends ${last.topic} again, with the same X-Shopify-Webhook-Id` : '';
-    resendButton.disabled = locked || !last;
-    resetButton.disabled = Boolean(busy) || (next === 0 && outcomes.length === 0);
+    setDisabled(resendButton, locked || !last);
+    setDisabled(resetButton, Boolean(busy) || (next === 0 && outcomes.length === 0));
 
     // Redrawing the status during a pause would restart its bar.
     if (run.state.resumesAt === null || run.state.resumesAt !== drawnPauseEnd) drawStatus(run);
     stepList.replaceChildren(...flow.steps.map((item, index) => stepRow(run, item, index, noteLabel)));
-    // Only when the list scrolls by itself: when the page stacks, this would pull the page away.
-    if (stepList.scrollHeight > stepList.clientHeight) {
-      stepList.querySelector('[aria-current]')?.scrollIntoView({ block: 'nearest' });
-    }
+    reveal(stepList.querySelector('[aria-current]'));
   }
 
   async function reload(id) {
@@ -162,8 +189,8 @@ function startPanel(slot, flows, loadFlows, ctx) {
       send: ctx.send,
       reload,
       onChange: () => draw(run),
-      // A view in a hidden tab shouldn't overwrite the shared panel while someone uses the other mode.
-      canContinue: () => slot.getClientRects().length > 0,
+      // A view in a hidden tab shouldn't start a send that overwrites the shared panel.
+      canContinue: isVisible,
     });
     return run;
   });
@@ -174,13 +201,9 @@ function startPanel(slot, flows, loadFlows, ctx) {
     { className: 'flow-picker', role: 'group', 'aria-label': 'Flow' },
     runs.map((run) => {
       const { id, label } = run.state.flow;
-      const button = h('button', {
-        type: 'button',
-        textContent: label,
-        onclick: () => {
-          active = run;
-          draw(run);
-        },
+      const button = control({ textContent: label }, () => {
+        active = run;
+        draw(run);
       });
       pickers.set(id, button);
       return button;

@@ -163,6 +163,7 @@ body.console {
 .flows { display: flex; flex-direction: column; gap: 0.5rem; height: 100%; }
 .flows > * { flex-shrink: 0; }
 .flow-loading { padding: 1rem; color: var(--muted); }
+.flows button[aria-disabled='true'] { opacity: 0.5; cursor: not-allowed; }
 .flow-picker { display: flex; flex-wrap: wrap; gap: 0.3rem; }
 .console .flow-picker button { flex: 1; font-size: 1rem; white-space: nowrap; }
 .console .flow-picker button[aria-pressed='true'] { color: #fff; background: var(--log-bg); border-color: var(--log-bg); opacity: 1; }
@@ -193,7 +194,7 @@ body.console {
 .flow-step-later { color: var(--muted); }
 /* Room goes to the step being talked about: a delivered one shrinks to its result. */
 .flow-step-delivered .flow-step-text, .flow-step-delivered .flow-step-note, .flow-step-later .flow-step-note { display: none; }
-@media (max-height: 800px) { .flow-description, .flow-step-later .flow-step-text { display: none; } }
+@media (max-height: 800px) { .flow-description, .flow-step-later .flow-step-text, .flow-step-failed .flow-step-text, .flow-step-failed .flow-step-note { display: none; } }
 .flow-step-next, .flow-step-sending { border-color: var(--accent); border-left-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .flow-step-next .flow-step-number, .flow-step-sending .flow-step-number, .flow-pill-next, .flow-pill-sending { color: #fff; background: var(--accent); }
 .flow-step-delivered { border-left-color: var(--ok); }

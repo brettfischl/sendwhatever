@@ -512,19 +512,27 @@ describe('the guided flows', () => {
     expect(ids[2]).toBe(ids[1]);
   });
 
-  it('reports a refused request, no response, and a redirect as failures', async () => {
+  it('reports a refused request, no response, a redirect, a reply with no event_id, and a malformed body as failures', async () => {
     const results: any[] = [
       () => Promise.reject(new Error('reserved header')),
       () => Promise.resolve({ error: 'connection refused' }),
       () => Promise.resolve({ response: { status: 302, body: '' } }),
+      () => Promise.resolve({ response: { status: 200, body: '<html>a proxy</html>' } }),
+      () => Promise.resolve({ response: { status: 202, body: { status: 'malformed', event_id: 'id' } } }),
     ];
     const run = createFlowRun({ flow: productFlow, send: () => results.shift()(), reload: async () => productFlow });
     const summaries = [];
-    for (let i = 0; i < 3; i += 1) {
+    for (let i = 0; i < 5; i += 1) {
       await run.sendNext();
       summaries.push(run.state.outcomes[0].summary);
     }
-    expect(summaries).toEqual(['Not sent. reserved header', 'No response from ingest. connection refused', 'Ingest answered 302.']);
+    expect(summaries).toEqual([
+      'Not sent. reserved header',
+      'No response from ingest. connection refused',
+      'Ingest answered 302.',
+      'Ingest answered 200 with no event_id, so this may not be ingest.',
+      'Ingest answered 202, but logged the body as malformed.',
+    ]);
     expect(run.state.next).toBe(0);
   });
 

@@ -43,16 +43,16 @@ async function attempt(send, request) {
   if (status < 200 || status >= 300) {
     return { ok: false, summary: `Ingest answered ${status}.${body?.error ? ` ${body.error}` : ''}` };
   }
-  return { ok: true, status, ingestStatus: body?.status, eventId: body?.event_id };
+  // Something else answering at this URL, such as a proxy's page, hasn't ingested anything.
+  if (!body?.event_id) return { ok: false, summary: `Ingest answered ${status} with no event_id, so this may not be ingest.` };
+  if (body.status === 'malformed') return { ok: false, summary: `Ingest answered ${status}, but logged the body as malformed.` };
+  return { ok: true, status, ingestStatus: body.status, eventId: body.event_id };
 }
 
 /** Says what actually came back, because a repeat only counts if ingest gave the original ID. */
 function readResend(original, outcome, count) {
   if (!outcome.ok) return { kind: 'fail', count, summary: outcome.summary };
-  const same = outcome.eventId !== undefined && outcome.eventId === original.eventId;
-  return same
-    ? { kind: 'same', count, eventId: outcome.eventId }
-    : { kind: 'different', count, eventId: outcome.eventId };
+  return { kind: outcome.eventId === original.eventId ? 'same' : 'different', count, eventId: outcome.eventId };
 }
 
 /**
@@ -91,6 +91,13 @@ export function createFlowRun({ flow, send, reload, onChange = () => {}, pauseMs
     state.busy = null;
     onChange();
     return outcome.ok;
+  }
+
+  /** Lets a send in progress finish, and sends nothing more. */
+  function stop() {
+    state.playing = false;
+    endPause();
+    onChange();
   }
 
   async function pause() {
@@ -135,12 +142,7 @@ export function createFlowRun({ flow, send, reload, onChange = () => {}, pauseMs
       onChange();
     },
 
-    /** Lets a send in progress finish, and sends nothing more. */
-    stop() {
-      state.playing = false;
-      endPause();
-      onChange();
-    },
+    stop,
 
     /** The last delivered step, which is what the resend button repeats. */
     lastDelivered() {
@@ -164,7 +166,7 @@ export function createFlowRun({ flow, send, reload, onChange = () => {}, pauseMs
     /** Starts over with new delivery IDs. If they can't be fetched, the run stays as it was. */
     async reset() {
       if (state.busy) return;
-      this.stop();
+      stop();
       state.busy = 'resetting';
       state.problem = null;
       onChange();
