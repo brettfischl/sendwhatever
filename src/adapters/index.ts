@@ -42,6 +42,3 @@ export type {
   SampleOptions,
   ValidateAndActivateResult,
 } from './store.js';
-
-export { createInternalRoutes } from './routes.js';
-export type { InternalRoutesOptions } from './routes.js';

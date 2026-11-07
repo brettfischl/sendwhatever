@@ -51,7 +51,9 @@ Stop this before running `npm test`. It uses the same queue as the tests, so it 
 To try it, create an account, then send it a payload. The first response is the only time you see the API key, and it also holds the read-only database login:
 
 ```bash
-curl -X POST localhost:3000/accounts -H 'content-type: application/json' -d '{"slug":"demo"}'
+curl -X POST localhost:3000/accounts \
+  -H "authorization: Bearer $(grep '^INTERNAL_API_TOKEN=' .env | cut -d= -f2-)" \
+  -H 'content-type: application/json' -d '{"slug":"demo"}'
 
 curl -X POST localhost:3000/ingest -H 'X-Account-Slug: demo' -H 'Authorization: Bearer YOUR_API_KEY' \
   -H 'content-type: application/json' -d '{"id":"c1","name":"Ada"}'

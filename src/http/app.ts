@@ -1,9 +1,10 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { createInternalRoutes } from '../adapters/index.js';
 import { adminRoutes } from '../admin/index.js';
+import { SandboxUnavailableError } from '../sandbox/index.js';
 import { HttpError, isConnectionError, type AppDeps, type AppEnv } from './deps.js';
 import { accountRoutes } from './routes/accounts.js';
+import { adapterRoutes, quarantineRoutes } from './routes/adapters.js';
 import { ingestRoutes } from './routes/ingest.js';
 
 /** The most the adapter sandbox can reliably process (§13.1). Past about this, runs time out or run out of memory. */
@@ -41,12 +42,16 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   // Mount each route module here, one line each.
   app.route('/accounts', accountRoutes);
   app.route('/ingest', ingestRoutes);
-  app.route('/', createInternalRoutes({ pool: deps.appDb, token: deps.config.internalApiToken }));
+  app.route('/adapters', adapterRoutes);
+  app.route('/quarantine', quarantineRoutes);
   app.route('/admin', adminRoutes);
 
   app.notFound((c) => c.json({ error: 'not found' }, 404));
   app.onError((error, c) => {
     if (error instanceof HttpError) return c.json({ error: error.message }, error.status);
+    if (error instanceof SandboxUnavailableError) {
+      return c.json({ error: 'The adapter sandbox is unavailable. Try again.' }, 503);
+    }
     if (isConnectionError(error)) return c.json({ error: 'database unavailable' }, 503);
     console.error(error);
     return c.json({ error: 'internal error' }, 500);

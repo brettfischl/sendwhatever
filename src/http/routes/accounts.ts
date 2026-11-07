@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { AccountError, createAccount, type AccountErrorCode } from '../../accounts/create.js';
+import { internalOnly } from '../auth.js';
 import { HttpError, type AppEnv } from '../deps.js';
 
 const STATUS: Record<AccountErrorCode, 400 | 409 | 500 | 503> = {
@@ -12,7 +13,8 @@ const STATUS: Record<AccountErrorCode, 400 | 409 | 500 | 503> = {
 
 export const accountRoutes = new Hono<AppEnv>();
 
-/** Internal: no authentication. The server listens on loopback unless deliberately exposed. */
+accountRoutes.use('*', internalOnly);
+
 accountRoutes.post('/', async (c) => {
   const body = await readJson(c.req.raw);
   try {

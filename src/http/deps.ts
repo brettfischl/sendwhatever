@@ -1,5 +1,6 @@
 import type { HttpBindings } from '@hono/node-server';
 import type pg from 'pg';
+import type { SampleOptions } from '../adapters/index.js';
 import type { Config } from '../config.js';
 import type { StorageBackend } from '../contracts/index.js';
 
@@ -11,6 +12,8 @@ export interface AppDeps {
     Config,
     'postgresPort' | 'dataDbPassword' | 'encryptionKey' | 'internalApiToken' | 'port'
   >;
+  /** Overrides how the validation gate runs, in tests. */
+  gate?: SampleOptions;
 }
 
 /**
@@ -22,7 +25,7 @@ export type AppEnv = { Bindings: HttpBindings; Variables: { deps: AppDeps } };
 /** An error with the status and message the client should see. */
 export class HttpError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 405 | 409 | 413 | 500 | 503,
+    readonly status: 400 | 401 | 403 | 404 | 405 | 409 | 413 | 415 | 500 | 503,
     message: string,
   ) {
     super(message);

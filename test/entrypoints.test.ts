@@ -14,6 +14,7 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const config = loadConfig();
+const INTERNAL_TOKEN = 'entrypoints-test-token';
 const db = new pg.Pool({ connectionString: config.appDatabaseUrl, max: 2 });
 
 const accounts: string[] = [];
@@ -55,7 +56,7 @@ function npmRun(script: string, workerAccountId: string, port: number): Running 
     cwd: ROOT,
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PORT: String(port), WORKER_ACCOUNT_ID: workerAccountId },
+    env: { ...process.env, PORT: String(port), WORKER_ACCOUNT_ID: workerAccountId, INTERNAL_API_TOKEN: INTERNAL_TOKEN },
   });
   let output = '';
   command.stdout.on('data', (chunk) => (output += chunk));
@@ -124,7 +125,7 @@ interface Created {
 async function createAccount(port: number): Promise<Created> {
   const res = await fetch(`http://127.0.0.1:${port}/accounts`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${INTERNAL_TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ slug: `entry-${randomBytes(5).toString('hex')}` }),
   });
   expect(res.status).toBe(201);

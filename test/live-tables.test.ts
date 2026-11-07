@@ -22,7 +22,8 @@ const tracker = (await import(new URL('../demo/public/tables-tracker.js', import
   createTracker: () => { tables: (response: object, now: number) => any[] };
 };
 
-const config = loadConfig();
+const TOKEN = 'live-tables-test-token';
+const config = { ...loadConfig(), internalApiToken: TOKEN };
 const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl });
 const backend = new PostgresBackend({ idleTimeoutMs: 50 });
 const app = createApp({ appDb, backend, config });
@@ -41,7 +42,7 @@ async function createAccount(): Promise<Account> {
   const slug = `tables-${randomBytes(5).toString('hex')}`;
   const res = await app.request('/accounts', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ slug }),
   });
   expect(res.status).toBe(201);
