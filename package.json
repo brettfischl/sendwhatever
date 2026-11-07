@@ -12,6 +12,7 @@
   "scripts": {
     "setup": "bash scripts/setup.sh",
     "migrate": "tsx scripts/migrate.ts",
+    "seed": "tsx scripts/seed.ts",
     "start": "node --import tsx src/http/main.ts",
     "worker": "node --import tsx src/worker/main.ts",
     "generator": "node --import tsx src/generator/main.ts",

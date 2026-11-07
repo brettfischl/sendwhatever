@@ -9,7 +9,7 @@ export interface DemoConfig {
 }
 
 const DEFAULT_PORT = 3100;
-const DEFAULT_ACCOUNT_SLUG = 'demo';
+export const DEFAULT_ACCOUNT_SLUG = 'demo';
 
 export function loadDemoConfig(env: NodeJS.ProcessEnv = process.env): DemoConfig {
   const ingestUrl = env.INGEST_URL || undefined;

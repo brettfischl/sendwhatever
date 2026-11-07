@@ -14,6 +14,29 @@ This one command takes a fresh checkout to Postgres running, migrations applied,
 
 Set `FIREWORKS_API_KEY` in `.env` yourself. Nothing needs it yet. `FIREWORKS_MODEL` is optional and has a default in `src/config.ts`.
 
+## From a fresh checkout to the running demo
+
+```bash
+npm run setup   # Postgres, migrations, .env, tests
+npm run seed    # The demo account, its store, and the admin's membership
+npm run dev     # Server, worker and generator. Leave it running, and use a second terminal for the demo
+npm run demo
+```
+
+Then open the console at http://127.0.0.1:3100/console, and the admin at http://localhost:3000/admin. The admin login is `ADMIN_EMAIL` and `ADMIN_PASSWORD` in `.env`. An admin can reveal the account's read-only login on its Credentials page. Tables only appear once the generator has written an adapter, which needs `FIREWORKS_API_KEY`.
+
+`npm run seed` is safe to re-run, and doesn't need the server to have run. It writes the API key, read-only login and panel settings to `.demo-seed.json`, which is gitignored and mode 600, and it never prints them. A key can only be read when it's created, so a re-run reuses the one in that file while it still works. If the file is missing or its key has stopped working, it adds a new key and rewrites the file. It doesn't revoke older keys, and it never changes the store's password.
+
+If you run `docker compose down -v`, run `npm run setup` and `npm run seed` again. Until you do, `npm run demo` stops at startup and says why, rather than sending with a dead key.
+
+To use another server port, set `PORT` for both `npm run seed` and `npm run dev`, because the seed saves the ingest URL. Use `DEMO_PORT` for the demo:
+
+```bash
+PORT=3200 npm run seed
+PORT=3200 npm run dev
+DEMO_PORT=3300 npm run demo
+```
+
 ## Commands
 
 | Command | What it does |
@@ -22,6 +45,7 @@ Set `FIREWORKS_API_KEY` in `.env` yourself. Nothing needs it yet. `FIREWORKS_MOD
 | `npm start` | Runs just the server |
 | `npm run worker` | Runs just the worker |
 | `npm run generator` | Runs just the adapter generator, which needs `FIREWORKS_API_KEY` |
+| `npm run seed` | Creates the demo account and `.demo-seed.json`. Safe to re-run |
 | `npm run demo` | Runs the demo webinar site (see below) |
 | `npm run migrate` | Applies new migrations to `sw_app` |
 | `npm test` | Type-checks, then runs the tests (Postgres must be running) |
@@ -56,9 +80,9 @@ To try it, create an account, then send it a payload. The first response is the 
 ```bash
 curl -X POST localhost:3000/accounts \
   -H "authorization: Bearer $(grep '^INTERNAL_API_TOKEN=' .env | cut -d= -f2-)" \
-  -H 'content-type: application/json' -d '{"slug":"demo"}'
+  -H 'content-type: application/json' -d '{"slug":"acme"}'
 
-curl -X POST localhost:3000/ingest -H 'X-Account-Slug: demo' -H 'Authorization: Bearer YOUR_API_KEY' \
+curl -X POST localhost:3000/ingest -H 'X-Account-Slug: acme' -H 'Authorization: Bearer YOUR_API_KEY' \
   -H 'content-type: application/json' -d '{"id":"c1","name":"Ada"}'
 ```
 
@@ -75,13 +99,15 @@ The worker processes the event within a second. Nothing writes adapters yet, so 
 
 ## Demo site
 
-A fake webinar site, Beacon Live, that sends its activity to `/ingest`. It's the demo and the end-to-end testbed, and needs no `.env` or Postgres:
+A fake webinar site, Beacon Live, that sends its activity to `/ingest`. It's the demo and the end-to-end testbed. Without a seed, it needs no `.env` or Postgres:
 
 ```bash
 npm run demo
 ```
 
-Then open http://127.0.0.1:3100. With no `INGEST_URL` set, it sends to a built-in stub that follows the status codes in PRD §13.1 and stores nothing. To send to a real service, set `INGEST_URL` and `INGEST_API_KEY` in `.env` or the environment:
+Then open http://127.0.0.1:3100. With no `INGEST_URL` set and no `.demo-seed.json`, it sends to a built-in stub that follows the status codes in PRD §13.1 and stores nothing. After `npm run seed`, it sends to the local service as the seeded account, with the tables panel on. To force the stub, run `INGEST_URL= npm run demo`.
+
+To send somewhere else, set `INGEST_URL` and `INGEST_API_KEY` in `.env` or the environment. Those settings override `.demo-seed.json`. The seeded key is only sent to the seeded URL and account, so another `INGEST_URL` needs its own key, and another `ACCOUNT_SLUG` with no key of its own falls back to the stub:
 
 ```bash
 INGEST_URL=http://localhost:3000/ingest INGEST_API_KEY=your-key ACCOUNT_SLUG=your-account npm run demo
@@ -89,12 +115,12 @@ INGEST_URL=http://localhost:3000/ingest INGEST_API_KEY=your-key ACCOUNT_SLUG=you
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `INGEST_URL` | built-in stub | The ingest route. It must not contain a query or credentials, because it's shown in the request log. |
-| `INGEST_API_KEY` | none | Sent as `Authorization: Bearer`. Required with `INGEST_URL`. It stays on the server and is masked in the request log. |
-| `ACCOUNT_SLUG` | `demo` | Sent as `X-Account-Slug`, as in development without Caddy. Set it empty to leave the header out when a subdomain names the account. |
+| `INGEST_URL` | `.demo-seed.json`, or the built-in stub | The ingest route. It must not contain a query or credentials, because it's shown in the request log. |
+| `INGEST_API_KEY` | `.demo-seed.json`, or none | Sent as `Authorization: Bearer`. Required with `INGEST_URL`. It stays on the server and is masked in the request log. |
+| `ACCOUNT_SLUG` | `.demo-seed.json`, or `demo` | Sent as `X-Account-Slug`, as in development without Caddy. Set it empty to leave the header out when a subdomain names the account. |
 | `DEMO_PORT` | `3100` | Port for the site. |
 | `DEMO_HOST` | `127.0.0.1` | Address for the site. It has no login, so think before exposing it. |
-| `DEMO_APP_DATABASE_URL` | none | Turns on the live tables panel against a real service: a `postgres://` URL for `sw_app` on localhost, used read-only for event progress and to find the store. It needs `SW_ENCRYPTION_KEY` to open the store's read-only login, and `DEMO_HOST` must stay on loopback, or the demo won't start. |
+| `DEMO_APP_DATABASE_URL` | `.demo-seed.json`, or none | Turns on the live tables panel against a real service: a `postgres://` URL for `sw_app` on localhost, used read-only for event progress and to find the store. It needs `SW_ENCRYPTION_KEY` to open the store's read-only login, and `DEMO_HOST` must stay on loopback, or the demo won't start. |
 
 The panel on every page shows each request and its response. The site's own data lives in memory and is gone on restart. If ingest rejects a request or can't be reached, the action still happens on the site and the panel shows the failure.
 
@@ -128,7 +154,7 @@ http://127.0.0.1:3100/console is for showing the platform off (PRD §20). Arbitr
 | `src/config.ts` | Loads config from `.env` |
 | `demo/` | Fake webinar site that writes to `/ingest` |
 | `src/http/main.ts`, `src/worker/main.ts` | Server and worker entry points |
-| `scripts/` | Setup, migration, and `npm run dev` entry points |
+| `scripts/` | Setup, migration, seed, and `npm run dev` entry points |
 | `test/` | Integration tests |
 | `docker/postgres/init/` | Creates the roles and databases when the volume is first created |
 

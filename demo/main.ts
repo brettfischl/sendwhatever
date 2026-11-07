@@ -3,6 +3,7 @@ import { loadDemoConfig } from './config.js';
 import { createRawIngestClient } from './console.js';
 import { createIngestClient, RequestLog } from './ingest-client.js';
 import { createDemoServer, SiteEvents } from './server.js';
+import { applySeedFile, assertSeedKeyLive, readSeedFile, SEED_FILE } from './seed-file.js';
 import { startStub } from './stub.js';
 import { tablesSourceFromEnv } from './tables.js';
 import { Webinar } from './webinar.js';
@@ -15,7 +16,27 @@ try {
   if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
 }
 
-const config = loadDemoConfig();
+// Settings already in the environment or .env win over the file.
+let seed;
+try {
+  seed = readSeedFile(SEED_FILE);
+} catch (error) {
+  // A damaged file only matters when nothing in the environment says where to send instead.
+  if (process.env.INGEST_URL === undefined) {
+    console.error((error as Error).message);
+    process.exit(1);
+  }
+}
+const { env, usesSeedKey } = applySeedFile(process.env, seed);
+const config = loadDemoConfig(env);
+if (seed && usesSeedKey) {
+  try {
+    await assertSeedKeyLive(seed, env.DEMO_APP_DATABASE_URL || seed.appDatabaseUrl);
+  } catch (error) {
+    console.error((error as Error).message);
+    process.exit(1);
+  }
+}
 const stub = config.ingestUrl ? undefined : await startStub();
 const ingestUrl = config.ingestUrl ?? stub!.url;
 
@@ -35,11 +56,14 @@ const server = createDemoServer(
     webinar,
     log,
     target: { mode: stub ? 'stub' : 'real', url: ingestUrl, accountSlug: config.accountSlug },
-    tables: tablesSourceFromEnv({
-      mode: stub ? 'stub' : 'real',
-      host: config.host,
-      accountSlug: config.accountSlug,
-    }),
+    tables: tablesSourceFromEnv(
+      {
+        mode: stub ? 'stub' : 'real',
+        host: config.host,
+        accountSlug: config.accountSlug,
+      },
+      env,
+    ),
     consoleSend: createRawIngestClient(clientOptions),
   },
   events,
