@@ -16,7 +16,13 @@ export type JobDecision =
   | { kind: 'delete' }
   /** `entries` are stores that have already failed for good, recorded now rather than at the end. */
   | { kind: 'retry'; detail: string; eventId: string; entries: QuarantineEntry[] }
-  | { kind: 'quarantine'; eventId: string; entries: QuarantineEntry[] };
+  | { kind: 'quarantine'; eventId: string; entries: QuarantineEntry[] }
+  /** A replay has been through its rows. A requested rerun keeps the job (§10.1). */
+  | { kind: 'finish_replay' }
+  /** The job stays queued, with backoff, and has nothing to record. */
+  | { kind: 'backoff'; detail: string }
+  /** The handler found that another worker now holds the job, so it leaves the job alone. */
+  | { kind: 'lease_lost' };
 
 /**
  * How far past the maximum age a job with earlier attempts is given up on without another. A retrying

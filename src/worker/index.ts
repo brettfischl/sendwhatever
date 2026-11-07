@@ -9,10 +9,12 @@ import type { StorageBackend } from '../contracts/index.js';
 import { PostgresBackend } from '../storage/postgres/index.js';
 import { handleIngest, type JobHandler } from './ingest.js';
 import { DEFAULT_SETTINGS, type WorkerContext, type WorkerSettings } from './pipeline.js';
+import { handleReplay, sweepStrandedRows } from './replay.js';
 import {
   backoffMs,
   claimJob,
   deleteJob,
+  finishReplay,
   pushRunAt,
   quarantineJob,
   startHeartbeat,
@@ -22,18 +24,21 @@ import {
 
 export { DEFAULT_SETTINGS } from './pipeline.js';
 export type { WorkerContext, WorkerSettings } from './pipeline.js';
+export { enqueueReplay } from './queue.js';
+export { sweepStrandedRows } from './replay.js';
 
-/** Replays and rebuilds join here. A kind with no handler stays in the queue, unclaimed. */
-const HANDLERS: Partial<Record<JobKind, JobHandler>> = { ingest: handleIngest };
+/** Rebuilds join here. A kind with no handler stays in the queue, unclaimed. */
+const HANDLERS: Partial<Record<JobKind, JobHandler>> = { ingest: handleIngest, replay: handleReplay };
 const HANDLED_KINDS = Object.keys(HANDLERS) as JobKind[];
 
 /**
- * - `done`: the job is deleted, and its rows are written.
+ * - `done`: the job is deleted, and its rows are written. A replay's failed rows stay in `quarantine`.
+ * - `rerun`: a replay finished, and runs again because another was requested while it ran.
  * - `quarantined`: the job is deleted, with its failures in `quarantine`.
  * - `retry`: the job stays queued, with backoff.
  * - `lease_lost`: this worker stalled past its lease, and another now holds the job.
  */
-export type JobOutcome = 'done' | 'quarantined' | 'retry' | 'lease_lost';
+export type JobOutcome = 'done' | 'rerun' | 'quarantined' | 'retry' | 'lease_lost';
 
 export interface ProcessedJob {
   job: Job;
@@ -81,16 +86,27 @@ export async function processNextJob(
       held = await quarantineJob(db, job, decision.eventId, decision.entries);
       outcome = 'quarantined';
       break;
-    case 'retry': {
+    case 'finish_replay': {
+      const finished = await finishReplay(db, job);
+      held = finished !== 'lease_lost';
+      outcome = finished === 'rerun' ? 'rerun' : 'done';
+      break;
+    }
+    case 'retry':
+    case 'backoff': {
       const delay = backoffMs(job.attempts, settings.backoffBaseMs, settings.backoffMaxMs);
       settings.log(`Job ${job.id}: attempt ${job.attempts} failed, retrying in ${delay} ms: ${decision.detail}`);
       held =
-        decision.entries.length > 0
+        decision.kind === 'retry' && decision.entries.length > 0
           ? await quarantineJob(db, job, decision.eventId, decision.entries, { retryInMs: delay })
           : await pushRunAt(db, job, delay);
       outcome = 'retry';
       break;
     }
+    case 'lease_lost':
+      held = false;
+      outcome = 'lease_lost';
+      break;
   }
   return { job, outcome: held ? outcome : 'lease_lost' };
 }
@@ -150,12 +166,24 @@ export function startWorker(options: WorkerOptions): Worker {
   };
   const slots = Array.from({ length: concurrency }, runSlot);
 
+  // Every worker process sweeps. A repeat only asks for a replay that has little left to do.
+  const runSweep = async () => {
+    for (;;) {
+      await sleep(settings.sweepIntervalMs, undefined, { signal: stopping.signal }).catch(() => {});
+      if (stopping.signal.aborted) return;
+      await sweepStrandedRows(context, { accountId }).catch((error: Error) =>
+        settings.log(`Could not sweep for stranded rows: ${error.message}`),
+      );
+    }
+  };
+  const sweep = runSweep();
+
   let stopped: Promise<void> | undefined;
   return {
     stop() {
       stopped ??= (async () => {
         stopping.abort();
-        await Promise.all(slots);
+        await Promise.all([...slots, sweep]);
         await Promise.all([db.end(), postgres.close()]);
       })();
       return stopped;
