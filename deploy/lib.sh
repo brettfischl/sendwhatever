@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared by bootstrap.sh and update.sh. Sourced, not run. Never prints secret values.
 
 DOMAIN="${DOMAIN:-sendwhatever.lol}"
@@ -56,8 +57,7 @@ postgres_up() {
 }
 
 wait_for_server() {
-  local i
-  for i in $(seq 1 60); do
+  for _ in $(seq 1 60); do
     curl -fsS http://127.0.0.1:3000/healthz >/dev/null 2>&1 && return 0
     sleep 1
   done
