@@ -25,7 +25,7 @@ const FINGERPRINT = /^[0-9a-f]{16}$/;
 const MAX_SOURCE_BYTES = 255;
 const MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_PAGE_SIZE = 100;
-const MAX_PAGE_SIZE = 1000;
+const MAX_PAGE_SIZE = 200;
 
 /** Caddy adds X-Forwarded-For and X-Account-Slug to everything it proxies (§14.2). */
 const PROXY_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'forwarded', 'via', 'x-account-slug'];

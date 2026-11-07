@@ -370,3 +370,48 @@ describe('opaque paths', () => {
     expect(dropped({ plan: 'pro' }, table({ tier: 'pro' }), ['metadata'])).toEqual([]);
   });
 });
+
+describe('review findings', () => {
+  const declared = (value: string) => ({ table: 't', column_types: { at: 'timestamp' }, rows: [{ at: value }] });
+
+  it('treats embedded entities that differ only by a null field as identical', () => {
+    const data = {
+      orders: [
+        { sku: 'a', customer: { id: '1', name: 'A', note: null } },
+        { sku: 'b', customer: { id: '1', name: 'A' } },
+      ],
+    };
+    const output = [
+      table({ sku: 'a', customer_id: 'x' }, { sku: 'b', customer_id: 'x' }),
+      { table: 'customer', rows: [{ id: '1', name: 'A' }] },
+    ];
+    expect(dropped(data, output)).toEqual([]);
+  });
+
+  it('reads a named zone as that zone, not UTC', () => {
+    expect(dropped({ when: 'Jan 2 2026 10:00:00 PST' }, declared('2026-01-02T18:00:00Z'))).toEqual([]);
+    expect(dropped({ when: 'Jan 2 2026 10:00:00 PST' }, declared('2026-01-02T10:00:00Z'))).toEqual(['$.when']);
+  });
+
+  it('does not mistake AM or PM for a zone', () => {
+    expect(dropped({ when: 'Jan 2 2026 10:00 PM' }, declared('2026-01-02T22:00:00Z'))).toEqual([]);
+  });
+
+  it('rejects a zone Date.parse does not know, rather than guessing', () => {
+    expect(dropped({ when: 'Jan 2 2026 10:00:00 CET' }, declared('2026-01-02T09:00:00Z'))).toEqual(['$.when']);
+  });
+
+  it('matches fractional epoch seconds with sub-millisecond precision', () => {
+    expect(dropped({ ts: 1700000000.123456 }, declared(new Date(1700000000.123456 * 1000).toISOString()))).toEqual([]);
+  });
+
+  it('caps a client-controlled path in the report', () => {
+    const key = 'k'.repeat(5000);
+    const result = planWrite(table() as AdapterResult, {
+      eventId: 'e', eventSeq: '1', receivedAt: '2026-11-07T12:00:00.000Z', opaquePaths: [],
+    });
+    if (!result.ok) throw new Error(result.detail);
+    const [item] = findDroppedValues({ [key]: 'v' }, result.plan.tables, []);
+    expect(item?.path.length).toBeLessThanOrEqual(203);
+  });
+});

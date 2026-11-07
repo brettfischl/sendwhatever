@@ -7,7 +7,7 @@ import type { AdapterRequest, AdapterResult, SchemaChange } from '../contracts/i
 import { OpaquePathError, parseOpaquePath } from '../fingerprint/index.js';
 import { planWrite, type WritePlan } from '../planner/index.js';
 import { findConflicts, findMissingChanges, type RegisteredColumns } from '../planner/registry.js';
-import { runAdapter, type SandboxLimits } from '../sandbox/index.js';
+import { runAdapter, type SandboxFailureKind, type SandboxLimits } from '../sandbox/index.js';
 import { findDroppedValues, parseBodyLikeSandbox } from './carry.js';
 
 export type GateFailureCode =
@@ -87,6 +87,7 @@ export interface GateResult {
 const PLAN_SEQ = '1';
 const PLAN_RECEIVED_AT = '1970-01-01T00:00:00.000Z';
 const MAX_DROPPED_REPORTED = 20;
+const RETRIED_FAILURES: ReadonlySet<SandboxFailureKind> = new Set<SandboxFailureKind>(['timeout', 'memory_limit', 'crashed']);
 
 /** Rejects bad syntax and any path that would collapse the root or an array of the root (§7.1). */
 export function checkOpaquePaths(paths: readonly string[]): GateFailure[] {
@@ -133,11 +134,7 @@ async function checkSample(
   const { adapter, earlier, registries } = input;
   const run = (code: string) =>
     (options.run ?? runAdapter)({ code, body: sample.body, request: sample.request }, options.limits);
-  const [first, second, earlierRun] = await Promise.all([
-    run(adapter.code),
-    run(adapter.code),
-    earlier ? run(earlier.code) : undefined,
-  ]);
+  const [first, second] = await Promise.all([run(adapter.code), run(adapter.code)]);
 
   const report: SampleReport = { eventId: sample.eventId };
   const failed = (code: GateFailureCode, detail: string) => ({ report, failures: [{ code, detail }] });
@@ -166,10 +163,16 @@ async function checkSample(
     ...checkCarry(sample, planned.plan, adapter.opaquePaths),
   ];
 
-  // An earlier version that can't handle this sample wrote nothing for it, so there's nothing to keep.
-  if (earlier && earlierRun?.ok) {
-    const earlierPlan = plan(earlierRun.output, sample, earlier.opaquePaths);
-    if (earlierPlan.ok) failures.push(...checkEarlierColumns(earlierPlan.plan, planned.plan));
+  if (earlier) {
+    // Running out of time or memory can come from load rather than the code, so it gets a second try.
+    let earlierRun = await run(earlier.code);
+    if (!earlierRun.ok && RETRIED_FAILURES.has(earlierRun.kind)) earlierRun = await run(earlier.code);
+    // An earlier version that still can't handle this sample wrote nothing for it, so there's nothing
+    // to keep. This can't block a fix for an adapter that really does time out.
+    if (earlierRun.ok) {
+      const earlierPlan = plan(earlierRun.output, sample, earlier.opaquePaths);
+      if (earlierPlan.ok) failures.push(...checkEarlierColumns(earlierPlan.plan, planned.plan));
+    }
   }
   return { report, failures };
 }

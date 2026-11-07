@@ -121,12 +121,13 @@ export async function loadEarlierVersion(db: Queryable, adapter: AdapterDraft): 
   return row && { id: row.id, code: row.code, opaquePaths: row.opaque_paths };
 }
 
-/** Limits a query to events with an open quarantine row that a new adapter could fix. */
-const OPEN_QUARANTINE = `AND EXISTS (
-  SELECT 1 FROM quarantine q
-  WHERE q.account_id = e.account_id AND q.event_id = e.id
-    AND q.released_at IS NULL AND q.reason <> 'malformed'
-)`;
+/** An open quarantine row that a new adapter could fix (§12.1). */
+const FIXABLE_ROW = `SELECT 1 FROM quarantine q
+  WHERE q.account_id = e.account_id AND q.event_id = e.id AND q.released_at IS NULL
+    AND q.reason IN ('unknown_fingerprint', 'adapter_error', 'schema_conflict')`;
+const NEEDS_FIXING = `AND EXISTS (${FIXABLE_ROW})`;
+/** Includes `write_error` rows, since the adapter ran and only the write failed. */
+const ALREADY_HANDLED = `AND NOT EXISTS (${FIXABLE_ROW})`;
 
 function bodyText(body: Buffer): string | null {
   return body.length === 0 ? null : body.toString('utf8');
@@ -146,10 +147,14 @@ async function matchingFingerprints(db: Queryable, adapter: AdapterDraft, filter
 
   // Equal full shapes collapse to equal shapes, so one event per full fingerprint is enough.
   const shapes = await db.query<{ fingerprint: string; body: Buffer }>(
-    `SELECT DISTINCT ON (e.fingerprint) e.fingerprint, e.body
-     FROM events e
-     WHERE e.account_id = $1 AND e.source = $2 AND e.op = $3 AND e.fingerprint IS NOT NULL ${filter}
-     ORDER BY e.fingerprint, e.seq DESC`,
+    `SELECT e.fingerprint, e.body
+     FROM (
+       SELECT MAX(e.seq) AS seq
+       FROM events e
+       WHERE e.account_id = $1 AND e.source = $2 AND e.op = $3 AND e.fingerprint IS NOT NULL ${filter}
+       GROUP BY e.fingerprint
+     ) latest
+     JOIN events e ON e.seq = latest.seq`,
     [adapter.account_id, adapter.source, adapter.op],
   );
   for (const row of shapes.rows) {
@@ -172,14 +177,23 @@ async function selectSamples(
 ): Promise<GateSample[]> {
   const fingerprints = await matchingFingerprints(db, adapter, filter);
   // Newest first, taking turns across full fingerprints, so one busy shape can't crowd out the rest.
+  // Each fingerprint stops at `limit` rows, and only those fetch their bodies, so this never sorts a
+  // whole shape or carries its bodies.
   const result = await db.query<{ id: string; body: Buffer; request: AdapterRequest }>(
-    `SELECT id, body, request FROM (
-       SELECT e.id, e.body, e.request, e.seq,
-              row_number() OVER (PARTITION BY e.fingerprint ORDER BY e.seq DESC) AS turn
-       FROM events e
-       WHERE e.account_id = $1 AND e.source = $2 AND e.op = $3 AND e.fingerprint = ANY($4::text[]) ${filter}
+    `SELECT e.id, e.body, e.request
+     FROM (
+       SELECT picked.id, picked.seq,
+              row_number() OVER (PARTITION BY shape ORDER BY picked.seq DESC) AS turn
+       FROM unnest($4::text[]) AS shape
+       CROSS JOIN LATERAL (
+         SELECT e.id, e.seq FROM events e
+         WHERE e.account_id = $1 AND e.source = $2 AND e.op = $3 AND e.fingerprint = shape ${filter}
+         ORDER BY e.seq DESC
+         LIMIT $5
+       ) picked
      ) sampled
-     ORDER BY turn, seq DESC
+     JOIN events e ON e.id = sampled.id
+     ORDER BY sampled.turn, sampled.seq DESC
      LIMIT $5`,
     [adapter.account_id, adapter.source, adapter.op, fingerprints, limit],
   );
@@ -187,16 +201,23 @@ async function selectSamples(
 }
 
 /**
- * Samples open quarantine rows of the shape (§13.1). If none are open, it uses the event log, so an
- * operator can still replace an adapter on a shape whose events all processed.
+ * Samples open quarantine rows of the shape that a new adapter could fix (§13.1). If there are none,
+ * it uses the event log, so an operator can still replace an adapter on a healthy shape.
+ *
+ * `includeHandled` also takes events that aren't waiting on a fix, for up to half the sample. A
+ * replacement must keep the columns of the version it replaces, and that version may fail on every
+ * open row, leaving nothing to compare without these.
  */
 export async function loadSamples(
   db: Queryable,
   adapter: AdapterDraft,
   limit: number = DEFAULT_SAMPLE_LIMIT,
+  { includeHandled = false }: { includeHandled?: boolean } = {},
 ): Promise<GateSample[]> {
-  const open = await selectSamples(db, adapter, limit, OPEN_QUARANTINE);
-  return open.length > 0 ? open : selectSamples(db, adapter, limit, '');
+  const open = await selectSamples(db, adapter, includeHandled ? Math.ceil(limit / 2) : limit, NEEDS_FIXING);
+  const handled = includeHandled ? await selectSamples(db, adapter, limit - open.length, ALREADY_HANDLED) : [];
+  const samples = [...open, ...handled];
+  return samples.length > 0 ? samples : selectSamples(db, adapter, limit, '');
 }
 
 /** Loads everything the gate needs from the database, and runs it. No transaction stays open. */
@@ -210,10 +231,10 @@ export async function gateAdapter(
   if (checkOpaquePaths(adapter.opaque_paths).length > 0) {
     return runGate({ adapter: input, samples: [], registries: new Map() }, options);
   }
-  const [samples, registries, earlier] = await Promise.all([
-    loadSamples(pool, adapter, sampleLimit),
+  const earlier = await loadEarlierVersion(pool, adapter);
+  const [samples, registries] = await Promise.all([
+    loadSamples(pool, adapter, sampleLimit, { includeHandled: earlier !== undefined }),
     loadRegistries(pool, adapter.account_id),
-    loadEarlierVersion(pool, adapter),
   ]);
   return runGate({ adapter: input, samples, registries, ...(earlier ? { earlier } : {}) }, options);
 }
@@ -373,15 +394,15 @@ export interface QuarantineEntry {
   detail: string | null;
   quarantined_at: Date;
   request: AdapterRequest;
-  /** The bytes as received, decoded as UTF-8. */
-  body: string;
+  /** The body's size. Payloads have no size limit, so a listing leaves out the body itself. */
+  body_bytes: number;
 }
 
 /** `GET /quarantine`: unreleased rows for one account, newest first. */
 export async function listQuarantine(db: Queryable, filter: QuarantineFilter): Promise<QuarantineEntry[]> {
-  const result = await db.query<Omit<QuarantineEntry, 'body'> & { body: Buffer }>(
+  const result = await db.query<QuarantineEntry>(
     `SELECT q.id, q.event_id, q.store_id, e.source, e.op, e.fingerprint, q.reason, q.detail,
-            q.quarantined_at, e.request, e.body
+            q.quarantined_at, e.request, octet_length(e.body) AS body_bytes
      FROM quarantine q
      JOIN events e ON e.account_id = q.account_id AND e.id = q.event_id
      WHERE q.account_id = $1 AND q.released_at IS NULL
@@ -401,5 +422,5 @@ export async function listQuarantine(db: Queryable, filter: QuarantineFilter): P
       filter.offset,
     ],
   );
-  return result.rows.map((row) => ({ ...row, body: row.body.toString('utf8') }));
+  return result.rows;
 }

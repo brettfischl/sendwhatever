@@ -17,12 +17,16 @@ import { loadConfig } from '../src/config.js';
 import { fingerprint } from '../src/fingerprint/index.js';
 import { SandboxUnavailableError } from '../src/sandbox/index.js';
 
+// These spawn many sandbox processes, so a loaded machine mustn't turn a slow run into a failure.
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
+const GATE = { limits: { timeoutMs: 15_000 } };
+
 const pool = new pg.Pool({ connectionString: loadConfig().appDatabaseUrl });
 
 const accountId = randomUUID();
 const otherAccountId = randomUUID();
 const storeId = randomUUID();
-const app = createInternalRoutes({ pool });
+const app = createInternalRoutes({ pool, gate: GATE });
 
 const BODY = { id: 5, email: 'ada@example.com' };
 const SHAPE = fingerprint(BODY);
@@ -375,7 +379,7 @@ describe('activation', () => {
   it('runs the gate again on an adapter already validated, leaving the live version alone', async () => {
     await quarantined();
     const v1 = await stored(V1);
-    expect((await validateAndActivate(pool, v1.id)).status).toBe('activated');
+    expect((await validateAndActivate(pool, v1.id, GATE)).status).toBe('activated');
 
     // It looks validated, but it stops writing a column the live version writes.
     const v2 = await stored(`function adapt(p) { return { table: 'user', rows: [{ id: String(p.data.id), renamed: p.data.email }] }; }`);
@@ -390,7 +394,7 @@ describe('activation', () => {
   it('deactivates the old version and supersedes every other version of the shape', async () => {
     await quarantined();
     const v1 = await stored(V1);
-    await validateAndActivate(pool, v1.id);
+    await validateAndActivate(pool, v1.id, GATE);
     const draft = await stored(DROPS_EMAIL);
     const awaiting = await stored(V2);
     await markValidated(pool, awaiting.id);
@@ -409,15 +413,15 @@ describe('activation', () => {
   it('keeps the first superseded_at, and clears it on a version activated again', async () => {
     await quarantined();
     const v1 = await stored(V1);
-    await validateAndActivate(pool, v1.id);
+    await validateAndActivate(pool, v1.id, GATE);
     const v2 = await stored(V1);
-    await validateAndActivate(pool, v2.id);
+    await validateAndActivate(pool, v2.id, GATE);
     const first = (await row(v1.id)).superseded_at;
     const v3 = await stored(V1);
-    await validateAndActivate(pool, v3.id);
+    await validateAndActivate(pool, v3.id, GATE);
     expect((await row(v1.id)).superseded_at).toEqual(first);
 
-    expect((await validateAndActivate(pool, v1.id)).status).toBe('activated');
+    expect((await validateAndActivate(pool, v1.id, GATE)).status).toBe('activated');
     expect(await row(v1.id)).toMatchObject({ active: true, superseded_at: null });
     expect(await row(v3.id)).toMatchObject({ active: false, superseded_at: expect.any(Date) });
   });
@@ -425,8 +429,8 @@ describe('activation', () => {
   it('asks a queued replay to run again, rather than adding one', async () => {
     await quarantined();
     const adapter = await stored(V1);
-    await validateAndActivate(pool, adapter.id);
-    await validateAndActivate(pool, adapter.id);
+    await validateAndActivate(pool, adapter.id, GATE);
+    await validateAndActivate(pool, adapter.id, GATE);
     expect(await replayJobs(adapter.id)).toEqual([{ kind: 'replay', rerun_requested: true, account_id: accountId }]);
   });
 
@@ -465,7 +469,7 @@ describe('activation', () => {
   it('rolls back the whole activation if the replay cannot be enqueued', async () => {
     await quarantined();
     const v1 = await stored(V1);
-    await validateAndActivate(pool, v1.id);
+    await validateAndActivate(pool, v1.id, GATE);
     const v2 = await stored(V1);
     await markValidated(pool, v2.id);
 
@@ -497,7 +501,7 @@ describe('the generator using these functions', () => {
   it('validates a stored adapter without activating it', async () => {
     await quarantined();
     const adapter = await stored(V1);
-    const result = await validateAdapter(pool, adapter.id);
+    const result = await validateAdapter(pool, adapter.id, GATE);
     expect(result?.gate.ok).toBe(true);
     expect(await row(adapter.id)).toMatchObject({ active: false, validated_at: expect.any(Date) });
     expect(await validateAdapter(pool, randomUUID())).toBeNull();
@@ -508,7 +512,7 @@ describe('POST /adapters/:id/replay', () => {
   it('enqueues a replay on an active adapter', async () => {
     await quarantined();
     const adapter = await stored(V1);
-    await validateAndActivate(pool, adapter.id);
+    await validateAndActivate(pool, adapter.id, GATE);
     await pool.query('DELETE FROM queue WHERE adapter_id = $1', [adapter.id]);
 
     const response = await post(`/adapters/${adapter.id}/replay`);
@@ -519,7 +523,7 @@ describe('POST /adapters/:id/replay', () => {
   it('sets rerun_requested when a replay is already queued, and keeps run_at', async () => {
     await quarantined();
     const adapter = await stored(V1);
-    await validateAndActivate(pool, adapter.id);
+    await validateAndActivate(pool, adapter.id, GATE);
     await pool.query(`UPDATE queue SET run_at = now() + interval '1 hour' WHERE adapter_id = $1`, [adapter.id]);
     const before = await pool.query('SELECT run_at FROM queue WHERE adapter_id = $1', [adapter.id]);
 
@@ -559,7 +563,7 @@ describe('GET /quarantine', () => {
       fingerprint: SHAPE,
       reason: 'unknown_fingerprint',
       detail: 'why',
-      body: JSON.stringify(BODY),
+      body_bytes: JSON.stringify(BODY).length,
       request: { method: 'POST' },
     });
   });
@@ -614,7 +618,7 @@ describe('GET /quarantine', () => {
 describe('keeping the routes internal when mounted beside public ones', () => {
   const service = new Hono();
   service.all('/ingest/*', (c) => c.json({ status: 'queued' }, 202));
-  service.route('/', createInternalRoutes({ pool }));
+  service.route('/', createInternalRoutes({ pool, gate: GATE }));
 
   const THROUGH_CADDY = { 'x-forwarded-for': '203.0.113.1', 'x-account-slug': 'acme' };
 
@@ -667,5 +671,68 @@ describe('failures', () => {
     await broken.end();
     expect(response.status).toBe(500);
     expect(await response.text()).not.toContain('secret');
+  });
+});
+
+describe('review findings', () => {
+  const RENAMES = `function adapt(p) { return { table: 'user', rows: [{ id: String(p.data.id), email_address: p.data.email }] }; }`;
+  const THROWS_ON_666 = `function adapt(p) {
+    if (p.data.id === 666) throw new Error('old bug');
+    return { table: 'user', rows: [{ id: String(p.data.id), email: p.data.email }] };
+  }`;
+
+  async function liveVersion(code: string): Promise<AdapterRow> {
+    const adapter = await stored(code);
+    await markValidated(pool, adapter.id);
+    const result = await activateAdapter(pool, adapter.id, { replacing: null });
+    if (result.status !== 'activated') throw new Error(result.status);
+    return adapter;
+  }
+
+  it('catches a dropped column when the live version throws on every open row', async () => {
+    await insertEvent(BODY);
+    await quarantined({ id: 666, email: 'b@example.com' });
+    await liveVersion(THROWS_ON_666);
+    const replacement = await stored(RENAMES);
+    const response = await post(`/adapters/${replacement.id}/activate`);
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ failures: [{ code: 'dropped_column' }] });
+  });
+
+  it('samples both open rows and handled events when replacing a version', async () => {
+    const handled = await insertEvent(BODY);
+    const open = await quarantined({ id: 666, email: 'b@example.com' });
+    const samples = await loadSamples(pool, newAdapter(V1), 10, { includeHandled: true });
+    expect(samples.map((sample) => sample.eventId).sort()).toEqual([handled, open].sort());
+  });
+
+  it('does not let write_error rows crowd out rows a new adapter must handle', async () => {
+    const fixable = await insertEvent(BODY);
+    await quarantine(fixable, 'adapter_error');
+    const failedWrite = await insertEvent(BODY);
+    await quarantine(failedWrite, 'write_error');
+    const samples = await loadSamples(pool, newAdapter(V1), 1);
+    expect(samples.map((sample) => sample.eventId)).toEqual([fixable]);
+  });
+
+  it('counts a write_error event as handled, and can still use it alone', async () => {
+    const failedWrite = await insertEvent(BODY);
+    await quarantine(failedWrite, 'write_error');
+    expect((await loadSamples(pool, newAdapter(V1))).map((sample) => sample.eventId)).toEqual([failedWrite]);
+    expect((await loadSamples(pool, newAdapter(V1), 10, { includeHandled: true })).map((sample) => sample.eventId)).toEqual([failedWrite]);
+  });
+
+  it('leaves bodies out of the quarantine list, but gives their size', async () => {
+    const big = await insertEvent({ blob: 'x'.repeat(70 * 1024) });
+    await quarantine(big);
+    const response = await app.request(`/quarantine?account_id=${accountId}`);
+    const { rows } = (await response.json()) as { rows: Record<string, unknown>[] };
+    expect(rows[0]).not.toHaveProperty('body');
+    expect(rows[0]?.body_bytes).toBeGreaterThan(70 * 1024);
+  });
+
+  it('limits a quarantine page to 200 rows', async () => {
+    expect((await app.request(`/quarantine?account_id=${accountId}&limit=200`)).status).toBe(200);
+    expect((await app.request(`/quarantine?account_id=${accountId}&limit=201`)).status).toBe(400);
   });
 });

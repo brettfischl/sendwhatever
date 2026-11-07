@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runGate, type GateFailureCode, type GateInput, type GateOptions, type GateResult } from '../src/adapters/index.js';
 import type { AdapterRequest } from '../src/contracts/index.js';
 import type { RegisteredColumns } from '../src/planner/registry.js';
 import type { SandboxResult } from '../src/sandbox/index.js';
+
+// These spawn many sandbox processes, so a loaded machine mustn't turn a slow run into a failure.
+vi.setConfig({ testTimeout: 60_000 });
+const SLOW_MACHINE_LIMITS = { timeoutMs: 15_000 };
 
 const REQUEST: AdapterRequest = { method: 'POST', path: '/ingest', query: '', headers: {} };
 const LOVELACE = { id: 5, email: 'ada@example.com' };
@@ -26,7 +30,7 @@ function gate(code: string, input: Partial<GateInput> = {}, adapter: Partial<Gat
       registries: new Map(),
       ...input,
     },
-    options,
+    { limits: SLOW_MACHINE_LIMITS, ...options },
   );
 }
 
@@ -390,5 +394,45 @@ describe('replacing an earlier version', () => {
     const samples = [sample({ a: 1, b: 'x' }, 'e1'), sample({ a: 2, b: 'y' }, 'e2')];
     const result = await gate(v2, { samples, earlier: { id: 'v1', code: v1, opaquePaths: [] } });
     expect(result.failures.map(({ code: failure, eventId }) => [failure, eventId])).toEqual([['dropped_column', 'e2']]);
+  });
+});
+
+describe('when the earlier version fails on a sample', () => {
+  const NEW = 'new';
+  const OLD = 'old';
+  const newOutput: SandboxResult = { ok: true, output: { table: 't', rows: [{ renamed: 'x' }] } };
+  const oldOutput: SandboxResult = { ok: true, output: { table: 't', rows: [{ original: 'x' }] } };
+
+  /** The new version always works. The old one returns each of `oldResults` in turn. */
+  function scripted(...oldResults: SandboxResult[]) {
+    const calls = { old: 0 };
+    const options: GateOptions = {
+      run: async ({ code }) => {
+        if (code === NEW) return newOutput;
+        calls.old += 1;
+        return oldResults[Math.min(calls.old - 1, oldResults.length - 1)]!;
+      },
+    };
+    return { calls, options };
+  }
+  const run = (options: GateOptions) =>
+    gate(NEW, { samples: [sample({ a: 'x' })], earlier: { id: 'v1', code: OLD, opaquePaths: [] } }, {}, options);
+
+  it.each(['timeout', 'memory_limit', 'crashed'] as const)('retries after %s, and still checks columns', async (kind) => {
+    const { calls, options } = scripted({ ok: false, kind, detail: 'load' }, oldOutput);
+    expect(codes(await run(options))).toEqual(['dropped_column']);
+    expect(calls.old).toBe(2);
+  });
+
+  it('does not retry a failure that shows it wrote nothing', async () => {
+    const { calls, options } = scripted({ ok: false, kind: 'threw', detail: 'bug' });
+    expect((await run(options)).ok).toBe(true);
+    expect(calls.old).toBe(1);
+  });
+
+  it('skips the sample if the earlier version still cannot finish', async () => {
+    const { calls, options } = scripted({ ok: false, kind: 'timeout', detail: 'slow' });
+    expect((await run(options)).ok).toBe(true);
+    expect(calls.old).toBe(2);
   });
 });

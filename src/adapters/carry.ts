@@ -37,13 +37,18 @@ interface OutputValue {
 }
 
 const MAX_VALUE_LENGTH = 80;
+/** Paths are built from client-controlled keys, so they end up in error text and LLM retries. */
+const MAX_PATH_LENGTH = 200;
 const ARRAY = '[]';
 
 /** Decimal text with no leading zeros, so "007" stays text: casting it to 7 would lose data. */
 const PLAIN_DECIMAL = /^-?(0|[1-9]\d*)(\.\d+)?$/;
 const DELETE_FLAG_KEY = /^_?(is_?)?(deleted|removed|destroyed)$/i;
-/** A time followed by a zone. It requires the time, so the end of `2026-01-02` isn't read as an offset. */
-const TIME_WITH_ZONE = /\d{2}:\d{2}(:\d{2}(\.\d+)?)?\s*(Z|UTC|GMT|[+-]\d{2}(:?\d{2})?)$/i;
+/**
+ * A time followed by a zone, which may be named, like PST. It requires the time, so the end of
+ * `2026-01-02` isn't read as an offset, and it leaves out AM and PM, which aren't zones.
+ */
+const TIME_WITH_ZONE = /\d{2}:\d{2}(:\d{2}(\.\d+)?)?\s*(?!(?:AM|PM)$)(Z|[A-Z]{2,4}|[+-]\d{2}(:?\d{2})?)$/i;
 
 /**
  * Parses a body the way the sandbox does (src/sandbox/guest.js), so the payload values here are the
@@ -78,7 +83,8 @@ function castKey(value: Scalar): string {
  */
 function candidateInstants(value: Scalar): number[] {
   if (typeof value === 'boolean') return [];
-  if (typeof value === 'number') return [value * 1000, value];
+  // A Date holds whole milliseconds, so fractional epoch seconds lose any finer precision in the cast.
+  if (typeof value === 'number') return [Math.trunc(value * 1000), value];
   if (/^\d{10}$|^\d{13}$/.test(value)) return candidateInstants(Number(value));
   if (value.length < 8 || !/\d/.test(value)) return [];
   const instant = TIME_WITH_ZONE.test(value)
@@ -92,10 +98,13 @@ function parseInstant(value: string): number {
   return Date.parse(value.replace(/([+-]\d{2})$/, '$1:00'));
 }
 
+/** Identical JSON in any key order. Nulls are left out, because they aren't values here or in the shape. */
 function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (Array.isArray(value)) return `[${value.filter((item) => item !== null).map(stableStringify).join(',')}]`;
   if (typeof value === 'object' && value !== null) {
-    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    const entries = Object.entries(value)
+      .filter(([, item]) => item !== null)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
     return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(',')}}`;
   }
   return JSON.stringify(value) ?? 'null';
@@ -213,6 +222,10 @@ function claim(entries: OutputValue[] | undefined): boolean {
   return false;
 }
 
+function shorten(text: string, length: number): string {
+  return text.length > length ? `${text.slice(0, length)}...` : text;
+}
+
 /** Returns each payload value with nothing left in the output to account for it. */
 export function findDroppedValues(
   data: unknown,
@@ -238,10 +251,9 @@ export function findDroppedValues(
   }
 
   return dropped.map(({ path, value }) => {
-    const text = JSON.stringify(value);
     return {
-      path,
-      value: text.length > MAX_VALUE_LENGTH ? `${text.slice(0, MAX_VALUE_LENGTH)}...` : text,
+      path: shorten(path, MAX_PATH_LENGTH),
+      value: shorten(JSON.stringify(value), MAX_VALUE_LENGTH),
       claimedElsewhere: output.byCast.has(castKey(value)),
     };
   });
