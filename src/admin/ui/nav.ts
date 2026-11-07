@@ -8,6 +8,7 @@ export type NavKey =
   | 'schema'
   | 'traffic'
   | 'pipeline'
+  | 'adapters'
   | 'manage-accounts'
   | 'manage-users';
 
@@ -18,7 +19,7 @@ export interface NavItem {
   href: string;
 }
 
-const ACCOUNT_SECTIONS = ['connect', 'credentials', 'schema', 'traffic', 'pipeline'] as const;
+const ACCOUNT_SECTIONS = ['connect', 'credentials', 'schema', 'traffic', 'pipeline', 'adapters'] as const;
 
 /** The account nav, in sidebar order. */
 export function accountNav(accountId: string): NavItem[] {
@@ -30,6 +31,7 @@ export function accountNav(accountId: string): NavItem[] {
     { key: 'schema', label: 'Schema', icon: 'table', href: `${base}/schema` },
     { key: 'traffic', label: 'Traffic', icon: 'activity', href: `${base}/traffic` },
     { key: 'pipeline', label: 'Pipeline', icon: 'workflow', href: `${base}/pipeline` },
+    { key: 'adapters', label: 'Adapters', icon: 'settings', href: `${base}/adapters` },
   ];
 }
 
