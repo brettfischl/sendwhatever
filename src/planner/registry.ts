@@ -173,6 +173,13 @@ export async function applyPlanSchema(
   if (findMissingChanges(plan.changes, registered).length > 0) {
     const client = await pool.connect();
     let brokenConnection: Error | undefined;
+    // The pool only listens to idle clients. Without this, losing the connection while it waits here
+    // for the backend would be an unhandled 'error' event that crashes the process. The next query on
+    // it then rejects, which a worker retries.
+    const onError = (error: Error) => {
+      brokenConnection = error;
+    };
+    client.on('error', onError);
     try {
       await client.query('BEGIN');
       // Like SET LOCAL, but it can take a bound value. It ends with the transaction.
@@ -198,6 +205,7 @@ export async function applyPlanSchema(
       }
       throw error;
     } finally {
+      client.removeListener('error', onError);
       client.release(brokenConnection);
     }
     if (conflicts.length > 0) return schemaConflict(conflicts);

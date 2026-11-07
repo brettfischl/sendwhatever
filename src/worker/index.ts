@@ -129,11 +129,8 @@ export function startWorker(options: WorkerOptions): Worker {
     statement_timeout: 45_000,
     query_timeout: 50_000,
   });
-  // pg emits 'error' on a lost connection, and with no listener that crashes the process. The pool only
-  // listens to idle connections, so one that's checked out needs its own. Its running query rejects with
-  // the same failure, so that's where it's handled.
+  // Without a listener, a dropped idle connection would crash the process.
   db.on('error', (error) => settings.log(`Lost an idle database connection: ${error.message}`));
-  db.on('connect', (client) => client.on('error', () => {}));
 
   // Opens nothing until it's used, so it's harmless if `backends` replaces it.
   const postgres = new PostgresBackend();

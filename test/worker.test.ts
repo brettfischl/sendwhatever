@@ -518,6 +518,41 @@ describe('quarantining a job', () => {
     expect(await quarantineRows(eventId)).toEqual([]);
   });
 
+  it('keeps the job if the connection is lost partway through, instead of crashing', async () => {
+    const accountId = await newAccount();
+    const { eventId, jobId } = await addEvent(accountId, { never: 'seen' });
+    const job = await claimJob(db, { kinds: ['ingest'], leaseMs: 60_000, accountId });
+
+    const lossy = new pg.Pool({ connectionString: config.appDatabaseUrl, max: 1 });
+    lossy.on('error', () => {});
+    // Loses the connection just after BEGIN, while it sits idle with no query to reject.
+    lossy.on('acquire', (client) => {
+      const query = client.query.bind(client) as (text: string) => Promise<unknown>;
+      let lost = false;
+      (client as unknown as { query: unknown }).query = async (...args: [string]) => {
+        const result = await query(...args);
+        if (!lost) {
+          lost = true;
+          const { processID } = client as unknown as { processID: number };
+          await db.query('SELECT pg_terminate_backend($1)', [processID]);
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        return result;
+      };
+    });
+
+    try {
+      await expect(
+        quarantineJob(lossy, job!, eventId, [{ storeId: null, reason: 'unknown_fingerprint', detail: 'x' }]),
+      ).rejects.toThrow();
+      expect((await jobRow(jobId))?.attempts).toBe(1);
+      expect(await quarantineRows(eventId)).toEqual([]);
+      expect(lossy.totalCount).toBe(0);
+    } finally {
+      await lossy.end();
+    }
+  });
+
   it.each([
     ['throws', `function adapt() { throw new Error('boom'); }`, 'threw'],
     ['times out', `function adapt() { for (;;) {} }`, 'timeout'],

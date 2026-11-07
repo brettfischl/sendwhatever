@@ -111,6 +111,12 @@ export async function quarantineJob(
 ): Promise<boolean> {
   const client = await db.connect();
   let broken: Error | undefined;
+  // The pool only listens to idle clients, so losing the connection between these statements would
+  // otherwise be an unhandled 'error' event that crashes the process. The next query rejects instead.
+  const onError = (error: Error) => {
+    broken = error;
+  };
+  client.on('error', onError);
   try {
     await client.query('BEGIN');
     const held =
@@ -143,6 +149,7 @@ export async function quarantineJob(
     });
     throw error;
   } finally {
+    client.removeListener('error', onError);
     client.release(broken);
   }
 }

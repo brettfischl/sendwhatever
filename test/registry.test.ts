@@ -513,3 +513,33 @@ describe('applyPlanSchema', () => {
     });
   });
 });
+
+describe('losing the database connection during a schema change', () => {
+  it('rejects with a retryable error instead of crashing, and discards the connection', async () => {
+    const lossy = new pg.Pool({ connectionString: loadConfig().appDatabaseUrl, max: 2 });
+    lossy.on('error', () => {});
+    let holder: pg.PoolClient | undefined;
+    lossy.on('acquire', (client) => {
+      holder = client;
+    });
+
+    const backend = new FakeBackend();
+    backend.during = async () => {
+      // The schema lock's connection sits idle in its transaction here, with no query to reject.
+      const { processID } = holder as unknown as { processID: number };
+      await pool.query('SELECT pg_terminate_backend($1)', [processID]);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    };
+
+    try {
+      const output = { table: 't', rows: [{ id: 'a', x: 1 }] };
+      const result = applyPlanSchema(lossy, backend, target, plan(output));
+      await expect(result).rejects.not.toBeInstanceOf(StorageError);
+      expect(backend.calls.length).toBe(1);
+      expect(await registry()).toEqual([]);
+      expect(lossy.totalCount).toBe(0);
+    } finally {
+      await lossy.end();
+    }
+  });
+});
