@@ -37,7 +37,7 @@ Every accepted payload is kept in an append-only ingress event log. Normalized t
 
 ## 3. Non-Goals (MVP)
 
-- User logins, roles, or authorization beyond per-account API keys and webhook signatures (§13.4).
+- Roles beyond super admin and account member, and login methods beyond email and password (§19). Ingestion itself uses only per-account API keys and webhook signatures (§13.4).
 - Billing, usage metering, or rate limiting.
 - Payload size limits and throughput targets. This is a low-volume, one-day hackathon build (§17).
 - Customer-supplied databases. Storage connections are set by the platform, and customers only receive read-only access.
@@ -1030,9 +1030,11 @@ This is a one-day hackathon build at low volume: it needs to work end to end. Wo
 - Fingerprinting, Adapter Generator, validation gate, and `isolated-vm` sandbox.
 - `StorageBackend` interface and Postgres implementation, including merging writes (the §11.2 MVP option is acceptable), soft deletes, timestamps, indexes, and read-only credentials.
 - Quarantine and replay.
+- Opaque paths (§7.1). Without them, a field with varying keys triggers repeated generations.
+
+**Admin interface (§19).** Starts once the initial server exists (accounts and `/ingest`), and can run alongside the rest of core.
 
 **2. If time allows.**
-- Opaque paths (§7.1). Without them, a field with varying keys triggers repeated generations.
 - Per-column ordering with `_column_seq` (§11.2).
 - The remaining webhook features: handshakes, signatures, batches, and form bodies (§6.2).
 - Rebuilds between Postgres stores (§5.4).
@@ -1067,9 +1069,95 @@ For the hackathon:
 - A client retry with the same `Idempotency-Key` creates no duplicate data.
 - Every accepted payload is retained in the event log, including malformed ones.
 - A storage backend outage delays writes but loses no accepted payloads.
+- A super admin can create an account and a user, and that user can log in, copy their endpoint and credentials, and see their schema and traffic, but nothing belonging to another account.
 
 If time allows, and afterward:
 
 - Can rebuild an account into a new store from the event log and switch to it atomically, with no accepted events missing.
 - Custom API App can query the same normalized tables independently.
 - A new storage backend can be added by implementing `StorageBackend` and passing the conformance suite, with no changes to the pipeline or adapters.
+
+---
+
+## 19. Admin Interface
+
+A web interface for running the platform and using an account. It is built after the initial server (accounts and `/ingest`), because it reuses that server's Hono setup and account logic.
+
+### 19.1 Approach
+
+- A Hono app with server-rendered pages (`hono/jsx`) and polling instead of websockets, so there is no frontend build.
+- It runs on its own host, such as `admin.example.com`, separate from `/ingest`. It calls platform logic in-process, and the internal routes stay private.
+- There are two roles: super admin and account member. A user can belong to several accounts, and an account can have several users.
+
+### 19.2 Login
+
+- Email and password, hashed with `scrypt` from Node's `crypto`.
+- The first super admin is created at startup from `ADMIN_EMAIL` and `ADMIN_PASSWORD`, if no super admin exists yet.
+- Sessions use a random token in an `HttpOnly`, `SameSite=Lax` cookie, `Secure` outside local development. Only the token's hash is stored.
+- State-changing requests require a CSRF token.
+- A super admin sets a user's initial password and can reset it. There is no email delivery, so no self-service reset.
+
+```sql
+CREATE TABLE users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  is_super_admin BOOLEAN NOT NULL DEFAULT false,
+  disabled_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX users_email ON users (lower(email));
+
+CREATE TABLE account_members (
+  account_id UUID NOT NULL REFERENCES accounts(id),
+  user_id UUID NOT NULL REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, user_id)
+);
+
+CREATE INDEX account_members_user ON account_members (user_id);
+
+CREATE TABLE sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(id),
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+### 19.3 Security Rules
+
+- Every query is scoped to an account the logged-in user belongs to, through one shared authorization check. A test proves a member can't read or change another account's data.
+- A super admin can view any account, read-only in the MVP.
+- Disabling a user ends their sessions.
+- Payloads can hold personal data and customer secrets, so viewing one is a deliberate action, not shown in list views.
+- API keys and passwords never appear in URLs or logs.
+
+### 19.4 Pages
+
+**Super admin:**
+- Create and list accounts, wrapping `POST /accounts`.
+- Disable or re-enable an account.
+- Create and disable users, reset passwords, and assign users to accounts.
+- A cross-account overview: events, oldest queue job, open quarantine, and generation failures per account.
+
+**Account member:**
+
+| Page | Shows | Data source |
+|---|---|---|
+| **Connect** | Endpoint URL, a copyable `curl` example, webhook URL format, Postgres connection string | `accounts`, `account_stores` |
+| **Credentials** | Create and revoke API keys; reveal the read-only login | `api_keys`, `read_credentials` |
+| **Schema** | Tables, columns, types, parent and child links, row counts | `data_columns`, store database |
+| **Traffic** | Requests over time, by source and op | `events` |
+| **Pipeline** | Queue depth, oldest job's age, retries | `queue` |
+
+API keys are stored only as hashes, so an existing key can't be shown again. Creating a key shows it once, and members replace a lost key by creating a new one and revoking the old. The read-only login can be revealed, because it's stored encrypted. Resetting that password needs its own action, since `provision` must not run on an active store (§11.2).
+
+**If time allows:**
+- **Live pipeline view:** a new payload moving from quarantined, to adapter generated, to tables appearing.
+- **Quarantine:** open items by reason, payload view, and replay.
+- **Adapters:** shapes, versions, code, generation attempts and failures, and approving or rejecting adapters waiting on an operator.
+- **Event explorer:** look up an event to see its payload, outcome, and any quarantine reason.
+
+**Later:** an audit log of key changes, credential reveals, and super admin views; LLM usage and cost per account, which also requires the generator to record tokens; alerts; adapter rollback; and super admin actions taken on an account's behalf.
