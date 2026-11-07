@@ -6,3 +6,8 @@
 node_modules/
 dist/
 coverage/
+
+# Beads / Dolt files (added by bd init)
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*

@@ -117,12 +117,25 @@ bd dolt push
 
 Run `bd dolt push` after any other issue change too, such as closing an issue.
 
-**If `bd dolt push` is rejected:** someone else pushed first, so run `bd dolt pull`. If the pull reports a merge conflict, it rolls back and leaves your local changes in place. Run `bd show <id>` to see your own claim, not theirs. To recover, discard your local issue changes and take the remote state, then check who holds the issue and redo any other changes:
+**One syncing session per machine:** worktrees share one database through `.beads/redirect`, so sessions on one machine see each other's issue changes immediately. Only one session on a machine may run `bd dolt pull` or `bd dolt push`, because concurrent syncs on the shared database were followed by corruption. If a coordinating session is running, others just claim and update issues locally and ask it to sync.
+
+**Sync straight after every change:** any two machines changing issues between syncs can conflict, even on different issues, because both write to the `events` table.
+
+**If `bd dolt pull` or `bd dolt push` fails:** do not retry the pull. A failed pull can leave an unresolved merge on a retry, and then every `bd` command fails. Note your local changes, take the remote state, check who holds the issue, and redo your changes:
 
 ```bash
 bd sql "CALL DOLT_FETCH('origin')"
 bd sql "CALL DOLT_RESET('--hard','origin/main')"
 bd show <id> --json
+```
+
+**If `bd` can't open the database, or `dolt fsck` reports corruption:** stop any other sessions using it, then rebuild from the remote. Any unpushed issue changes are lost, so note them first. Move the old database aside rather than deleting it:
+
+```bash
+bd dolt stop
+mv -f .beads/dolt ../beads-dolt-damaged
+rm -f .beads/dolt-server.pid .beads/dolt-server.port .beads/dolt-server.lock
+bd bootstrap
 ```
 
 **One beads project at a time:** starting `bd` in one project stops the Dolt server of any other beads project on the same machine. The next `bd` command restarts it, so this is harmless between commands. Don't put the text of the server's process name in a shell command that also runs `bd`, because bd's cleanup matches on it and can kill that shell.

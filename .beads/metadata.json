@@ -1,7 +1,7 @@
 {
   "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "server",
-  "dolt_database": "omni_endpoint",
+  "dolt_mode": "embedded",
+  "dolt_database": "sw",
   "project_id": "64dfc493-0090-4942-b6c0-0712de954263"
 }
