@@ -96,7 +96,7 @@ Every accepted payload is kept in an append-only ingress event log. Normalized t
   │ Postgres  │     │   sqld    │     │ ClickHouse │◄─────────┘
   │   (MVP)   │     │  (later)  │     │  (later)   │
   │           │     │           │     │            │
-  │ schema:   │     │ namespace:│     │ database:  │
+  │ database: │     │ namespace:│     │ database:  │
   │ acct_<id> │     │ acct_<id> │     │ acct_<id>  │
   │ ├─ user   │     │ ...       │     │ ...        │
   │ ├─ user_  │     │           │     │            │
@@ -590,33 +590,36 @@ CREATE TABLE data_columns (
 
 ### 10.2 Dynamic Data Tables
 
-These live in the storage backend, not the application database. They are created lazily by the platform. Example after processing user payloads on the Postgres backend:
+These live in the storage backend, not the application database. They are created lazily by the platform. Example after processing user payloads on the Postgres backend, in the `public` schema of the store's own database, such as `acct_0f3a..._1`:
 
 ```sql
-CREATE TABLE "acct_0f3a..._1"."user" (
+CREATE TABLE "user" (
   "id" TEXT PRIMARY KEY,
   "_event_seq" BIGINT NOT NULL,
+  "_deleted_at" TIMESTAMPTZ,
   "email" TEXT
 );
 
-CREATE TABLE "acct_0f3a..._1"."user_profile" (
+CREATE TABLE "user_profile" (
   "id" TEXT PRIMARY KEY,
   "_event_seq" BIGINT NOT NULL,
+  "_deleted_at" TIMESTAMPTZ,
   "user_id" TEXT,
   "first_name" TEXT,
   "last_name" TEXT
 );
 
-CREATE TABLE "acct_0f3a..._1"."user_orders" (
+CREATE TABLE "user_orders" (
   "id" TEXT PRIMARY KEY,
   "_event_seq" BIGINT NOT NULL,
+  "_deleted_at" TIMESTAMPTZ,
   "user_id" TEXT,
   "sku" TEXT,
   "amount" NUMERIC
 );
 
-CREATE INDEX ON "acct_0f3a..._1"."user_profile" ("user_id");
-CREATE INDEX ON "acct_0f3a..._1"."user_orders" ("user_id");
+CREATE INDEX ON "user_profile" ("user_id");
+CREATE INDEX ON "user_orders" ("user_id");
 ```
 
 ### 10.3 Event Log Lifecycle (Future Work)
@@ -694,7 +697,7 @@ class StorageError extends Error {
   - The row keeps the higher `_event_seq`. Deletes (§8) compare it, and raise it to the deleting event's `seq`.
   - `_deleted_at` follows its own rule, and only a write at or above the row's `_event_seq` can change it. Such a write sets it if the row includes it, and clears it if not, which is the one exception to an absent key keeping its value. A lower write never touches it, so a delayed delete can't mark a newer row deleted, and a delayed write can't restore a newer delete.
   - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns other than `_deleted_at`. A rebuild, which runs in order, corrects anything missed. One known gap: if a newer event clears a column that doesn't exist yet, the clear is dropped (§9), and a delayed older event can then set that column and keep its value until a rebuild.
-- `provision` must also create read-only credentials limited to that store's namespace, and they must keep working for tables and columns added later.
+- `provision` must also create read-only credentials limited to that store's namespace, and they must keep working for tables and columns added later. On Postgres it returns `{ user, password, database }`, and customers connect to that `database`, not to `connection.database`.
 - `applySchema` and `write` run for each event, and must classify every failure as retryable or permanent through `StorageError`. A worker treats any other error as retryable.
 - Backends do not validate identifiers or types, since the platform has already done so, but must quote identifiers and bind values as parameters.
 
@@ -712,7 +715,7 @@ No distributed transaction spans the application database and a backend, and a s
 
 | Concern | Postgres (MVP) | sqld (later) | ClickHouse (later) |
 |---|---|---|---|
-| Store isolation | Schema | Namespace | Database |
+| Store isolation | Database | Namespace | Database |
 | `string` | `TEXT` | `TEXT` | `Nullable(String)` |
 | `number` | `NUMERIC` | `NUMERIC` | `Nullable(Float64)` |
 | `boolean` | `BOOLEAN` | `INTEGER` | `Nullable(Bool)` |
@@ -743,6 +746,7 @@ The backend is part of the account object in the application database, set when 
 }
 ```
 
+- `connection.database` is where the platform connects to run `provision`. On Postgres, each store then gets its own database, named after its `namespace`.
 - Settings are stored in `account_stores`, and the row with `status = 'active'` is the current one. A separate table is needed because a rebuild has two stores live at once, each with its own column registry.
 - Workers load an account's stores from the application database at the start of each job, so a new store takes effect without a deployment.
 - `credentials` are encrypted by the platform before storage. The encryption key comes from the service environment and is never stored in the database. They are never returned by the API.
@@ -923,16 +927,17 @@ Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. W
 
 ### 14.1 Postgres
 
-Postgres 16 or later, with two separate databases, even when they share a server in development:
+Postgres 16 or later, with the platform's databases kept separate, even when they share a server in development:
 
 - `sw_app`: the application database.
-- `sw_data`: the Postgres storage backend, with one schema per store.
+- `sw_data`: where the platform connects to run `provision`. It holds no customer data.
+- `acct_<account id>_<generation>`: one database per store, holding that store's tables in its `public` schema.
 
-Each has its own role, and the `sw_data` role has no access to `sw_app`. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
+Each has its own access: the `sw_data` role has no access to `sw_app`, and it has `CREATEDB` and `CREATEROLE` so `provision` can create store databases and logins. This keeps tenant data load and platform state independently movable and stops anyone reaching platform state through a data connection.
 
-**Direct customer access.** Customers connect straight to `sw_data` over TLS with standard Postgres clients. `provision` creates a login for each store that can read only that store's schema, including tables added later through default privileges, and has a default statement timeout and a limit of 10 connections so heavy use is less likely to starve ingestion. `sw_app` is not reachable from outside.
+**Direct customer access.** Customers connect straight to their store's own database over TLS with standard Postgres clients. `provision` creates a login for each store that can connect only to that database, and read its tables, including tables added later through default privileges. The login has a default statement timeout and a limit of 10 connections so heavy use is less likely to starve ingestion. `sw_app` is not reachable from outside.
 
-MVP limits: a customer can turn the statement timeout off for their own session, and can see other stores' schema and table names through `pg_catalog`, though not their rows.
+MVP limits: a customer can turn the statement timeout off for their own session. They can't connect to another store or see its tables, but can list other database and role names, which contain account IDs, because those catalogs are server-wide. Each store also has its own connection pool, so around 100 stores active at once would reach Postgres's default `max_connections`; beyond that, it needs a higher limit or PgBouncer.
 
 Customers query the raw tables, including the platform columns `_event_seq` and `_deleted_at`. Soft-deleted rows are visible, so queries for current records filter on `_deleted_at IS NULL`.
 
