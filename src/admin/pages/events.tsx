@@ -5,6 +5,7 @@ import type { Handler } from 'hono';
 import type { FC } from 'hono/jsx';
 import { HttpError } from '../../http/deps.js';
 import { getEvent, isUuid, type EventStatus, type EventView } from '../../pipeline/status.js';
+import { reasonLabel, statusLabel } from '../../pipeline/labels.js';
 import type { AccountAccess, AdminEnv } from '../index.js';
 import type { SessionUser } from '../sessions.js';
 import { Form, Layout } from '../views.js';
@@ -12,23 +13,7 @@ import { Form, Layout } from '../views.js';
 /** The most of a body the payload view shows. */
 export const PAYLOAD_LIMIT = 100 * 1024;
 
-// The same labels as the Pipeline v2 feed.
-export const STATUS_LABELS: Record<EventStatus, string> = {
-  queued: 'Queued',
-  adapter_generating: 'AI generating',
-  waiting: 'Waiting for adapter',
-  quarantined: 'Needs attention',
-  written: 'Written',
-};
-
 // Only the reason is shown. Details can quote error messages, which may echo payload values.
-export const REASON_TEXT: Record<string, string> = {
-  unknown_fingerprint: 'No adapter handles this shape yet.',
-  malformed: "The body isn't a JSON value the pipeline can read.",
-  adapter_error: 'The adapter failed on this event.',
-  schema_conflict: "The adapter's output conflicts with the existing tables.",
-  write_error: "Writing to the account's store failed.",
-};
 
 // Page-local styles: the shared stylesheet in views.tsx is left alone.
 const CSS = `
@@ -128,7 +113,7 @@ export const EventPage: FC<{
       </p>
       <p>
         <span class={`badge ${event.status}`} data-status={event.status}>
-          {STATUS_LABELS[event.status]}
+          {statusLabel(event.status)}
         </span>
         {event.replayed && <> <span class="tag" data-replayed>replayed</span></>}
         {event.awaitingApproval && <> <span class="tag" data-awaiting-approval>awaiting approval</span></>}
@@ -169,7 +154,7 @@ export const EventPage: FC<{
         <ul data-quarantine>
           {event.quarantine.map((q) => (
             <li data-reason={q.reason}>
-              {REASON_TEXT[q.reason] ?? 'Held for another reason.'} <span class="muted">({q.reason})</span>
+              {reasonLabel(q.reason)} <span class="muted">({q.reason})</span>
             </li>
           ))}
         </ul>

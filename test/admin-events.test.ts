@@ -5,6 +5,7 @@ import { loadConfig } from '../src/config.js';
 import { createApp } from '../src/http/app.js';
 import { PAYLOAD_LIMIT } from '../src/admin/pages/events.js';
 import { createUser } from '../src/admin/users.js';
+import { reasonLabel } from '../src/pipeline/labels.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 60_000 });
@@ -278,7 +279,7 @@ describe('event page', () => {
     expect(field(html, 'fingerprint')).toBe('none (malformed body)');
     expect(field(html, 'size')).toBe('8 bytes');
     expect(html).toContain('data-reason="malformed"');
-    expect(unescapeHtml(html)).toContain("The body isn't a JSON value the pipeline can read.");
+    expect(unescapeHtml(html)).toContain(reasonLabel('malformed'));
     expect(html).not.toContain('data-adapter-failure');
   });
 
