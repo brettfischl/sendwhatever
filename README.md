@@ -19,7 +19,7 @@ Set `FIREWORKS_API_KEY` in `.env` yourself. Nothing needs it yet. `FIREWORKS_MOD
 | Command | What it does |
 | --- | --- |
 | `npm run migrate` | Applies new migrations to `sw_app` |
-| `npm test` | Runs the tests (Postgres must be running) |
+| `npm test` | Type-checks, then runs the tests (Postgres must be running) |
 | `npm run typecheck` | Type-checks without emitting files |
 | `docker compose up -d --wait` | Starts Postgres |
 | `docker compose down -v` | Stops Postgres and **deletes its data** |

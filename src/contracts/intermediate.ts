@@ -2,7 +2,11 @@
 // platform's runtime validation. Adapter code is untrusted JavaScript, so its raw return value is
 // `unknown` until then.
 
-/** Any JSON value. A column may hold an object or array only at a declared opaque path (§9). */
+/**
+ * Any JSON value. A column may hold an object or array only at a declared opaque path (§9).
+ * Numbers must be finite. TypeScript can't express that, so validation rejects `NaN` and
+ * `Infinity` with `adapter_error`.
+ */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /** A value stored in a column. A `timestamp` column holds an ISO 8601 string with a timezone. */
@@ -20,6 +24,10 @@ export type RowChildren = Record<string, ChildObject>;
  */
 export type RowValue = ColumnValue | RowChildren | undefined;
 
+/**
+ * A column set to `undefined` means the same as `null`, so it clears the column. Only a missing key
+ * keeps the stored value. On `id`, `_deleted` and `children`, `undefined` means the key is omitted.
+ */
 export interface IntermediateRow {
   /** If omitted, the platform injects a deterministic UUIDv5. */
   id?: string;
@@ -54,6 +62,7 @@ export interface AdapterRequest {
   path: string;
   /** The raw query string, without the leading `?`. Empty when there is none. */
   query: string;
+  /** Repeated headers are joined with `, `. */
   headers: Record<string, string>;
 }
 

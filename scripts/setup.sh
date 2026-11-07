@@ -25,5 +25,4 @@ ensure_var FIREWORKS_API_KEY ""
 npm ci
 docker compose up -d --wait
 npm run migrate
-npm run typecheck
 npm test

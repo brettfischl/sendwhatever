@@ -1,5 +1,5 @@
-// Most checks here are type-level. Vitest strips types, so `npm run typecheck` is what enforces
-// them: it fails if a shape stops being accepted, or if a `@ts-expect-error` stops being needed.
+// Most checks here are type-level. Vitest strips types, so the `tsc` step of `npm test` is what
+// enforces them: it fails if a shape stops being accepted, or a `@ts-expect-error` stops being needed.
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   StorageError,
@@ -12,6 +12,7 @@ import {
   type RowChildren,
   type SchemaChange,
   type StorageBackend,
+  type TableRow,
   type TableRows,
 } from '../src/contracts/index.js';
 
@@ -71,6 +72,8 @@ describe('accepted shapes', () => {
           },
           // The §12 example adapter sets `children` to undefined when there are none.
           { id: 'order_2', children: undefined },
+          // An undefined column means the same as null.
+          { id: 'order_3', note: undefined },
         ],
       },
       { table: 'customer', rows: [] },
@@ -83,6 +86,18 @@ describe('accepted shapes', () => {
     // @ts-expect-error a child may have no table, so it can't be a top-level object
     const asTop: IntermediateObject = child({ rows: [] });
     expect([asChild, asTop]).toHaveLength(2);
+  });
+
+  it('accepts rows to write, including a soft delete', () => {
+    const tables: TableRows = {
+      table: 'user',
+      columns: { email: 'string' },
+      rows: [
+        { id: 'u1', _event_seq: '9007199254740993', email: 'ada@example.com' },
+        { id: 'u2', _event_seq: '9007199254740994', _deleted_at: '2026-11-07T12:00:00Z' },
+      ],
+    };
+    expect(tables.rows).toHaveLength(2);
   });
 
   it('accepts a sandbox-style payload', () => {
@@ -132,6 +147,18 @@ describe('rejected shapes', () => {
     row({ fn: () => 1 });
     // @ts-expect-error nor when nested in an opaque value
     row({ metadata: { placed_at: new Date() } });
+  });
+
+  it('rejects a row to write without its required platform fields', () => {
+    const write = (value: TableRow) => value;
+    // @ts-expect-error id is required
+    write({ _event_seq: '1' });
+    // @ts-expect-error _event_seq is required
+    write({ id: 'u1' });
+    // @ts-expect-error _event_seq is decimal text, since a number loses precision
+    write({ id: 'u1', _event_seq: 1 });
+    // @ts-expect-error _deleted_at is a timestamp string
+    write({ id: 'u1', _event_seq: '1', _deleted_at: true });
   });
 
   it('rejects non-additive schema changes and removed fields', () => {

@@ -17,5 +17,6 @@ export type {
   SchemaChange,
   StorageBackend,
   StoreConfig,
+  TableRow,
   TableRows,
 } from './storage.js';
