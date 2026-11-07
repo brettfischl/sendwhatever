@@ -786,6 +786,8 @@ describe('one entity split across singular and plural tables', () => {
     ['status', 'status'],
     ['analysis', 'analysis'],
     ['variant_ids', 'variant_ids'],
+    ['news', 'news'],
+    ['canvas', 'canvas'],
     ['named_records', 'named_record'],
   ])('reads %s as %s', (name, singular) => {
     expect(singularName(name)).toBe(singular);
@@ -833,7 +835,40 @@ describe('one entity split across singular and plural tables', () => {
   it('names the registered table when a new one sits beside it in the output', async () => {
     const result = await check(tables('products_images', 'products_image'), registered('products_images'));
     expect(codes(result)).toEqual(['split_table']);
-    expect(result.failures[0]?.detail).toContain('the existing products_images');
+    expect(result.failures[0]?.detail).toContain('the registered products_images');
+  });
+
+  it('names a registered table that the output splits from, even when it writes neither name', async () => {
+    const result = await check(tables('product_image', 'products_image'), registered('products_images'));
+    expect(codes(result)).toEqual(['split_table']);
+    expect(result.failures[0]?.detail).toContain('the registered products_images');
+  });
+
+  it('rejects a split spread across two samples', async () => {
+    const samples = [sample({}, 'event-1'), sample(null, 'event-2')];
+    const result = await gate('', { samples }, {}, {
+      run: async ({ body }) => ({ ok: true, output: tables(body === null ? 'product' : 'products') }),
+    });
+    expect(codes(result)).toEqual(['split_table']);
+    expect(result.failures[0]?.detail).toContain('product and products');
+  });
+
+  it.each([
+    ['products_images', 'products_image_variant_ids'],
+    ['products_options', 'product_option_values'],
+  ])('rejects a child of %s named %s, as seen live', async (parent, child) => {
+    const output = {
+      table: 'products',
+      rows: [{ id: 'p', children: { [parent.slice('products_'.length)]: { rows: [{ id: 'i', children: { x: { table: child, rows: [] } } }] } } }],
+    };
+    const result = await check(output);
+    expect(codes(result)).toEqual(['split_table']);
+    expect(result.failures[0]?.detail).toContain(`Child table ${child} of ${parent}`);
+  });
+
+  it('passes a child named for its single-word parent in the singular, such as order_notes under orders', async () => {
+    const output = { table: 'orders', rows: [{ id: 'o', children: { notes: { table: 'order_notes', rows: [{ id: 'n' }] } } }] };
+    expect((await check(output)).ok).toBe(true);
   });
 
   it('passes two names that are both already registered, since rejecting cannot undo the split', async () => {

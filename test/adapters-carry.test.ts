@@ -336,6 +336,12 @@ describe('repeated data', () => {
     expect(dropped(data, output)).toContain('$.image.src');
   });
 
+  it('still counts two equal single objects, such as created_by and updated_by', () => {
+    const person = { id: 7, name: 'Ada' };
+    const data = { created_by: person, updated_by: person };
+    expect(dropped(data, table({ created_by_id: '7', created_by_name: 'Ada' }))).toHaveLength(2);
+  });
+
   it('fails when one constant id merges away the other rows', () => {
     const data = { items: [{ sku: 'A' }, { sku: 'B' }] };
     const output = table({ id: 'x', sku: 'A' }, { id: 'x', sku: 'B' });

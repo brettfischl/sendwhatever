@@ -137,6 +137,8 @@ export async function runGate(input: GateInput, options: GateOptions = {}): Prom
     reports.push(report);
     failures.push(...sampleFailures.map((failure) => ({ ...failure, eventId: sample.eventId })));
   }
+  // Across all samples, since one sample writing `product` and another `products` is the same split.
+  failures.push(...checkSplitTables(reports.map(({ output }) => output), input.registries));
   return { ok: failures.length === 0, failures, samples: reports, replacing };
 }
 
@@ -179,7 +181,6 @@ async function checkSample(
     ...(adapter.op === 'delete' ? checkDeleteRows(first.output) : []),
     ...checkCarry(sample, planned.plan, adapter.opaquePaths),
     ...(await checkFixedTables(first.output, sample.request, (request) => run(adapter.code, request))),
-    ...checkSplitTables(first.output, registries),
   ];
 
   if (earlier) {
@@ -237,29 +238,31 @@ async function checkFixedTables(
 /**
  * Catches one entity split across tables whose names differ only in singular and plural, such as
  * `products_image` beside `products_images`, which the model produces for a featured record and the list
- * it comes from. Prompt rule 5 alone doesn't stop it.
+ * it comes from. Prompt rule 5 alone doesn't stop it. It also catches a child that names its multi-word
+ * parent differently, such as `products_image_variant_ids` under `products_images`, the same split one
+ * level down.
  *
  * Names are compared by `singularName`, which misses some splits rather than risk joining distinct
  * entities. Two names that are both already registered pass, since rejecting can't undo a split already in
- * the schema, and the adapter may have to keep writing both.
+ * the schema, and the adapter may have to keep writing both. A single-word parent is left alone, since
+ * `order_notes` under `orders` is ordinary naming.
  */
-function checkSplitTables(output: unknown, registries: ReadonlyMap<string, RegisteredColumns>): GateFailure[] {
+function checkSplitTables(outputs: readonly unknown[], registries: ReadonlyMap<string, RegisteredColumns>): GateFailure[] {
   const registered = new Set([...registries.values()].flatMap((tables) => [...tables.keys()]));
-  const registeredBySingular = groupBySingular(registered);
+  const registeredBySingular = groupBySingular([...registered].sort());
+  const tables = outputs.flatMap(tableTree);
   const failures: GateFailure[] = [];
-  for (const [singular, names] of groupBySingular(tableNames(output))) {
-    const existing = (registeredBySingular.get(singular) ?? []).filter((name) => !names.includes(name));
+  for (const [singular, names] of groupBySingular(new Set(tables.map(({ name }) => name).sort()))) {
+    const existing = registeredBySingular.get(singular) ?? [];
     if (names.length > 1) {
       if (names.every((name) => registered.has(name))) continue;
-      const keep = names.filter((name) => registered.has(name));
       failures.push({
         code: 'split_table',
         detail:
-          `Tables ${quoteNames(names)} hold the same entity, one singular and one plural. Write it to one ` +
-          `table${keep.length > 0 ? `, the existing ${quoteNames(keep)}` : ', named in the plural'}, keyed by its ` +
-          'id. When a payload has one record and a list of the same kind, such as image and images, write the ' +
-          'single one as a row of that table too, and refer to it from the parent with a column such as ' +
-          'featured_image_id.',
+          `Tables ${quoteNames(names)} hold the same entity, and differ only in singular and plural. Write it ` +
+          `to one table${existing.length > 0 ? `, the registered ${quoteNames(existing)}` : ', named in the plural'}. ` +
+          'If one is a single record that repeats an item of a list, such as image and images, write it as a ' +
+          'row of the list\'s table, and refer to it from the parent with a column such as featured_image_id.',
       });
     } else if (!registered.has(names[0]!) && existing.length > 0) {
       failures.push({
@@ -270,6 +273,20 @@ function checkSplitTables(output: unknown, registries: ReadonlyMap<string, Regis
       });
     }
   }
+  const reported = new Set<string>();
+  for (const { name, parent } of tables) {
+    const parentWords = parent?.split('_') ?? [];
+    if (parent === undefined || parentWords.length < 2 || reported.has(name)) continue;
+    const prefix = name.split('_').slice(0, parentWords.length).join('_');
+    if (prefix === parent || singularName(prefix) !== singularName(parent)) continue;
+    reported.add(name);
+    failures.push({
+      code: 'split_table',
+      detail:
+        `Child table ${quoteNames([name])} of ${quoteNames([parent])} starts with ${quoteNames([prefix])}, which ` +
+        `splits one entity's tables between singular and plural names. Start it with ${quoteNames([parent])}.`,
+    });
+  }
   return failures;
 }
 
@@ -277,30 +294,38 @@ function groupBySingular(names: Iterable<string>): Map<string, string[]> {
   const groups = new Map<string, string[]>();
   for (const name of names) {
     const singular = singularName(name);
-    groups.set(singular, [...(groups.get(singular) ?? []), name]);
+    const group = groups.get(singular);
+    if (group) group.push(name);
+    else groups.set(singular, [name]);
   }
   return groups;
 }
 
+/** Singular words that end in a lone `s`, which plain `-s` stripping would mangle. */
+const SINGULAR_WITH_S = new Set(['news', 'series', 'species', 'canvas', 'atlas', 'alias', 'bias', 'lens', 'gas']);
+
 /**
  * Singularises each underscore-separated word, so `products_images`, `product_images`, and `products_image`
- * all become `product_image`. It is deliberately simple: an unknown plural is left alone, which can only miss
- * a split, and words ending in `ss`, `us`, or `is`, such as `address`, `status`, and `analysis`, are kept.
+ * all become `product_image`. It is deliberately simple: `-ies` becomes `-y`; `-sses`, `-xes`, `-zzes`,
+ * `-ches`, and `-shes` lose `es`; any other `-s` is dropped. Words of three letters or fewer, words ending in
+ * `ss`, `us`, or `is`, and a few singulars like `news` are kept. Some plurals come out wrong, such as
+ * `caches` as `cach`, which can only miss a split.
  */
 export function singularName(name: string): string {
   return name.split('_').map(singularWord).join('_');
 }
 
 function singularWord(word: string): string {
-  if (word.length <= 3 || /(ss|us|is)$/.test(word)) return word;
+  if (word.length <= 3 || SINGULAR_WITH_S.has(word) || /(ss|us|is)$/.test(word)) return word;
   if (word.endsWith('ies')) return `${word.slice(0, -3)}y`;
   if (/(sses|xes|zzes|ches|shes)$/.test(word)) return word.slice(0, -2);
   if (word.endsWith('s')) return word.slice(0, -1);
   return word;
 }
 
-function quoteNames(names: readonly string[]): string {
-  return names.slice(0, MAX_TABLES_QUOTED).map((name) => name.slice(0, MAX_IDENTIFIER_LENGTH)).join(' and ');
+/** Table names for error text, shortened, since they can come from client-controlled keys. */
+function quoteNames(names: readonly string[], separator = ' and '): string {
+  return names.slice(0, MAX_TABLES_QUOTED).map((name) => name.slice(0, MAX_IDENTIFIER_LENGTH)).join(separator);
 }
 
 /**
@@ -325,19 +350,29 @@ function alternatePath(path: string, shift: number): string {
  * path's output hasn't been validated, so nothing about its structure is assumed.
  */
 function tableNames(output: unknown): string[] {
-  const names = new Set<string>();
-  const visit = (object: unknown, defaultName?: string): void => {
+  return [...new Set(tableTree(output).map(({ name }) => name))].sort();
+}
+
+/** Every table in an output, each child with the table it is nested in, read the same way as `tableNames`. */
+function tableTree(output: unknown): { name: string; parent?: string }[] {
+  const tables: { name: string; parent?: string }[] = [];
+  const seen = new Set<string>();
+  const visit = (object: unknown, defaultName?: string, parent?: string): void => {
     if (!isRecord(object)) return;
     const name = String(object.table ?? defaultName);
-    names.add(name);
+    const key = JSON.stringify([name, parent]);
+    if (!seen.has(key)) {
+      seen.add(key);
+      tables.push(parent === undefined ? { name } : { name, parent });
+    }
     if (!Array.isArray(object.rows)) return;
     for (const row of object.rows) {
       if (!isRecord(row) || !isRecord(row.children)) continue;
-      for (const [key, child] of Object.entries(row.children)) visit(child, `${name}_${key}`);
+      for (const [key, child] of Object.entries(row.children)) visit(child, `${name}_${key}`, name);
     }
   };
   for (const object of Array.isArray(output) ? output : [output]) visit(object);
-  return [...names].sort();
+  return tables;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -348,7 +383,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function quoteTables(names: readonly string[], other: readonly string[]): string {
   const moved = names.filter((name) => !other.includes(name));
   if (moved.length === 0) return 'no other table';
-  return moved.slice(0, MAX_TABLES_QUOTED).map((name) => name.slice(0, MAX_IDENTIFIER_LENGTH)).join(', ');
+  return quoteNames(moved, ', ');
 }
 
 function plan(output: unknown, sample: GateSample, opaquePaths: readonly string[]) {

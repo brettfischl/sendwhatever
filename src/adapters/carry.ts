@@ -129,9 +129,10 @@ function displayPath(path: readonly string[]): string {
  * - An identical object or array element repeated at the same path counts once. A customer embedded in
  *   every order merges into one row (§8), and that isn't data loss. The cost is that keeping one of two
  *   wholly identical list items also passes.
- * - An identical object with an `id` counts once wherever it appears, so a featured record that repeats an
- *   item of a list, like Shopify's `image` and `images`, can be written once in that list's table (§12.1).
- *   The cost is that the reference to the featured item, such as a `featured_image_id` column, isn't required.
+ * - A single object with an `id` that is identical to an item of a list elsewhere counts once, so a featured
+ *   record like Shopify's `image`, repeating an item of `images`, can be written once in that list's table
+ *   (§12.1). The cost is that the reference to the featured item, such as `featured_image_id`, isn't
+ *   required. Two single objects, such as equal `created_by` and `updated_by`, still count separately.
  */
 function collectPayloadValues(data: unknown, opaquePaths: readonly string[]): PayloadValue[] {
   const opaque = opaquePaths.map((path) => parseOpaquePath(path));
@@ -143,10 +144,13 @@ function collectPayloadValues(data: unknown, opaquePaths: readonly string[]): Pa
   const firstVisit = (path: readonly string[], value: unknown) => {
     const content = stableStringify(value);
     const key = `${JSON.stringify(path)}:${content}`;
-    const record = isRecordWithId(value) ? `record:${content}` : undefined;
-    if (seen.has(key) || (record !== undefined && seen.has(record))) return false;
+    if (seen.has(key)) return false;
+    if (isRecordWithId(value)) {
+      const listed = path.at(-1) === ARRAY;
+      if (seen.has(`${listed ? 'single' : 'listed'}:${content}`)) return false;
+      seen.add(`${listed ? 'listed' : 'single'}:${content}`);
+    }
     seen.add(key);
-    if (record !== undefined) seen.add(record);
     return true;
   };
 
