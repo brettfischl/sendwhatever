@@ -4,6 +4,8 @@
 // finds its statements match nothing and can't delete or reschedule a job another worker now holds.
 import type pg from 'pg';
 
+type Queryable = Pick<pg.ClientBase, 'query'>;
+
 export type JobKind = 'ingest' | 'replay' | 'rebuild';
 
 export type QuarantineReason = 'unknown_fingerprint' | 'adapter_error' | 'schema_conflict' | 'write_error';
@@ -94,6 +96,42 @@ export async function pushRunAt(db: pg.Pool, job: Job, delayMs: number): Promise
 export async function deleteJob(db: pg.Pool, job: Job): Promise<boolean> {
   const result = await db.query('DELETE FROM queue WHERE id = $1 AND attempts = $2', [job.id, job.attempts]);
   return result.rowCount === 1;
+}
+
+/**
+ * Asks for a replay of an active adapter, and returns whether it is active (§10.1). If its replay is
+ * already queued, that replay may have paged past rows that now match, so this has it run again.
+ */
+export async function enqueueReplay(db: Queryable, adapterId: string): Promise<boolean> {
+  const result = await db.query(
+    `INSERT INTO queue (account_id, kind, adapter_id)
+     SELECT account_id, 'replay', id FROM adapters WHERE id = $1 AND active
+     ON CONFLICT (adapter_id) WHERE kind = 'replay' DO UPDATE SET rerun_requested = true`,
+    [adapterId],
+  );
+  return result.rowCount === 1;
+}
+
+/**
+ * Ends a replay, deleting the job unless a rerun was requested (§10.1). A rerun starts over, so it also
+ * restarts the job's age, or a long-lived job would give up on its next transient failure.
+ *
+ * The delete goes first and can't lose a request. If an enqueue commits first, the delete rechecks the
+ * flag and matches nothing, and only this worker clears the flag, so the update then finds it. If the
+ * delete commits first, the enqueue inserts a new job.
+ */
+export async function finishReplay(db: pg.Pool, job: Job): Promise<'deleted' | 'rerun' | 'lease_lost'> {
+  const deleted = await db.query('DELETE FROM queue WHERE id = $1 AND attempts = $2 AND NOT rerun_requested', [
+    job.id,
+    job.attempts,
+  ]);
+  if (deleted.rowCount === 1) return 'deleted';
+  const rerun = await db.query(
+    `UPDATE queue SET rerun_requested = false, run_at = now(), created_at = now()
+     WHERE id = $1 AND attempts = $2 AND rerun_requested`,
+    [job.id, job.attempts],
+  );
+  return rerun.rowCount === 1 ? 'rerun' : 'lease_lost';
 }
 
 /**
