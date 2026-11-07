@@ -17,6 +17,7 @@ import {
 } from './sessions.js';
 import { connectPage } from './pages/connect.js';
 import { createKey, credentialsPage, revealLogin, revokeKey } from './pages/credentials.js';
+import { eventPayloadRoute, eventRoute } from './pages/events.js';
 import { pipelineRoute } from './pages/pipeline.js';
 import { schemaRoute } from './pages/schema.js';
 import { trafficRoute } from './pages/traffic.js';
@@ -227,6 +228,8 @@ adminRoutes.post('/accounts/:accountId/credentials/reveal', revealLogin);
 adminRoutes.get('/accounts/:accountId/schema', schemaRoute);
 adminRoutes.get('/accounts/:accountId/traffic', trafficRoute);
 adminRoutes.get('/accounts/:accountId/pipeline', pipelineRoute);
+adminRoutes.get('/accounts/:accountId/events/:eventId', eventRoute);
+adminRoutes.post('/accounts/:accountId/events/:eventId/payload', eventPayloadRoute);
 adminRoutes.route('/manage/accounts', manageAccountRoutes);
 adminRoutes.route('/manage/users', manageUserRoutes);
 
