@@ -24,6 +24,14 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
     c.set('deps', deps);
     await next();
   });
+  // Hono routes on the normalized path, so `/ingest/../accounts` would reach an internal route without
+  // auth. Refuse any request whose path, as the client sent it, has a `.` or `..` segment.
+  app.use('*', async (c, next) => {
+    if (hasDotSegment(c.env?.incoming?.url ?? new URL(c.req.url).pathname)) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    await next();
+  });
   app.use(
     '*',
     bodyLimit({
@@ -50,6 +58,20 @@ export function createApp(deps: AppDeps): Hono<AppEnv> {
   });
 
   return app;
+}
+
+function hasDotSegment(target: string): boolean {
+  return target
+    .split('?', 1)[0]!
+    .split('/')
+    .some((segment) => {
+      try {
+        segment = decodeURIComponent(segment);
+      } catch {
+        // Not decodable, so it can't be a dot segment.
+      }
+      return segment === '.' || segment === '..';
+    });
 }
 
 function isConnectionError(error: unknown): boolean {

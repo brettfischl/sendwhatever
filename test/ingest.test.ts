@@ -334,6 +334,26 @@ describe('auth, size and availability statuses', () => {
     expect(await count('events', a)).toBe(0);
   });
 
+  it('does not let dot segments reach internal routes (POST /accounts) or the ingest handler', async () => {
+    const slug = `dots-${Date.now().toString(36)}`;
+    slugs.push(slug);
+    const a = await createAccount();
+    for (const path of [
+      '/ingest/../accounts',
+      '/ingest/%2e%2e/accounts',
+      '/ingest/%2E%2E/accounts',
+      '/ingest/./foo',
+      '/ingest/../ingest/foo',
+      '/ingest/foo/..',
+    ]) {
+      const res = await send('POST', path, { account: a, body: JSON.stringify({ slug }) });
+      expect(res.status, path).toBe(404);
+    }
+    const { rowCount } = await appDb.query('SELECT 1 FROM accounts WHERE slug = $1', [slug]);
+    expect(rowCount).toBe(0);
+    expect(await count('events', a)).toBe(0);
+  });
+
   it('answers 413 over the body limit', async () => {
     const a = await createAccount();
     const body = Buffer.alloc(MAX_BODY_BYTES + 1, 0x20);
@@ -358,8 +378,8 @@ describe('auth, size and availability statuses', () => {
 describe('stored request context', () => {
   it('stores the path as received, undecoded and unnormalized', async () => {
     const a = await createAccount();
-    const path = '/ingest/a%2Fb/../c';
-    // node:http sends the path untouched, so the segment is "a%2Fb" -> "a/b".
+    const path = '/ingest/a%2Fb//c/%7Ed';
+    // node:http sends the path untouched: the segment is "a%2Fb" -> "a/b", and the double slash and %7E stay.
     expect((await send('POST', path, { account: a, body: '{}' })).status).toBe(202);
     const [event] = await events(a);
     expect(event!.request.path).toBe(path);
