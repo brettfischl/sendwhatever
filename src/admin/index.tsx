@@ -14,6 +14,9 @@ import {
   validCsrf,
   type SessionUser,
 } from './sessions.js';
+import { pipelineRoute } from './pages/pipeline.js';
+import { schemaRoute } from './pages/schema.js';
+import { trafficRoute } from './pages/traffic.js';
 import { hashPassword, verifyPassword } from './users.js';
 import { AccountHomePage, AccountsPage, ErrorPage, LoginPage, type AccountSummary } from './views.js';
 
@@ -207,6 +210,10 @@ adminRoutes.get('/accounts/:accountId', (c) => {
     />,
   );
 });
+
+adminRoutes.get('/accounts/:accountId/schema', schemaRoute);
+adminRoutes.get('/accounts/:accountId/traffic', trafficRoute);
+adminRoutes.get('/accounts/:accountId/pipeline', pipelineRoute);
 
 // Keep this last: register new pages above it. Without it, an unknown /admin path would fall through to the main app's JSON 404.
 adminRoutes.all('*', (c) => page(c, 404, 'Page not found'));

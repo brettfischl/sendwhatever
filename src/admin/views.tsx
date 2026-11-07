@@ -152,7 +152,17 @@ export const AccountHomePage: FC<{
         <span class={`tag ${account.status}`}>{account.status}</span>
         {readOnly && <span class="tag">read-only (super admin)</span>}
       </p>
-      <p class="muted">Connect, credentials, schema, traffic, and pipeline pages will appear here.</p>
+      <ul class="account-nav">
+        <li>
+          <a href={`/admin/accounts/${account.id}/schema`}>Schema</a>
+        </li>
+        <li>
+          <a href={`/admin/accounts/${account.id}/traffic`}>Traffic</a>
+        </li>
+        <li>
+          <a href={`/admin/accounts/${account.id}/pipeline`}>Pipeline</a>
+        </li>
+      </ul>
       <p>
         <a href="/admin">All accounts</a>
       </p>
