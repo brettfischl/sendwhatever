@@ -139,7 +139,7 @@ function renderEntry(entry) {
       'div',
       { className: 'log-detail' },
       section('Request', `${entry.method} ${entry.url}\n${formatHeaders(entry.headers)}`),
-      section('Body', JSON.stringify(entry.body, null, 2)),
+      section('Body', entry.rawBody ?? JSON.stringify(entry.body, null, 2)),
       entry.response
         ? section(`Response ${entry.response.status} · ${entry.duration_ms} ms`, JSON.stringify(entry.response.body, null, 2))
         : section(`No response · ${entry.duration_ms} ms`, entry.error),

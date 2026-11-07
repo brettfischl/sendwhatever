@@ -1,0 +1,198 @@
+/* The demo console. Sizes are in rem and scale with the window, so it stays readable on a projector. */
+html:has(body.console) { font-size: clamp(16px, 10px + 0.55vw, 22px); }
+
+body.console {
+  --code-font: ui-monospace, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.console code { font-family: var(--code-font); }
+.console button { font-size: 0.95rem; }
+.console select, .console input { font-size: 1rem; }
+
+/* Top bar */
+.console-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  padding: 0.55rem 1.1rem;
+  color: var(--log-ink);
+  background: var(--log-bg);
+}
+.console-brand { font-size: 1.15rem; font-weight: 700; color: #fff; white-space: nowrap; }
+.console-brand span { font-weight: 400; color: var(--log-muted); }
+.mode-tabs { display: flex; gap: 0.25rem; padding: 0.2rem; background: var(--log-card); border-radius: 8px; }
+.console .mode-tabs button { color: var(--log-ink); background: none; border: 0; padding: 0.35rem 1rem; font-size: 1rem; white-space: nowrap; }
+.console .mode-tabs button:hover { background: var(--log-line); }
+.console .mode-tabs button[aria-selected='true'] { color: #fff; background: var(--accent); }
+.mode-tabs button:focus-visible, .console-site-link:focus-visible { outline-color: #fff; }
+.console-target { display: flex; flex: 1; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.7rem; min-width: 0; font-size: 0.82rem; color: var(--log-muted); overflow-wrap: anywhere; }
+.console-target .badge { font-size: 0.8rem; }
+.console-site-link { color: var(--log-ink); font-size: 0.9rem; white-space: nowrap; }
+
+/* The work area and the tables slot sit side by side, and scroll inside themselves. */
+.console-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+  gap: 0.8rem;
+  padding: 0.8rem;
+}
+.console-work { container-type: inline-size; min-height: 0; min-width: 0; }
+.console-panes {
+  display: grid;
+  grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 0.8rem;
+  height: 100%;
+}
+.mode { min-height: 0; min-width: 0; overflow-y: auto; }
+.console-slot { height: 100%; min-height: 0; min-width: 0; overflow: auto; }
+.console-tables { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.slot-placeholder { padding: 1.5rem; color: var(--muted); }
+.slot-placeholder h2 { font-size: 1.2rem; color: var(--ink); }
+
+/* Composer */
+.composer { display: flex; flex-direction: column; gap: 0.45rem; height: 100%; min-height: 0; }
+.composer > * { flex-shrink: 0; }
+.request-line { display: flex; gap: 0.5rem; }
+.request-line select {
+  flex: none;
+  font-family: var(--code-font);
+  font-weight: 700;
+  padding: 0.45rem 0.5rem;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid #c6ced8;
+  border-radius: 6px;
+}
+.request-line select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.path-field { flex: 1; min-width: 0; display: flex; align-items: center; background: var(--card); border: 1px solid #c6ced8; border-radius: 6px; font-family: var(--code-font); }
+.path-field:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.path-field span { padding-left: 0.6rem; color: var(--muted); }
+.path-field input { flex: 1; min-width: 0; font-family: inherit; border: 0; background: none; padding: 0.45rem 0.6rem 0.45rem 0; }
+.path-field input:focus-visible { outline: none; }
+.console #send { flex: none; min-width: 6.5rem; font-size: 1.05rem; }
+
+.example-list { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.console .example { padding: 0.15rem 0.6rem; font-size: 0.85rem; font-weight: 500; border-radius: 99px; }
+
+.headers { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.3rem 0.7rem; font-size: 0.9rem; }
+.headers summary { cursor: pointer; font-weight: 600; }
+.headers[open] { overflow-y: auto; max-height: 6rem; }
+.header-rows { display: grid; gap: 0.3rem; margin: 0.4rem 0; }
+.header-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 0.3rem; }
+.console .header-row input { font-family: var(--code-font); font-size: 0.85rem; padding: 0.25rem 0.45rem; }
+.console .header-remove { padding: 0 0.55rem; }
+.console .headers .link { font-size: 0.85rem; }
+.locked-headers { margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.82rem; }
+.locked-headers p { margin: 0.15rem 0 0.2rem; }
+
+/* Editor: the textarea's text is transparent, over a copy of the text that has colors. */
+.editor-box {
+  --editor-line: 1.45;
+  flex: 1 1 0;
+  min-height: 6.5rem;
+  display: flex;
+  overflow: hidden;
+  background: var(--log-bg);
+  border: 2px solid var(--log-bg);
+  border-radius: 8px;
+  font-family: var(--code-font);
+  font-size: 0.95rem;
+  line-height: var(--editor-line);
+}
+.editor-box:focus-within { border-color: var(--accent); }
+.editor-gutter { flex: none; overflow: hidden; min-width: 2.6rem; padding: 0.6rem 0.5rem; text-align: right; color: var(--log-muted); background: var(--log-card); user-select: none; }
+.gutter-error { color: #fff; background: var(--live); margin: 0 -0.5rem; padding: 0 0.5rem; border-radius: 2px; }
+.editor-body { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+.editor-highlight, .editor-input {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  font: inherit;
+  line-height: inherit;
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre;
+  border: 0;
+}
+.editor-highlight { position: absolute; top: 0; left: 0; min-width: 100%; color: var(--log-ink); pointer-events: none; will-change: transform; }
+.console .editor-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  font: inherit;
+  line-height: inherit;
+  color: transparent;
+  caret-color: #fff;
+  background: transparent;
+  border-radius: 0;
+  outline: none;
+  resize: none;
+  overflow: auto;
+}
+.editor-input::selection { color: transparent; background: rgb(127 180 255 / 0.35); }
+.console .editor-plain { color: var(--log-ink); }
+.editor-plain::selection { color: var(--log-ink); }
+.tok-key { color: #7fb4ff; }
+.tok-string { color: #5ed08a; }
+.tok-number { color: #e4c15b; }
+.tok-literal { color: #ff9a7a; }
+
+.editor-status { display: flex; align-items: center; gap: 0.5rem; min-height: 2.2rem; }
+.console .validity { flex: 1; min-width: 0; text-align: left; padding: 0; border: 0; background: none; font-size: 0.92rem; font-weight: 600; overflow-wrap: anywhere; }
+.console .validity:disabled { opacity: 1; cursor: default; }
+.console .validity:not(:disabled):hover { text-decoration: underline; }
+.validity::before { margin-right: 0.4rem; }
+.validity-valid, .validity-empty { color: var(--ok); }
+.validity-valid::before, .validity-empty::before { content: '✓'; }
+.validity-scalar { color: var(--warn); }
+.validity-scalar::before { content: '!'; }
+.validity-invalid { color: var(--live); }
+.validity-invalid::before { content: '✕'; }
+.console .send-anyway { flex: none; color: var(--live); border-color: var(--live); }
+.console .send-anyway:hover { color: #fff; background: var(--live); }
+
+/* Request and response */
+.exchange { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.8rem; min-height: 0; }
+.exchange-pane { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.exchange-pane h2 { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-height: 1.9rem; margin: 0 0 0.25rem; font-size: 1rem; }
+.exchange-body { flex: 1; min-height: 0; overflow: auto; padding: 0.6rem 0.75rem; color: var(--log-ink); background: var(--log-bg); border-radius: 8px; }
+.exchange-code { margin: 0; font-family: var(--code-font); font-size: 0.85rem; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.exchange-headers { margin-bottom: 0.5rem; font-size: 0.85rem; }
+.exchange-headers summary { cursor: pointer; color: var(--log-muted); }
+.exchange-empty { margin: 0; color: var(--log-muted); }
+.exchange-note { margin: 0.5rem 0 0; color: var(--log-muted); font-size: 0.76rem; }
+pre .exchange-note { margin: 0; font-size: inherit; }
+.http-header { color: #7fb4ff; }
+.exchange .method-PUT { color: #b9a4ff; }
+.status-pill { padding: 0.05rem 0.55rem; border-radius: 5px; font-size: 0.95rem; font-weight: 700; color: #fff; background: var(--muted); }
+.status-ok { background: var(--ok); }
+.status-fail { background: var(--live); }
+.exchange-flash { animation: exchange-flash 0.7s ease-out; }
+@keyframes exchange-flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 3px transparent; } }
+@media (prefers-reduced-motion: reduce) { .exchange-flash { animation: none; } }
+
+/* With room, the composer and the exchange sit side by side too. */
+@container (min-width: 900px) {
+  .console-panes { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 5fr) minmax(0, 4fr); }
+  .exchange { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Too narrow for panes: everything stacks and the page scrolls. */
+@media (max-width: 1000px), (max-height: 560px) {
+  body.console { height: auto; overflow: visible; }
+  .console-target { order: 3; flex-basis: 100%; }
+  .console-grid { grid-template-columns: minmax(0, 1fr); }
+  .console-panes { grid-template-rows: auto auto; height: auto; }
+  .editor-box { min-height: 18rem; }
+  .exchange { grid-template-columns: minmax(0, 1fr); }
+  .exchange-body { max-height: 60vh; min-height: 8rem; }
+  .console-slot { height: auto; min-height: 12rem; }
+}

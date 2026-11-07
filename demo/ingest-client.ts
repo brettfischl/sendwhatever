@@ -8,8 +8,16 @@ export interface LogEntry {
   url: string;
   /** As sent, except that the API key is masked. This goes to the browser. */
   headers: Record<string, string>;
-  body: object;
-  response?: { status: number; body: unknown };
+  /** The parsed body. Undefined when there was none, or it wasn't valid JSON. */
+  body: unknown;
+  /** The exact text sent, for the console, which can send anything. */
+  rawBody?: string;
+  response?: {
+    status: number;
+    statusText?: string;
+    headers?: Record<string, string>;
+    body: unknown;
+  };
   /** Set when no response came back, such as connection refused or a timeout. */
   error?: string;
   duration_ms: number;
@@ -98,7 +106,7 @@ export function createIngestClient(options: IngestClientOptions): Send {
   };
 }
 
-function parseResponse(text: string): unknown {
+export function parseResponse(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
@@ -107,7 +115,7 @@ function parseResponse(text: string): unknown {
 }
 
 /** fetch reports most failures as "fetch failed", with the useful part in `cause`. */
-function describeError(error: unknown): string {
+export function describeError(error: unknown): string {
   if (!(error instanceof Error)) return String(error);
   const cause = error.cause;
   return cause instanceof Error ? `${error.message}: ${cause.message}` : error.message;
