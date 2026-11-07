@@ -13,7 +13,8 @@ import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 });
 
-const config = loadConfig();
+const TOKEN = 'ingest-test-token';
+const config = { ...loadConfig(), internalApiToken: TOKEN };
 const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl });
 const backend = new PostgresBackend({ idleTimeoutMs: 50 });
 const app = createApp({ appDb, backend, config });
@@ -33,7 +34,7 @@ async function createAccount(): Promise<Account> {
   slugs.push(slug);
   const res = await app.request('/accounts', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ slug }),
   });
   expect(res.status).toBe(201);

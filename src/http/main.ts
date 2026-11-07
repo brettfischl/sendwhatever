@@ -11,7 +11,7 @@ const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl });
 appDb.on('error', (error) => console.error('app database pool error:', error.message));
 
 if (!config.internalApiToken) {
-  console.warn('INTERNAL_API_TOKEN is not set, so the adapter and quarantine routes refuse every request.');
+  console.warn('INTERNAL_API_TOKEN is not set, so the account, adapter and quarantine routes refuse every request.');
 }
 await ensureSuperAdmin(appDb, config.adminEmail, config.adminPassword);
 

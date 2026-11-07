@@ -1,11 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { Hono } from 'hono';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   activateAdapter,
   createAdapter,
-  createInternalRoutes,
   loadSamples,
   markValidated,
   validateAdapter,
@@ -15,7 +13,7 @@ import {
 } from '../src/adapters/index.js';
 import { loadConfig } from '../src/config.js';
 import type { StorageBackend } from '../src/contracts/index.js';
-import { createApp } from '../src/http/app.js';
+import { createApp, MAX_BODY_BYTES } from '../src/http/app.js';
 import { fingerprint } from '../src/fingerprint/index.js';
 import { SandboxUnavailableError } from '../src/sandbox/index.js';
 import { generateApiKey, hashApiKey } from '../src/secrets.js';
@@ -31,7 +29,8 @@ const otherAccountId = randomUUID();
 const storeId = randomUUID();
 const TOKEN = 'internal-test-token';
 const BEARER = `Bearer ${TOKEN}`;
-const routes = createInternalRoutes({ pool, token: TOKEN, gate: GATE });
+const config = loadConfig();
+const routes = createApp({ appDb: pool, backend: {} as StorageBackend, config: { ...config, internalApiToken: TOKEN }, gate: GATE });
 /** The routes as an operator calls them. The auth tests below call `routes` directly. */
 const app = {
   request: (path: string, init: RequestInit = {}) =>
@@ -103,7 +102,7 @@ async function replayJobs(adapterId: string) {
 function post(path: string, body?: unknown, headers: Record<string, string> = {}) {
   return app.request(path, {
     method: 'POST',
-    headers,
+    headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
     ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
   });
 }
@@ -200,8 +199,8 @@ describe('POST /adapters', () => {
   });
 
   it('returns 413 for an oversized body', async () => {
-    const response = await post('/adapters', { ...body(), code: 'x'.repeat(1024 * 1024 + 1) }, {
-      'content-length': String(1024 * 1024 + 200),
+    const response = await post('/adapters', { ...body(), code: 'x'.repeat(MAX_BODY_BYTES + 1) }, {
+      'content-length': String(MAX_BODY_BYTES + 200),
     });
     expect(response.status).toBe(413);
   });
@@ -625,7 +624,6 @@ describe('GET /quarantine', () => {
   });
 });
 
-const config = loadConfig();
 const serverApp = (token: string | undefined, appDb: pg.Pool = pool) =>
   createApp({ appDb, backend: {} as StorageBackend, config: { ...config, internalApiToken: token } });
 
@@ -652,7 +650,8 @@ describe('the internal token', () => {
 
   it('lets the correct token through on every route', async () => {
     for (const [method, path, body] of ROUTES) {
-      const response = await routes.request(path, { method, headers: { authorization: BEARER }, ...(body ? { body } : {}) });
+      const headers = { authorization: BEARER, ...(body ? { 'content-type': 'application/json' } : {}) };
+      const response = await routes.request(path, { method, headers, ...(body ? { body } : {}) });
       expect([path, response.status]).toEqual([path, path === '/adapters' ? 201 : path.startsWith('/quarantine') ? 200 : 404]);
     }
   });
@@ -663,6 +662,32 @@ describe('the internal token', () => {
   });
 
   it('refuses a missing token', () => expectRefused(routes, {}));
+
+  it.each([
+    ['text', 'text/plain'],
+    ['a form', 'application/x-www-form-urlencoded'],
+    ['a lookalike', 'application/jsonp'],
+  ])('refuses a body sent as %s, as a browser could from any page', async (_name, type) => {
+    const response = await routes.request('/adapters', {
+      method: 'POST',
+      headers: { authorization: BEARER, 'content-type': type },
+      body: JSON.stringify({ account_id: accountId, op: 'write', fingerprint: SHAPE, code: V1 }),
+    });
+    expect(response.status).toBe(415);
+    const created = await pool.query('SELECT 1 FROM adapters WHERE account_id = $1', [accountId]);
+    expect(created.rowCount).toBe(0);
+  });
+
+  it('accepts JSON with a charset, and a POST with no body and no type', async () => {
+    const withCharset = await routes.request('/adapters', {
+      method: 'POST',
+      headers: { authorization: BEARER, 'content-type': 'Application/JSON; charset=utf-8' },
+      body: JSON.stringify({ account_id: accountId, op: 'write', fingerprint: SHAPE, code: V1 }),
+    });
+    expect(withCharset.status).toBe(201);
+    const noBody = await routes.request(`/adapters/${randomUUID()}/replay`, { method: 'POST', headers: { authorization: BEARER } });
+    expect(noBody.status).toBe(404);
+  });
 
   it.each([
     ['a wrong token', `Bearer ${'x'.repeat(TOKEN.length)}`],
@@ -691,7 +716,7 @@ describe('the internal token', () => {
     ['unset', undefined],
     ['empty', ''],
   ])('when it is %s', (_name, token) => {
-    const closed = createInternalRoutes({ pool, token });
+    const closed = createApp({ appDb: pool, backend: {} as StorageBackend, config: { ...config, internalApiToken: token } });
 
     it.each([
       ['no header', {}],
@@ -723,7 +748,7 @@ describe('mounted on the server', () => {
     expect((await server.request(`/adapters/${adapter.id}/replay`, { method: 'POST', headers: operator })).status).toBe(409);
     const created = await server.request('/adapters', {
       method: 'POST',
-      headers: operator,
+      headers: { ...operator, 'content-type': 'application/json' },
       body: JSON.stringify({ account_id: accountId, op: 'write', fingerprint: SHAPE, code: V1 }),
     });
     expect(created.status).toBe(201);
@@ -778,13 +803,12 @@ describe('failures', () => {
   it('returns 503 when the sandbox cannot run, and changes nothing', async () => {
     await quarantined();
     const adapter = await stored(V1);
-    const unavailable = createInternalRoutes({
-      pool,
-      token: TOKEN,
+    const service = createApp({
+      appDb: pool,
+      backend: {} as StorageBackend,
+      config: { ...config, internalApiToken: TOKEN },
       gate: { run: async () => { throw new SandboxUnavailableError('down'); } },
     });
-    const service = new Hono();
-    service.route('/', unavailable);
     const response = await service.request(`/adapters/${adapter.id}/activate`, { method: 'POST', headers });
     expect(response.status).toBe(503);
     expect(await row(adapter.id)).toMatchObject({ active: false, validated_at: null });

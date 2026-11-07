@@ -12,7 +12,8 @@ import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 });
 
-const config = loadConfig();
+const TOKEN = 'accounts-test-token';
+const config = { ...loadConfig(), internalApiToken: TOKEN };
 const appDb = new pg.Pool({ connectionString: config.appDatabaseUrl });
 const backend = new PostgresBackend({ idleTimeoutMs: 50 });
 const app = createApp({ appDb, backend, config });
@@ -31,7 +32,7 @@ function newSlug(label = 't'): string {
 function post(appUnderTest: { request: typeof app.request }, body: unknown) {
   return appUnderTest.request('/accounts', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
 }
@@ -83,6 +84,45 @@ afterAll(async () => {
 });
 
 describe('POST /accounts', () => {
+  describe('the internal guard', () => {
+    const attempt = (headers: Record<string, string>, target = app) =>
+      target.request('/accounts', { method: 'POST', headers, body: JSON.stringify({ slug: 'guard-never-created' }) });
+    const operator = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+
+    afterAll(async () => {
+      const { rowCount } = await appDb.query(`SELECT 1 FROM accounts WHERE slug = 'guard-never-created'`);
+      expect(rowCount).toBe(0);
+    });
+
+    it.each([
+      ['no token', { 'content-type': 'application/json' }],
+      ['a wrong token', { ...operator, authorization: 'Bearer nope' }],
+    ])('refuses %s', async (_name, headers: Record<string, string>) => {
+      const response = await attempt(headers);
+      expect(response.status).toBe(401);
+      expect(response.headers.get('www-authenticate')).toBe('Bearer');
+    });
+
+    it('refuses everything when no token is configured', async () => {
+      const closed = createApp({ appDb, backend, config: { ...config, internalApiToken: undefined } });
+      expect((await attempt(operator, closed)).status).toBe(401);
+    });
+
+    it.each(['x-forwarded-for', 'x-forwarded-host', 'forwarded', 'via', 'x-account-slug'])(
+      'hides the route from a request with %s, even with the token',
+      async (header) => {
+        expect((await attempt({ ...operator, [header]: 'x' })).status).toBe(404);
+      },
+    );
+
+    it.each(['text/plain', 'application/x-www-form-urlencoded', 'multipart/form-data'])(
+      'refuses a body sent as %s, as a browser could from any page',
+      async (type) => {
+        expect((await attempt({ ...operator, 'content-type': type })).status).toBe(415);
+      },
+    );
+  });
+
   it('rejects a bad slug', async () => {
     for (const slug of ['', 'Upper', 'a.b', '-a', 'a-', 'a'.repeat(64), 'a b', 5, undefined]) {
       const res = await post(app, { slug });
@@ -90,7 +130,11 @@ describe('POST /accounts', () => {
       expect(await res.json()).toEqual({ error: expect.any(String) });
     }
     expect((await post(app, [])).status).toBe(400);
-    const notJson = await app.request('/accounts', { method: 'POST', body: 'nope' });
+    const notJson = await app.request('/accounts', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      body: 'nope',
+    });
     expect(notJson.status).toBe(400);
   });
 
