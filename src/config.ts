@@ -12,6 +12,9 @@ export interface Config {
   port: number;
   /** Defaults to loopback: internal routes have no auth. */
   host: string;
+  /** Seed for the first super admin; both optional. */
+  adminEmail: string | undefined;
+  adminPassword: string | undefined;
   /** Undefined until a key is set. Code that calls the LLM should fail with a clear error. */
   fireworksApiKey: string | undefined;
   fireworksModel: string;
@@ -41,6 +44,8 @@ export function loadConfig(): Config {
     encryptionKey: parseEncryptionKey(required('SW_ENCRYPTION_KEY')),
     port: Number(process.env.PORT || 3000),
     host: process.env.HOST || '127.0.0.1',
+    adminEmail: process.env.ADMIN_EMAIL || undefined,
+    adminPassword: process.env.ADMIN_PASSWORD || undefined,
     fireworksApiKey: process.env.FIREWORKS_API_KEY || undefined,
     fireworksModel: process.env.FIREWORKS_MODEL || DEFAULT_FIREWORKS_MODEL,
   };

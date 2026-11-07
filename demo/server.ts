@@ -6,6 +6,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { CONSOLE_ASSETS, parseConsoleRequest, type SendRaw } from './console.js';
 import { HttpError, readBody } from './http.js';
 import type { RequestLog, LogChange } from './ingest-client.js';
 import type { LookalikeKind, SessionTransition } from './payloads.js';
@@ -23,6 +24,8 @@ export interface ServerDeps {
   simulatePauseMs?: number;
   /** Feeds the live tables panel. Without one, the panel shows the stub notice. */
   tables?: TablesSource;
+  /** Sends from the console. Without it, the console can't send. */
+  consoleSend?: SendRaw;
 }
 
 /** Asset names are fixed, so a request path never reaches the filesystem. */
@@ -32,6 +35,7 @@ const ASSETS: Record<string, string> = {
   '/assets/index.js': 'text/javascript',
   '/assets/session.js': 'text/javascript',
   '/assets/watch.js': 'text/javascript',
+  ...CONSOLE_ASSETS,
 };
 const PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url));
 
@@ -85,7 +89,7 @@ export function createDemoServer(deps: ServerDeps, events: SiteEvents): Server {
   });
 }
 
-function buildRoutes({ webinar, log, target, simulatePauseMs }: ServerDeps) {
+function buildRoutes({ webinar, log, target, simulatePauseMs, consoleSend }: ServerDeps) {
   const route = (method: string, pattern: string, handler: Handler) => ({
     method,
     pattern: new RegExp(`^${pattern.replaceAll(':id', '([^/]+)')}$`),
@@ -156,6 +160,9 @@ function buildRoutes({ webinar, log, target, simulatePauseMs }: ServerDeps) {
       await webinar.removeComment(id!);
       return {};
     }),
+    ...(consoleSend
+      ? [route('POST', '/api/console/send', async (_, body) => consoleSend(parseConsoleRequest(body)))]
+      : []),
   ];
 }
 
@@ -171,6 +178,7 @@ async function handle(
   if (method === 'GET') {
     if (pathname === '/api/stream') return events.add(res);
     if (pathname === '/') return sendFile(res, 'index.html', 'text/html');
+    if (pathname === '/console') return sendFile(res, 'console.html', 'text/html');
     if (/^\/sessions\/[^/]+$/.test(pathname)) return sendFile(res, 'session.html', 'text/html');
     if (/^\/sessions\/[^/]+\/watch$/.test(pathname)) return sendFile(res, 'watch.html', 'text/html');
     const assetType = ASSETS[pathname];

@@ -4,6 +4,6 @@ import '/assets/tables-panel.js';
 
 export function mount(slot) {
   const panel = document.createElement('sw-live-tables');
-  slot.append(panel);
+  slot.replaceChildren(panel);
   return () => panel.remove();
 }

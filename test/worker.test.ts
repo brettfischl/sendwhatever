@@ -925,17 +925,15 @@ describe('claiming', () => {
     expect((await claim())?.attempts).toBe(2);
   });
 
-  it('leaves replay and rebuild jobs unclaimed', async () => {
+  it('leaves rebuild jobs unclaimed', async () => {
     const accountId = await newAccount();
     const { id: storeId } = await addStore(accountId);
-    const adapterId = await addAdapter(accountId, { fingerprint: 'f', code: userAdapter });
-    await db.query(`INSERT INTO queue (account_id, kind, adapter_id) VALUES ($1, 'replay', $2)`, [accountId, adapterId]);
     await db.query(`INSERT INTO queue (account_id, kind, store_id) VALUES ($1, 'rebuild', $2)`, [accountId, storeId]);
 
     expect(await processNextJob(context(), { accountId })).toBeNull();
 
     const rows = await db.query<{ attempts: number }>('SELECT attempts FROM queue WHERE account_id = $1', [accountId]);
-    expect(rows.rows).toEqual([{ attempts: 0 }, { attempts: 0 }]);
+    expect(rows.rows).toEqual([{ attempts: 0 }]);
   });
 
   it('only claims the requested account', async () => {

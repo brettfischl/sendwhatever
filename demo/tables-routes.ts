@@ -7,7 +7,6 @@ import { assertLoopbackRequest, stubSource, type TablesSource } from './tables.j
 /** Names are fixed, so a request path never reaches the filesystem. */
 const FILES: Record<string, { file: string; type: string }> = {
   '/tables': { file: 'tables.html', type: 'text/html' },
-  '/assets/console-tables.js': { file: 'console-tables.js', type: 'text/javascript' },
   '/assets/tables-panel.css': { file: 'tables-panel.css', type: 'text/css' },
   '/assets/tables-panel.js': { file: 'tables-panel.js', type: 'text/javascript' },
   '/assets/tables-tracker.js': { file: 'tables-tracker.js', type: 'text/javascript' },

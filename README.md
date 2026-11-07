@@ -70,6 +70,10 @@ Each action sends one request, with no envelope and no path unless noted:
 | Add a speaker or sponsor | `POST { id, name }` | Lookalikes that share a fingerprint (PRD §6.1). A checkbox sends them to `/ingest/speakers` and `/ingest/sponsors` instead. |
 | Simulate viewers | All of the above except lookalikes and session create | Volume, and a batch that mixes normal and deleted comments |
 
+### Console
+
+http://127.0.0.1:3100/console is for showing the platform off (PRD §20). Arbitrary JSON mode sends any JSON you write, with any method, path, and headers, and shows the request and response. Invalid JSON is caught before sending, and **Send anyway** sends it regardless to show the `400`. Requests go through the demo server, which adds the API key and `X-Account-Slug`, so the key never reaches the browser. It also works against the stub.
+
 `npm test` includes the demo's tests, but also tests that need Postgres. To run just the demo's, use `npx vitest run demo`.
 
 ## Layout

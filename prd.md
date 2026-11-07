@@ -810,12 +810,12 @@ Security note: Adapter code is written by an LLM from client-supplied payloads a
 
 ### 12.1 Adapter Generator
 
-A continuously running process that turns quarantined shapes into active adapters. It calls its LLM through Fireworks, using `accounts/fireworks/models/deepseek-v4p1-flash` by default, set by the `FIREWORKS_MODEL` config value. This is a reasoning model, and reasoning counts against `max_tokens`, so requests need a generous limit. An empty reply with `finish_reason: length` means the limit was too low.
+A continuously running process that turns quarantined shapes into active adapters. It calls its LLM through Fireworks, using `accounts/fireworks/models/deepseek-v4p1-flash` by default, set by the `FIREWORKS_MODEL` config value. This is a reasoning model, and reasoning counts against `max_tokens`. Requests run with reasoning off (`reasoning_effort: "none"`, also a config value) and `max_tokens` of 8000: in testing this took about 2 seconds and $0.002 per adapter, while reasoning on took around 100 seconds and often ran out of tokens with no code. An empty reply with `finish_reason: length` is a failed attempt.
 
 1. It polls for `(account_id, source, op, fingerprint)` shapes with open quarantine rows, no generation in progress, and no validated adapter awaiting an operator, and records a `running` row in `adapter_attempts`. A validated adapter is awaiting an operator when `validated_at` is set, `active` is false, and `superseded_at` is null. An attempt left `running` past a timeout blocks the shape until it is updated, so the poll marks it `failed` in the same transaction that records the new attempt. The timeout must be longer than a generation's retries and backoff, so a live attempt isn't failed.
 2. It first tries to avoid an LLM call:
    - If an active adapter now covers the shape through opaque paths (§7.1), it enqueues a replay.
-   - Otherwise it runs the active adapters for that `(source, op)` against a sample of the shape, through the validation gate below. If one passes, the fingerprint is added to `adapter_fingerprints` and a replay is enqueued. A later version of that adapter doesn't inherit these entries; those shapes pass through this step again.
+   - Otherwise it runs the active adapters for that `(source, op)` against a sample of the shape, through the validation gate below. If one passes, a quick LLM check confirms the sample is the same kind of record that adapter handles, since lookalikes can pass the gate. If it is, the fingerprint is added to `adapter_fingerprints` and a replay is enqueued. A later version of that adapter doesn't inherit these entries; those shapes pass through this step again.
 3. If neither applies, it samples rows and asks the LLM for an adapter. It includes the account's full schema (`data_columns`), so that new adapters reuse existing tables and types. It also includes each sample's path, method, and headers as optional signals, and the other open fingerprints for that `(source, op)`, so the LLM can spot fields whose keys vary.
 4. It validates the adapter against the sample, using the same checks as `POST /adapters/:id/test`.
 5. If validation passes and the account has `auto_activate` on (the default), the adapter is activated and its replay enqueued (§5.2). With it off, the adapter waits for an operator to call `POST /adapters/:id/activate`. If validation fails, the LLM retries with the errors, with backoff between attempts.
@@ -830,11 +830,11 @@ A configurable cap limits generations per shape, and the shape then waits for an
 - Never discard a field. Every field gets a clearly named column or child table, with no catch-all columns. When deriving a value, such as a full name, also keep the original fields.
 - Normalize nested data: objects and arrays of objects become child tables, and arrays of primitives become child tables with a `value` column.
 - Declare an opaque path only for a field whose keys truly vary. Store it as a child table with `key` and `value` columns when its values are uniform, or as a named `json` column when it is truly free-form. JSON is never a place to put data that could be modeled.
-- Use a stable `id` from the payload when events describe the same real-world record, so they merge into one row, and cast it to a string. Omit it when each event is a new record.
+- Use a stable `id` from the payload when events describe the same real-world record, so they merge into one row, and cast it to a string. Omit it when each event is a new record. Cast every ID-like field to a string too, such as `product_id`. The sandbox turns integers above 2^53 into strings to keep them exact, so a field left as a number would change type once its values grow.
 - Pass `null` through only when the source means to clear a value. Leave out any field the event doesn't include: `email: item.email` on a partial update would set `undefined` and clear the stored email.
 - Give child rows a natural `id` where one exists, such as a SKU. Set `append: true` for lists where each event adds new items, such as messages.
 - Declare date and time fields as `timestamp`, and normalize them to ISO 8601 with a timezone.
-- Give an embedded entity with its own identity, such as a customer inside an order, its own table.
+- Give an entity with its own identity one table, wherever it appears, keyed by the same `id`. A speaker sent directly and a speaker embedded in a session both go to `speakers`. Link many-to-many relationships through a join table, such as `session_speakers`, using array output, so one entity is never split across parent-specific child tables.
 - Choose table names from the content of the payload. Use the path and headers as hints when they are present, and don't rely on them being there.
 - Use `payload.request` to tell event kinds apart. For `DELETE` requests, and events whose body or headers say a record was deleted, set `_deleted: true` on the same table and `id` the write adapter uses. Keep any fields the event includes. Look for per-item signals too, like `items: [{ "id": 1, "deleted": true }]`, and mark that child row the same way. Never treat a missing item as a delete.
 
@@ -844,6 +844,8 @@ Prompts are guidance, so the rules that matter are also enforced in code, by the
 - Runs without errors or timeouts, and returns a valid intermediate object with valid identifiers.
 - Produces identical output when run twice on the same payload.
 - Produces parseable values for every declared `timestamp` column.
+- Writes no number to an ID-like column: `id` or a name ending in `_id`. It must be cast to a string, because the column's type can never change later.
+- Writes no ISO 8601 date-time to a string column. It must be declared as `timestamp`, for the same reason.
 - Causes no type conflicts with registered columns.
 - Declares opaque paths only on specific named fields, never the payload root or an array of the root, so an adapter can't match everything.
 - For `op = delete`, sets `_deleted: true` on every top-level row, with an `id`.

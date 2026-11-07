@@ -1,5 +1,5 @@
-// The steps from a logged event to rows in a store (PRD §5.1 steps 7-10). Ingest uses them now, and
-// replays can use them too, so an event is processed the same way each time.
+// The steps from a logged event to rows in a store (PRD §5.1 steps 7-10). Ingest and replay both use
+// them, so an event is processed the same way each time.
 import type pg from 'pg';
 import { StorageError, type AdapterRequest, type AdapterResult, type StorageBackend, type StoreConfig } from '../contracts/index.js';
 import { applyPlanSchema, planWrite, type WritePlan } from '../planner/index.js';
@@ -15,6 +15,10 @@ export interface WorkerSettings {
   backoffMaxMs: number;
   /** How long a job may keep hitting transient failures before it moves to `write_error` (§10.1). */
   maxAgeMs: number;
+  /** Open quarantine rows a replay reads at a time. */
+  replayBatchSize: number;
+  /** How often to look for stranded `unknown_fingerprint` rows (§5.2). */
+  sweepIntervalMs: number;
   sandboxLimits: SandboxLimits;
   log: (message: string) => void;
 }
@@ -24,6 +28,8 @@ export const DEFAULT_SETTINGS: WorkerSettings = {
   backoffBaseMs: 5_000,
   backoffMaxMs: 300_000,
   maxAgeMs: 72 * 60 * 60 * 1000,
+  replayBatchSize: 100,
+  sweepIntervalMs: 60_000,
   sandboxLimits: {},
   log: (message) => console.error(`[worker] ${message}`),
 };

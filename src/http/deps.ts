@@ -25,3 +25,29 @@ export class HttpError extends Error {
     super(message);
   }
 }
+
+const CONNECTION_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  '57P01', // admin_shutdown
+  '57P03', // cannot_connect_now
+]);
+
+/** True for a lost or refused database connection, which the server reports as 503. */
+export function isConnectionError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const { code, errors, message } = error as {
+    code?: string;
+    errors?: unknown[];
+    message?: string;
+  };
+  if (code && CONNECTION_ERROR_CODES.has(code)) return true;
+  if (errors?.some(isConnectionError)) return true;
+  return (
+    message === 'Connection terminated unexpectedly' ||
+    message === 'timeout exceeded when trying to connect'
+  );
+}
