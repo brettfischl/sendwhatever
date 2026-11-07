@@ -114,12 +114,11 @@ async function handle(
 
 /** PRD §6.2: a provider's delivery header counts as the key when none is sent. */
 function deliveryKey(req: IncomingMessage): string | undefined {
-  const { headers } = req;
-  return firstValue(headers['idempotency-key'] ?? headers['x-shopify-webhook-id'] ?? headers['x-github-delivery']);
-}
-
-function firstValue(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
+  for (const name of ['idempotency-key', 'x-github-delivery', 'x-shopify-webhook-id']) {
+    const value = req.headers[name];
+    if (typeof value === 'string' && value) return value;
+  }
+  return undefined;
 }
 
 /** PRD §6: at most 255 bytes, and it must percent-decode to valid UTF-8 with no NUL. */
