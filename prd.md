@@ -822,7 +822,7 @@ A continuously running process that turns quarantined shapes into active adapter
 4. It validates the adapter against the sample, using the same checks as `POST /adapters/:id/test`.
 5. If validation passes and the account has `auto_activate` on (the default), the adapter is activated and its replay enqueued (§5.2). With it off, the adapter waits for an operator to call `POST /adapters/:id/activate`. If validation fails, the LLM retries with the errors, with backoff between attempts.
 
-A configurable cap limits generations per shape, and the shape then waits for an operator. The cap counts adapters that passed validation and then failed during replay, so a shape can't loop through generations indefinitely. A separate limit (default 5) stops a shape after that many consecutive failed attempts, which bounds LLM cost for shapes that never pass. Generation runs one at a time per `(account, source, op)`, so the first adapter can absorb variations arriving together.
+A configurable cap limits generations per shape, and the shape then waits for an operator. The cap counts adapters that passed validation and then failed during replay, so a shape can't loop through generations indefinitely. A separate limit (default 5) stops a shape after that many consecutive failed attempts, which bounds LLM cost for shapes that never pass. LLM outages back off without counting toward it, so a brief outage can't park every open shape. Generation runs one at a time per `(account, source, op)`, so the first adapter can absorb variations arriving together.
 
 **Which rows it reads:** `unknown_fingerprint`, `adapter_error`, and `schema_conflict`, where a new adapter can fix the problem. `malformed` and `write_error` rows are left to operators.
 
