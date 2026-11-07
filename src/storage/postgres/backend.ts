@@ -20,6 +20,13 @@ const CONNECT_TIMEOUT_MS = 10_000;
  */
 const DDL_LOCK_TIMEOUT = '5s';
 
+/** So a blocked statement can't hold a pool slot forever. A cancelled statement is retried. */
+const STATEMENT_TIMEOUT_MS = 30_000;
+/** An index build on a large table can take far longer than a write. */
+const DDL_STATEMENT_TIMEOUT_MS = 600_000;
+/** The client's limit catches a dead network, where the server's own timeout can't reach us. */
+const CLIENT_TIMEOUT_MARGIN_MS = 5_000;
+
 /** Limits for customer logins (§14.1). An idle open transaction would block DDL just like a query. */
 const READ_ONLY_STATEMENT_TIMEOUT = '30s';
 const READ_ONLY_IDLE_IN_TRANSACTION_TIMEOUT = '60s';
@@ -27,7 +34,7 @@ const READ_ONLY_IDLE_IN_TRANSACTION_TIMEOUT = '60s';
 /** Concurrent grants on the database row fail with "tuple concurrently updated", even across stores. */
 const PROVISION_LOCK = 'sendwhatever:provision';
 
-function poolConfig(store: StoreConfig): pg.PoolConfig {
+function poolConfig(store: StoreConfig, statementTimeoutMs: number): pg.PoolConfig {
   const { host, port, database } = store.connection;
   const { user, password } = store.credentials ?? {};
   // pg falls back to PG* variables and localhost, which could silently reach the wrong server.
@@ -50,6 +57,8 @@ function poolConfig(store: StoreConfig): pg.PoolConfig {
     user,
     password,
     connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
+    statement_timeout: statementTimeoutMs,
+    query_timeout: statementTimeoutMs + CLIENT_TIMEOUT_MARGIN_MS,
     keepAlive: true,
   };
 }
@@ -59,6 +68,11 @@ export class PostgresBackend implements StorageBackend {
 
   /** Stores on one server share a pool, since `write` runs for every event. */
   private readonly pools = new Map<string, pg.Pool>();
+  private readonly statementTimeoutMs: number;
+
+  constructor(options: { statementTimeoutMs?: number } = {}) {
+    this.statementTimeoutMs = options.statementTimeoutMs ?? STATEMENT_TIMEOUT_MS;
+  }
 
   async provision(store: StoreConfig): Promise<Record<string, unknown>> {
     const user = readOnlyRoleName(store.namespace);
@@ -112,10 +126,17 @@ export class PostgresBackend implements StorageBackend {
     if (changes.length === 0) return;
     try {
       const statements = changes.map((change) => schemaChangeSql(store.namespace, change));
-      await this.transaction(store, async (client) => {
-        await client.query(`SET LOCAL lock_timeout = '${DDL_LOCK_TIMEOUT}'`);
-        for (const statement of statements) await client.query(statement);
-      });
+      // One transaction each, so `ALTER TABLE`'s exclusive lock isn't held through an index build.
+      // Every change is idempotent, so a retry after a partial failure finishes the rest (§9).
+      for (const text of statements) {
+        // pg honours a per-query `query_timeout`, though its types only declare it on the pool.
+        const query = { text, query_timeout: DDL_STATEMENT_TIMEOUT_MS + CLIENT_TIMEOUT_MARGIN_MS };
+        await this.transaction(store, async (client) => {
+          await client.query(`SET LOCAL lock_timeout = '${DDL_LOCK_TIMEOUT}'`);
+          await client.query(`SET LOCAL statement_timeout = ${DDL_STATEMENT_TIMEOUT_MS}`);
+          await client.query(query);
+        });
+      }
     } catch (error) {
       throw toStorageError('applySchema', error, { ddl: true });
     }
@@ -160,7 +181,7 @@ export class PostgresBackend implements StorageBackend {
   }
 
   private pool(store: StoreConfig): pg.Pool {
-    const config = poolConfig(store);
+    const config = poolConfig(store, this.statementTimeoutMs);
     const key = JSON.stringify([
       config.host,
       config.port,
@@ -185,6 +206,12 @@ export class PostgresBackend implements StorageBackend {
   ): Promise<void> {
     const client = await this.pool(store).connect();
     let broken: Error | undefined;
+    // The pool only listens to idle clients. Without this, losing the connection here would be an
+    // unhandled 'error' event that crashes the process. The running query also rejects with it.
+    const onError = (error: Error) => {
+      broken = error;
+    };
+    client.on('error', onError);
     try {
       await client.query('BEGIN');
       await run(client);
@@ -198,6 +225,7 @@ export class PostgresBackend implements StorageBackend {
       }
       throw error;
     } finally {
+      client.removeListener('error', onError);
       client.release(broken);
     }
   }

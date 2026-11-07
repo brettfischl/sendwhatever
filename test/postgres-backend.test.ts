@@ -371,15 +371,23 @@ describe('applySchema', () => {
     expect(error.retryable).toBe(false);
   });
 
-  it('applies all changes or none', async () => {
+  it('commits each change separately, so a retry finishes the rest', async () => {
     const store = await tableStore();
+    const fixed = { kind: 'create_table', table: 'later' } as const;
     await failure(
       backend.applySchema(store, [
-        { kind: 'create_table', table: 'kept_out' },
-        { kind: 'add_column', table: 'missing', column: 'x', type: 'string' },
+        { kind: 'create_table', table: 'committed' },
+        { kind: 'add_column', table: 'later', column: 'x', type: 'string' },
       ]),
     );
-    expect(await columnsOf(store, 'kept_out')).toEqual({});
+    expect(await columnsOf(store, 'committed')).toHaveProperty('id');
+
+    await backend.applySchema(store, [
+      { kind: 'create_table', table: 'committed' },
+      fixed,
+      { kind: 'add_column', table: 'later', column: 'x', type: 'string' },
+    ]);
+    expect(await columnsOf(store, 'later')).toHaveProperty('x');
   });
 
   it('gives up on a held table lock with a retryable error', { timeout: 15_000 }, async () => {
@@ -794,6 +802,64 @@ describe('write', () => {
   });
 
   describe('failures', () => {
+    /** Runs `check` while another connection holds an uncommitted insert of row `r`. */
+    async function withRowLocked(store: StoreConfig, check: () => Promise<void>) {
+      const holder = new pg.Client({ ...connection, ...credentials });
+      await holder.connect();
+      try {
+        await holder.query('BEGIN');
+        await holder.query(
+          `INSERT INTO ${pg.escapeIdentifier(store.namespace)}."item" ("id", "_event_seq")
+           VALUES ('r', 1)`,
+        );
+        await check();
+      } finally {
+        await holder.query('ROLLBACK');
+        await holder.end();
+      }
+    }
+
+    it('returns a retryable error, not a crash, when the connection dies mid-event', async () => {
+      const store = await tableStore('item', columns);
+      await withRowLocked(store, async () => {
+        const blocked = failure(put(store, { id: 'r', _event_seq: '2', a: 'x' }));
+
+        let killed = 0;
+        for (let attempt = 0; attempt < 100 && killed === 0; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const result = await admin.query(
+            `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+             WHERE wait_event_type = 'Lock' AND position($1 IN query) > 0`,
+            [store.namespace],
+          );
+          killed = result.rowCount ?? 0;
+        }
+        expect(killed).toBe(1);
+        expect((await blocked).retryable).toBe(true);
+      });
+
+      // The pool replaced the dead connection.
+      await put(store, { id: 'r', _event_seq: '2', a: 'x' });
+      expect(await readRow(store, 'item', 'r')).toMatchObject({ a: 'x' });
+    });
+
+    it('gives up on a blocked write with a retryable error', async () => {
+      const store = await tableStore('item', columns);
+      const impatient = new PostgresBackend({ statementTimeoutMs: 300 });
+      try {
+        await withRowLocked(store, async () => {
+          const error = await failure(
+            impatient.write(store, [
+              { table: 'item', columns, rows: [{ id: 'r', _event_seq: '2', a: 'x' }] },
+            ]),
+          );
+          expect(error.retryable).toBe(true);
+        });
+      } finally {
+        await impatient.close();
+      }
+    });
+
     it('rolls back the whole event when a later table fails', async () => {
       const store = await tableStore('item', columns);
       const error = await failure(
