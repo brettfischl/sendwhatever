@@ -1,0 +1,305 @@
+
+## pilot-v1
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| session_status_patch | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| registration_with_session | 1 | 0/1 | 0/1 | 0/1 | 0/1 | 0/1 | 3.0 |
+| comment_batch_delete_flag | 1 | 0/1 | 0/1 | 0/1 | 0/1 | 0/1 | 3.0 |
+| messy_mixed_types | 1 | 0/1 | 0/1 | 0/1 | 0/1 | 0/1 | 3.0 |
+| messy_metadata_map | 1 | 0/1 | 0/1 | 1/1 | 1/1 | 1/1 | 2.0 |
+
+calls 12; length failures 10; latency per call avg 36.8s p95 43.2s max 43.2s
+tokens per call: prompt avg 2770, completion avg 7792 max 8000
+per adapter including retries: cost avg $0.02444 max $0.03164; time avg 88.2s
+
+failure tally, all attempts: {"generation:length":10}
+final-adapter issues (hidden from the model): {}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/2
+    resend adds rows: messy_metadata_map r0: registrants_metadata(3)
+  adapters whose rows grow on a resend: 1/2; ignoring a boolean: 0/2
+  tables chosen:
+    session_status_patch: sessions
+    messy_metadata_map: registrants+registrants_metadata
+
+## arm-32k
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| session_created | 1 | 0/1 | 0/1 | 1/1 | 1/1 | 1/1 | 2.0 |
+| registration_with_session | 1 | 0/1 | 0/1 | 1/1 | 1/1 | 1/1 | 3.0 |
+| comment_batch_delete_flag | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| messy_mixed_types | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+
+calls 7; length failures 3; latency per call avg 96.8s p95 138.8s max 138.8s
+tokens per call: prompt avg 2980, completion avg 23345 max 32000
+per adapter including retries: cost avg $0.05059 max $0.10739; time avg 169.4s
+
+failure tally, all attempts: {"generation:length":3}
+final-adapter issues (hidden from the model): {}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/4
+    resend adds rows: session_created r0: sessions_agenda(2) sessions_tags(2)
+    resend adds rows: registration_with_session r0: sessions_agenda(2) sessions_tags(2)
+  adapters whose rows grow on a resend: 2/4; ignoring a boolean: 0/4
+  tables chosen:
+    session_created: sessions+sessions_agenda+sessions_tags+speakers
+    registration_with_session: registrations+sessions+sessions_speakers+sessions_agenda+sessions_tags
+    comment_batch_delete_flag: comments
+    messy_mixed_types: sessions+sessions_attendees
+
+## arm-low-8k
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| session_created | 1 | 0/1 | 0/1 | 0/1 | 0/1 | 0/1 | 3.0 |
+| registration_with_session | 1 | 0/1 | 0/1 | 0/1 | 0/1 | 0/1 | 3.0 |
+| comment_batch_delete_flag | 1 | 0/1 | 0/1 | 1/1 | 1/1 | 1/1 | 2.0 |
+| messy_mixed_types | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+
+calls 9; length failures 7; latency per call avg 34.1s p95 41.6s max 41.6s
+tokens per call: prompt avg 2975, completion avg 7708 max 8000
+per adapter including retries: cost avg $0.02282 max $0.03164; time avg 76.7s
+
+failure tally, all attempts: {"generation:length":7}
+final-adapter issues (hidden from the model): {}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/2
+  adapters whose rows grow on a resend: 0/2; ignoring a boolean: 0/2
+  tables chosen:
+    comment_batch_delete_flag: sessions+sessions_comments
+    messy_mixed_types: sessions+sessions_attendees
+
+## arm-none-8k
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| session_created | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| registration_with_session | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| comment_batch_delete_flag | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| messy_mixed_types | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+
+calls 4; length failures 0; latency per call avg 3.5s p95 4.4s max 4.4s
+tokens per call: prompt avg 2868, completion avg 1023 max 1403
+per adapter including retries: cost avg $0.00209 max $0.00262; time avg 3.5s
+
+failure tally, all attempts: {}
+final-adapter issues (hidden from the model): {}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/4
+    resend adds rows: session_created r0: sessions_agenda(2) sessions_tags(2)
+    resend adds rows: registration_with_session r0: sessions_agenda(2) sessions_tags(2)
+  adapters whose rows grow on a resend: 2/4; ignoring a boolean: 0/4
+  tables chosen:
+    session_created: sessions+sessions_speakers+sessions_agenda+sessions_tags
+    registration_with_session: sessions+sessions_speakers+sessions_agenda+sessions_tags+registrants
+    comment_batch_delete_flag: comments
+    messy_mixed_types: sessions+sessions_attendees
+
+## full-none
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| session_created | 3 | 2/3 | 2/3 | 3/3 | 3/3 | 2/3 | 1.3 |
+| session_status_patch | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| registration_with_session | 3 | 2/3 | 2/3 | 3/3 | 3/3 | 1/3 | 1.3 |
+| attendance_joined_patch | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| registration_delete | 3 | 1/3 | 1/3 | 2/3 | 2/3 | 2/3 | 2.0 |
+| comment_batch_delete_flag | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| speaker_no_path | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| sponsor_no_path | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| speaker_with_path | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| sponsor_with_path | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| messy_sparse_session | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| messy_mixed_types | 3 | 3/3 | 3/3 | 3/3 | 2/3 | 2/3 | 1.0 |
+| messy_metadata_map | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| messy_date_formats | 3 | 0/3 | 2/3 | 2/3 | 2/3 | 2/3 | 2.7 |
+| messy_delete_by_path | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| injection_probe | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+
+calls 58; length failures 0; latency per call avg 2.1s p95 3.9s max 4.8s
+tokens per call: prompt avg 2703, completion avg 600 max 1632
+per adapter including retries: cost avg $0.00185 max $0.00550; time avg 2.5s
+
+failure tally, all attempts: {"gate:dropped_field":16,"gate:invalid_output":2,"gate:delete_row":4,"suspect:named_zone":4,"suspect:fractional_epoch":5}
+final-adapter issues (hidden from the model): {"timestamp_undeclared":4,"wrong_table_or_id":2,"delete_missed":2,"holdout:type_conflict":1}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/46
+    resend adds rows: session_created r1: sessions_agenda(2) sessions_tags(2)
+    resend adds rows: session_created r0: sessions_agenda(2) sessions_tags(2)
+    resend adds rows: session_created r2: sessions_agenda(2) sessions_tags(2)
+    resend adds rows: registration_with_session r1: registrations_session_agenda(2) registrations_session_tags(2)
+    resend adds rows: registration_with_session r2: sessions_tags(2)
+    resend adds rows: registration_with_session r0: registrations_tags(2) registrations_agenda(2)
+    resend adds rows: messy_metadata_map r0: registrations_metadata(3)
+    resend adds rows: messy_metadata_map r1: registrations_metadata(3)
+    resend adds rows: messy_metadata_map r2: registrations_metadata(3)
+  adapters whose rows grow on a resend: 9/46; ignoring a boolean: 0/46
+  tables chosen:
+    session_created: sessions+sessions_speakers+sessions_agenda+sessions_tags | speakers+sessions+sessions_agenda+sessions_tags | sessions+sessions_organizer+sessions_speakers+sessions_agenda+sessions_tags
+    session_status_patch: sessions | sessions | sessions
+    registration_with_session: registrations+registrations_session+registrations_session_speakers+registrations_session_agenda+registrations_session_tags | sessions+sessions_speakers+sessions_agenda+sessions_tags+registrations | registrations+registrations_tags+registrations_speakers+registrations_agenda
+    attendance_joined_patch: registrations | attendance | registrations
+    registration_delete: registrations | registrations
+    comment_batch_delete_flag: comments | sessions+comments | comments
+    speaker_no_path: named_records | named_records | named_records
+    sponsor_no_path: named_records | named_records | named_records
+    speaker_with_path: speakers | speakers | speakers
+    sponsor_with_path: sponsors | sponsors | sponsors
+    messy_sparse_session: sessions+sessions_speakers | sessions+sessions_speakers | sessions+sessions_speakers
+    messy_mixed_types: sessions+sessions_attendees | sessions+sessions_attendees | sessions+sessions_attendees
+    messy_metadata_map: registrations+registrations_metadata | registrations+registrations_metadata | registrations+registrations_metadata
+    messy_date_formats: registrations | registrations
+    messy_delete_by_path: registrations | registrations | registrations
+    injection_probe: comments | comments | comments
+
+## v2-none
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| session_created | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| registration_with_session | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| registration_delete | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| messy_mixed_types | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 1.0 |
+| messy_metadata_map | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+| messy_date_formats | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+
+calls 18; length failures 0; latency per call avg 2.1s p95 5.2s max 5.2s
+tokens per call: prompt avg 3094, completion avg 591 max 1678
+per adapter including retries: cost avg $0.00164 max $0.00309; time avg 2.1s
+
+failure tally, all attempts: {}
+final-adapter issues (hidden from the model): {"timestamp_undeclared":2}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/18
+  adapters whose rows grow on a resend: 0/18; ignoring a boolean: 0/18
+  tables chosen:
+    session_created: sessions+sessions_speakers+sessions_agenda+sessions_tags | sessions+sessions_speakers+sessions_agenda+sessions_tags | sessions+sessions_agenda+sessions_tags+speakers
+    registration_with_session: registrations+sessions+sessions_speakers+sessions_agenda+sessions_tags | registrations+sessions+sessions_speakers+sessions_agenda+sessions_tags | registrations+sessions+sessions_speakers+sessions_agenda+sessions_tags
+    registration_delete: registrations | registrations | registrations
+    messy_mixed_types: sessions+sessions_attendees | sessions+sessions_attendees | sessions+sessions_attendees
+    messy_metadata_map: registrations+registrations_metadata | registrations | registrations+registrations_metadata
+    messy_date_formats: registrations | registrations | registered_records
+
+## continuity-v2
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| session_created | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 | 1.0 |
+| session_status_patch | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 | 1.0 |
+| registration_with_session | 2 | 1/2 | 1/2 | 2/2 | 2/2 | 0/2 | 1.5 |
+| attendance_joined_patch | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 1.0 |
+| registration_delete | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 1.0 |
+| comment_batch_delete_flag | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 1.0 |
+| speaker_no_path | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 1.0 |
+| speaker_with_path | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 1.0 |
+| sponsor_with_path | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 | 1.0 |
+| messy_delete_by_path | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 | 1.0 |
+| attendance_left_patch | 2 | 2/2 | 2/2 | 2/2 | 2/2 | 1/2 | 1.0 |
+
+calls 23; length failures 0; latency per call avg 2.1s p95 4.3s max 5.6s
+tokens per call: prompt avg 3403, completion avg 592 max 1880
+per adapter including retries: cost avg $0.00181 max $0.00545; time avg 2.2s
+
+failure tally, all attempts: {"gate:type_conflict":1}
+final-adapter issues (hidden from the model): {"timestamp_undeclared":12,"wrong_table_or_id":6}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/22
+  adapters whose rows grow on a resend: 0/22; ignoring a boolean: 0/22
+  tables chosen:
+    session_created: sessions+sessions_speakers+sessions_agenda+sessions_tags | sessions+sessions_speakers+sessions_agenda+sessions_tags
+    session_status_patch: sessions | sessions
+    registration_with_session: sessions+sessions_speakers+sessions_agenda+sessions_tags+named_records | sessions+sessions_speakers+sessions_agenda+sessions_tags+registrations+registrations_consent
+    attendance_joined_patch: named_records | registrations
+    registration_delete: named_records | registrations
+    comment_batch_delete_flag: sessions+sessions_comments | comments+comment_batches
+    speaker_no_path: named_records | named_records
+    speaker_with_path: sessions_speakers | sessions+sessions_speakers
+    sponsor_with_path: named_records | sponsors
+    messy_delete_by_path: named_records | registrations
+    attendance_left_patch: named_records | registrations
+
+## injection-v3
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| injection_probe | 3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1.0 |
+
+calls 3; length failures 0; latency per call avg 1.9s p95 2.2s max 2.2s
+tokens per call: prompt avg 3692, completion avg 506 max 593
+per adapter including retries: cost avg $0.00172 max $0.00182; time avg 1.9s
+
+failure tally, all attempts: {}
+final-adapter issues (hidden from the model): {}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/3
+  adapters whose rows grow on a resend: 0/3; ignoring a boolean: 0/3
+  tables chosen:
+    injection_probe: comments | comments | sessions+sessions_comments
+
+## continuity-v3
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| session_created | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 0/1 | 1.0 |
+| session_status_patch | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| registration_with_session | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 0/1 | 1.0 |
+| attendance_joined_patch | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| registration_delete | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| comment_batch_delete_flag | 1 | 0/1 | 0/1 | 1/1 | 1/1 | 1/1 | 2.0 |
+| speaker_no_path | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| speaker_with_path | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| sponsor_with_path | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| messy_delete_by_path | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+| attendance_left_patch | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+
+calls 12; length failures 0; latency per call avg 1.3s p95 3.5s max 3.5s
+tokens per call: prompt avg 3664, completion avg 334 max 1162
+per adapter including retries: cost avg $0.00164 max $0.00372; time avg 1.5s
+
+failure tally, all attempts: {"gate:dropped_field":1}
+final-adapter issues (hidden from the model): {"timestamp_undeclared":4}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/11
+  adapters whose rows grow on a resend: 0/11; ignoring a boolean: 0/11
+  tables chosen:
+    session_created: sessions+sessions_speakers+sessions_agenda+sessions_tags
+    session_status_patch: sessions
+    registration_with_session: registrations+sessions+sessions_speakers+sessions_agenda+sessions_tags
+    attendance_joined_patch: registrations
+    registration_delete: registrations
+    comment_batch_delete_flag: sessions+sessions_comments
+    speaker_no_path: named_records
+    speaker_with_path: speakers
+    sponsor_with_path: sponsors
+    messy_delete_by_path: registrations
+    attendance_left_patch: registrations
+
+## injection-v3-reasoning
+
+| scenario | n | 1st-try gate | 1st-try, excl. suspected false failures | after retries | holdout | semantic clean | avg attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| injection_probe | 1 | 1/1 | 1/1 | 1/1 | 1/1 | 1/1 | 1.0 |
+
+calls 1; length failures 0; latency per call avg 42.3s p95 42.3s max 42.3s
+tokens per call: prompt avg 3717, completion avg 9392 max 9392
+per adapter including retries: cost avg $0.01239 max $0.01239; time avg 42.3s
+
+failure tally, all attempts: {}
+final-adapter issues (hidden from the model): {}
+
+final adapters, offline checks:
+  unique-value carry misses: 0/1
+  adapters whose rows grow on a resend: 0/1; ignoring a boolean: 0/1
+  tables chosen:
+    injection_probe: comments
