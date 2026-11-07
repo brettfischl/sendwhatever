@@ -245,7 +245,7 @@ function parseStorage(value: unknown): Storage | undefined {
 
 function defaultStorage(deps: Pick<AppDeps, 'config'>): Storage {
   return {
-    connection: { host: 'localhost', port: deps.config.postgresPort, database: 'sw_data' },
+    connection: { host: 'localhost', port: deps.config.postgresPort, database: 'postgres' },
     credentials: { user: 'sw_data', password: deps.config.dataDbPassword },
   };
 }

@@ -12,11 +12,12 @@ CREATE ROLE sw_app LOGIN PASSWORD :'sw_app_password';
 CREATE ROLE sw_data LOGIN CREATEROLE CREATEDB PASSWORD :'sw_data_password';
 
 CREATE DATABASE sw_app OWNER sw_app;
-CREATE DATABASE sw_data OWNER sw_data;
 
 -- Databases allow CONNECT to PUBLIC by default. Owners keep access through ownership.
 REVOKE ALL ON DATABASE sw_app FROM PUBLIC;
-REVOKE ALL ON DATABASE sw_data FROM PUBLIC;
 REVOKE ALL ON DATABASE postgres FROM PUBLIC;
 REVOKE ALL ON DATABASE template1 FROM PUBLIC;
+
+-- `provision` runs from here. Each store then gets its own database.
+GRANT CONNECT ON DATABASE postgres TO sw_data;
 SQL

@@ -32,6 +32,6 @@ ensure_var FIREWORKS_API_KEY ""
 npm ci
 docker compose up -d --wait
 # The init scripts only run on a new volume, so an existing one needs this too.
-docker compose exec -T postgres psql -U postgres -q -v ON_ERROR_STOP=1 -c 'ALTER ROLE sw_data CREATEDB'
+docker compose exec -T postgres psql -U postgres -q -v ON_ERROR_STOP=1 -c 'ALTER ROLE sw_data CREATEDB' -c 'GRANT CONNECT ON DATABASE postgres TO sw_data'
 npm run migrate
 npm test

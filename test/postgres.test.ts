@@ -42,12 +42,12 @@ describe('local Postgres', () => {
     expect(names).toContain('0001_baseline');
   });
 
-  it('connects the sw_data role to sw_data', async () => {
+  it('connects the sw_data role to postgres, where provision runs', async () => {
     const db = await withClient(config.dataDatabaseUrl, async (client) => {
       const result = await client.query('SELECT current_database() AS db');
       return result.rows[0].db;
     });
-    expect(db).toBe('sw_data');
+    expect(db).toBe('postgres');
   });
 
   it('denies the sw_data role any connection to sw_app', async () => {
@@ -64,9 +64,9 @@ describe('local Postgres', () => {
     });
   });
 
-  it('denies the sw_app role any connection to sw_data', async () => {
+  it('denies the sw_app role any connection to postgres', async () => {
     await expect(
-      withClient(otherDatabase(config.appDatabaseUrl, 'sw_data'), async () => undefined),
+      withClient(otherDatabase(config.appDatabaseUrl, 'postgres'), async () => undefined),
     ).rejects.toMatchObject({ code: '42501' });
   });
 });

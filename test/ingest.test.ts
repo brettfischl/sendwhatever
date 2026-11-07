@@ -132,7 +132,7 @@ afterAll(async () => {
   const admin = new pg.Client({
     host: 'localhost',
     port: config.postgresPort,
-    database: 'sw_data',
+    database: 'postgres',
     user: 'sw_data',
     password: config.dataDbPassword,
   });
