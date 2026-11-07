@@ -111,12 +111,10 @@ async function count(table: 'events' | 'queue' | 'quarantine', account: Account)
   return rows[0].n;
 }
 
-let acct: Account;
 beforeAll(async () => {
   server = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' });
   await new Promise((resolve) => server.once('listening', resolve));
   port = (server.address() as AddressInfo).port;
-  acct = await createAccount();
 });
 
 afterAll(async () => {
@@ -209,6 +207,7 @@ describe('POST /ingest', () => {
     expect(empty.json.status).toBe('queued');
     const rows = await events(a);
     expect(rows.map((e) => e.op)).toEqual(['write', 'write', 'write', 'delete', 'delete']);
+    expect(rows[4]!.fingerprint).not.toBeNull();
     expect(rows[4]!.fingerprint).toBe(fingerprint(null));
     expect(rows[4]!.body.length).toBe(0);
     expect(await count('queue', a)).toBe(5);
@@ -251,6 +250,10 @@ describe('malformed bodies', () => {
     const a = await createAccount();
     const res = await send('DELETE', '/ingest/s', { account: a, body: 'null' });
     expect(res.json.status).toBe('malformed');
+    const { rows } = await appDb.query(`SELECT reason, detail FROM quarantine WHERE account_id = $1`, [
+      a.account_id,
+    ]);
+    expect(rows).toEqual([{ reason: 'malformed', detail: 'JSON scalar' }]);
   });
 
   it('quarantines a body nested too deep', async () => {
@@ -318,6 +321,14 @@ describe('auth, size and availability statuses', () => {
     expect(await count('events', a)).toBe(0);
   });
 
+  it('answers 401 for another account\'s key', async () => {
+    const a = await createAccount();
+    const b = await createAccount();
+    const res = await send('POST', '/ingest/x', { slug: b.slug, key: a.api_key, body: '{}' });
+    expect(res.status).toBe(401);
+    expect(await count('events', b)).toBe(0);
+  });
+
   it('answers 403 for a disabled account', async () => {
     const a = await createAccount();
     await appDb.query(`UPDATE accounts SET status = 'disabled' WHERE id = $1`, [a.account_id]);
@@ -352,6 +363,13 @@ describe('auth, size and availability statuses', () => {
     const { rowCount } = await appDb.query('SELECT 1 FROM accounts WHERE slug = $1', [slug]);
     expect(rowCount).toBe(0);
     expect(await count('events', a)).toBe(0);
+  });
+
+  it('does not mistake dots in the query string for dot segments', async () => {
+    const a = await createAccount();
+    const res = await send('POST', '/ingest/q?p=../b&r=/..', { account: a, body: '{}' });
+    expect(res.status).toBe(202);
+    expect((await events(a))[0]!.request.query).toBe('p=../b&r=/..');
   });
 
   it('answers 413 over the body limit', async () => {
