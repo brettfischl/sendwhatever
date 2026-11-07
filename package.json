@@ -10,6 +10,8 @@
     "setup": "bash scripts/setup.sh",
     "migrate": "tsx scripts/migrate.ts",
     "start": "tsx src/http/main.ts",
+    "worker": "node --import tsx src/worker/main.ts",
+    "dev": "node --import tsx scripts/dev.ts",
     "demo": "tsx demo/main.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsc --noEmit && vitest run"
