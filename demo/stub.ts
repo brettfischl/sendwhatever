@@ -11,6 +11,9 @@ export interface StubEvent {
   body: unknown;
 }
 
+/** The first response to each repeatable delivery, by source, op, and key. */
+type Accepted = Map<string, { status: string; event_id: string }>;
+
 export interface Stub {
   /** The stub's ingest route, such as http://127.0.0.1:43127/ingest. */
   url: string;
@@ -19,12 +22,13 @@ export interface Stub {
 
 /**
  * A stand-in for /ingest that follows the responses in PRD §13.1, on a real port so the site
- * sends the same HTTP requests it would send to the real service. It stores nothing. It accepts
- * any bearer token, and doesn't implement Idempotency-Key because the site doesn't send one.
+ * sends the same HTTP requests it would send to the real service. It stores nothing except what
+ * it needs to answer a repeated delivery. It accepts any API key, as a bearer token or ?key=.
  */
 export async function startStub(onEvent: (event: StubEvent) => void = () => {}): Promise<Stub> {
+  const accepted: Accepted = new Map();
   const server = createServer((req, res) => {
-    handle(req, res, onEvent).catch((error: unknown) => {
+    handle(req, res, onEvent, accepted).catch((error: unknown) => {
       if (error instanceof HttpError) {
         respond(res, error.status, { error: error.message });
       } else {
@@ -53,6 +57,7 @@ async function handle(
   req: IncomingMessage,
   res: ServerResponse,
   onEvent: (event: StubEvent) => void,
+  accepted: Accepted,
 ): Promise<void> {
   const path = (req.url ?? '/').split('?')[0] ?? '/';
   if (path !== '/ingest' && !path.startsWith('/ingest/')) {
@@ -64,13 +69,19 @@ async function handle(
     respond(res, 405, { error: 'method not allowed' });
     return;
   }
-  if (!/^Bearer \S/.test(req.headers.authorization ?? '')) {
+  const keyInUrl = new URL(req.url ?? '/', 'http://stub').searchParams.get('key');
+  if (!keyInUrl && !/^Bearer \S/.test(req.headers.authorization ?? '')) {
     respond(res, 401, { error: 'missing API key' });
     return;
   }
   const firstSegment = path.split('/')[2] ?? '';
   if (!isValidSegment(firstSegment)) {
     respond(res, 400, { error: 'invalid path segment' });
+    return;
+  }
+  const idempotencyKey = deliveryKey(req);
+  if (idempotencyKey !== undefined && Buffer.byteLength(idempotencyKey) > 255) {
+    respond(res, 400, { error: 'Idempotency-Key is too long' });
     return;
   }
 
@@ -85,11 +96,30 @@ async function handle(
     }
   }
 
+  const scope = `${firstSegment} ${method === 'DELETE' ? 'delete' : 'write'} ${idempotencyKey}`;
+  const original = idempotencyKey === undefined ? undefined : accepted.get(scope);
+  if (original) {
+    respond(res, 202, original);
+    return;
+  }
+
   const event_id = randomUUID();
   onEvent({ event_id, method, path, headers: req.headers, body });
   // Only a DELETE may have no body. A scalar is valid JSON, but malformed (PRD §5.3).
   const wellFormed = typeof body === 'object' && (body !== null || method === 'DELETE');
-  respond(res, 202, { status: wellFormed ? 'queued' : 'malformed', event_id });
+  const result = { status: wellFormed ? 'queued' : 'malformed', event_id };
+  if (idempotencyKey !== undefined) accepted.set(scope, result);
+  respond(res, 202, result);
+}
+
+/** PRD §6.2: a provider's delivery header counts as the key when none is sent. */
+function deliveryKey(req: IncomingMessage): string | undefined {
+  const { headers } = req;
+  return firstValue(headers['idempotency-key'] ?? headers['x-shopify-webhook-id'] ?? headers['x-github-delivery']);
+}
+
+function firstValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 /** PRD §6: at most 255 bytes, and it must percent-decode to valid UTF-8 with no NUL. */

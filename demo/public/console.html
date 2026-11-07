@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Console · SendWhatever</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+    <link rel="stylesheet" href="/assets/console.css" />
+  </head>
+  <body class="console">
+    <header class="console-bar">
+      <span class="console-brand">SendWhatever <span>console</span></span>
+      <div class="mode-tabs" role="tablist" aria-label="Console mode">
+        <button id="tab-arbitrary" type="button" role="tab" aria-controls="mode-arbitrary">Arbitrary JSON</button>
+        <button id="tab-webhooks" type="button" role="tab" aria-controls="mode-webhooks">Webhooks</button>
+      </div>
+      <div id="console-target" class="console-target"></div>
+      <a class="console-site-link" href="/">Beacon Live site</a>
+    </header>
+
+    <div class="console-grid">
+      <div class="console-work">
+        <div class="console-panes">
+        <section id="mode-arbitrary" class="mode" role="tabpanel" aria-labelledby="tab-arbitrary">
+          <form id="composer" class="composer" novalidate>
+            <div class="request-line">
+              <select id="method" aria-label="Method">
+                <option>POST</option>
+                <option>PUT</option>
+                <option>PATCH</option>
+                <option>DELETE</option>
+              </select>
+              <div class="path-field">
+                <span>/ingest/</span>
+                <input id="path" aria-label="Optional path after /ingest/" placeholder="optional path" autocomplete="off" spellcheck="false" />
+              </div>
+              <button id="send" type="submit" class="primary">Send</button>
+            </div>
+
+            <div id="examples" class="example-list" role="group" aria-label="Starter examples"></div>
+
+            <details id="headers" class="headers">
+              <summary id="headers-summary">Headers</summary>
+              <div id="header-rows" class="header-rows"></div>
+              <button id="add-header" type="button" class="link">Add a header</button>
+              <div id="locked-headers" class="locked-headers"></div>
+            </details>
+
+            <div class="editor-box">
+              <div id="editor-gutter" class="editor-gutter" aria-hidden="true"><div></div></div>
+              <div class="editor-body">
+                <pre id="editor-highlight" class="editor-highlight" aria-hidden="true"></pre>
+                <textarea id="editor" class="editor-input" aria-label="Request body" wrap="off" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+              </div>
+            </div>
+
+            <div class="editor-status">
+              <button id="validity" type="button" class="validity"></button>
+              <button id="send-anyway" type="button" class="send-anyway" hidden>Send anyway</button>
+              <button id="format" type="button">Format</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="mode-webhooks" class="mode" role="tabpanel" aria-labelledby="tab-webhooks" hidden>
+          <div id="webhooks-slot" class="console-slot"></div>
+        </section>
+
+        <section class="exchange" aria-label="Last request and response" aria-live="polite">
+          <div class="exchange-pane">
+            <h2>Request</h2>
+            <div id="exchange-request" class="exchange-body"><p class="exchange-empty">Nothing sent yet.</p></div>
+          </div>
+          <div class="exchange-pane">
+            <h2>Response <span id="exchange-status"></span></h2>
+            <div id="exchange-response" class="exchange-body"><p class="exchange-empty">The response appears here.</p></div>
+          </div>
+        </section>
+        </div>
+      </div>
+
+      <aside id="tables-slot" class="console-slot console-tables" aria-label="Live tables"></aside>
+    </div>
+
+    <div id="toast" class="toast" role="alert" hidden></div>
+    <script type="module" src="/assets/console.js"></script>
+  </body>
+</html>
