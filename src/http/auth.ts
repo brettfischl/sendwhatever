@@ -3,6 +3,9 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { hashApiKey } from '../secrets.js';
 import { HttpError, type AppEnv } from './deps.js';
 
+/** A key does one job: `ingest` only writes events and `read` only reads tables. */
+export type ApiKeyScope = 'ingest' | 'read';
+
 export interface Authenticated {
   accountId: string;
   slug: string;
@@ -15,7 +18,7 @@ export interface Authenticated {
  */
 export async function authenticate(
   c: Context<AppEnv>,
-  options: { allowQueryKey: boolean },
+  options: { allowQueryKey: boolean; scope?: ApiKeyScope },
 ): Promise<Authenticated> {
   const { appDb } = c.get('deps');
 
@@ -36,8 +39,9 @@ export async function authenticate(
     key !== undefined &&
     (
       await appDb.query(
-        'SELECT 1 FROM api_keys WHERE key_hash = $1 AND account_id = $2 AND revoked_at IS NULL',
-        [hashApiKey(key), account.id],
+        `SELECT 1 FROM api_keys
+          WHERE key_hash = $1 AND account_id = $2 AND scope = $3 AND revoked_at IS NULL`,
+        [hashApiKey(key), account.id, options.scope ?? 'ingest'],
       )
     ).rowCount === 1;
   if (!valid) throw new HttpError(401, 'invalid or missing API key');

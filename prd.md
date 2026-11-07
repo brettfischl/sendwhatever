@@ -426,6 +426,8 @@ CREATE TABLE api_keys (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id UUID NOT NULL REFERENCES accounts(id),
   key_hash TEXT NOT NULL UNIQUE,        -- the key itself is shown once and never stored
+  scope TEXT NOT NULL DEFAULT 'ingest'  -- 'ingest' or 'read' (§13.4)
+    CHECK (scope IN ('ingest', 'read')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   revoked_at TIMESTAMPTZ
 );
@@ -926,6 +928,10 @@ These routes are internal only and not routed through Caddy, with the same token
 
 Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on any `/ingest` route, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain. Only a hash of each key is stored. User logins and roles apply only to the admin interface (§19).
 
+A key has one scope. An `ingest` key works only on `/ingest`, and a `read` key works only on `/tables`, only as `Authorization: Bearer <key>`. Ingest keys can be held by webhook providers, so they must never be able to read data.
+
+`GET /tables/:table` lists live rows ordered by `id`, with `limit` (default 100, at most 1000) and `after` for paging, and `GET /tables/:table/:id` returns one. Both use the store's read-only login, leave out soft-deleted rows and platform columns, and only reach tables in the registry. Each table's OpenAPI document is generated from the registry and shown with Swagger UI in the admin, from the Schema page.
+
 ---
 
 ## 14. Infrastructure
@@ -947,13 +953,19 @@ Customers query the raw tables, including the platform columns `_event_seq` and 
 
 ### 14.2 Caddy Routing
 
-Caddy terminates TLS and routes subdomains to the platform services, passing the account slug as a header. Only `/ingest` routes and Custom API routes are public. Wildcard certificates require a DNS challenge provider.
+Caddy terminates TLS and routes subdomains to the platform services, passing the account slug as a header. Only `/ingest`, `/tables`, and Custom API routes are public. Wildcard certificates require a DNS challenge provider.
 
 Example Caddyfile:
 
 ```
 *.api.example.com {
   handle /ingest* {
+    reverse_proxy ingestion:3000 {
+      header_up X-Account-Slug {http.request.host.labels.3}
+    }
+  }
+
+  handle /tables* {
     reverse_proxy ingestion:3000 {
       header_up X-Account-Slug {http.request.host.labels.3}
     }
@@ -967,7 +979,7 @@ Example Caddyfile:
 }
 ```
 
-`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` routes are forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly.
+`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` and `/tables` routes are forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly.
 
 ### 14.3 sqld Backend Deployment (Later)
 

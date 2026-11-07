@@ -20,10 +20,11 @@ const TableLinks: FC<{ label: string; names: string[] }> = ({ label, names }) =>
   );
 
 export const SchemaRegion: FC<{
+  accountId: string;
   store: boolean;
   tables: SchemaTable[];
   counts: Map<string, number | null>;
-}> = ({ store, tables, counts }) => {
+}> = ({ accountId, store, tables, counts }) => {
   if (!store) return <p class="muted">This account has no active store yet.</p>;
   if (tables.length === 0) return <p class="muted">No tables yet. They appear as data arrives.</p>;
   const unavailable = [...counts.values()].every((n) => n === null);
@@ -35,6 +36,11 @@ export const SchemaRegion: FC<{
           <h2>
             <code>{table.name}</code> <span class="tag">{counts.get(table.name) ?? '—'} rows</span>
           </h2>
+          <p>
+            <a href={`/admin/accounts/${accountId}/schema/${encodeURIComponent(table.name)}/docs`}>
+              API docs
+            </a>
+          </p>
           <TableLinks label="Child of" names={table.parents} />
           <TableLinks label="Parent of" names={table.children} />
           <table class="grid">
@@ -73,7 +79,9 @@ export const schemaRoute: Handler<AdminEnv> = async (c) => {
         tables.map((t) => t.name),
       )
     : new Map<string, number | null>();
-  const region = <SchemaRegion store={!!store} tables={tables} counts={counts} />;
+  const region = (
+    <SchemaRegion accountId={account.id} store={!!store} tables={tables} counts={counts} />
+  );
   if (isFragmentRequest(c)) return c.html(region);
   return c.html(
     <Layout title="Schema" user={c.get('user')} csrf={c.get('csrf')}>
