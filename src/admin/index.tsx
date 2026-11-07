@@ -2,6 +2,7 @@ import { Hono, type Context, type ErrorHandler, type MiddlewareHandler } from 'h
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { csrf } from 'hono/csrf';
 import { HTTPException } from 'hono/http-exception';
+import { trimTrailingSlash } from 'hono/trailing-slash';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { HttpError, isConnectionError, type AppEnv } from '../http/deps.js';
 import {
@@ -63,6 +64,9 @@ function page(c: AdminContext, status: ContentfulStatusCode, message: string) {
   c.header('cache-control', 'no-store');
   return c.html(<ErrorPage status={status} message={message} user={c.get('user')} />, status);
 }
+
+// First, so it sees the final 404 from the catch-all: redirects GET/HEAD for a missing path ending in '/'.
+adminRoutes.use('*', trimTrailingSlash());
 
 // Layer 1 of CSRF: reject cross-origin form posts, including the login form, which has no session.
 adminRoutes.use('*', csrf());

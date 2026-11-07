@@ -336,6 +336,32 @@ describe('authorization', () => {
     expect((await app.request('/admin/accounts/not-a-uuid', { headers: s.headers })).status).toBe(404);
   });
 
+  it('redirects a trailing slash on an account page, and still 404s unknown paths', async () => {
+    const user = await newUser('slash');
+    const account = await newAccount('slash');
+    await addMember(account.id, user.id);
+    const s = await session(user.email);
+
+    const res = await app.request(`/admin/accounts/${account.id}/`, { headers: s.headers });
+    expect([301, 308]).toContain(res.status);
+    const location = res.headers.get('location')!;
+    expect(new URL(location, ORIGIN).pathname).toBe(`/admin/accounts/${account.id}`);
+    const followed = await app.request(location, { headers: s.headers });
+    expect(followed.status).toBe(200);
+
+    const missing = await app.request(`/admin/accounts/${account.id}/nope/`, { headers: s.headers });
+    expect([301, 308]).toContain(missing.status);
+    const missingFollowed = await app.request(missing.headers.get('location')!, { headers: s.headers });
+    expect(missingFollowed.status).toBe(404);
+    expect(await missingFollowed.text()).toContain('Page not found');
+
+    // /admin/ redirects to /admin, which renders.
+    const root = await app.request('/admin/', { headers: s.headers });
+    expect([301, 308]).toContain(root.status);
+    expect(new URL(root.headers.get('location')!, ORIGIN).pathname).toBe('/admin');
+    expect((await app.request('/admin', { headers: s.headers })).status).toBe(200);
+  });
+
   it('lets a member use their own account', async () => {
     const user = await newUser('own-page');
     const account = await newAccount('own-page');

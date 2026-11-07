@@ -108,6 +108,8 @@ describe('manage accounts', () => {
     const apiKey = /sw_[A-Za-z0-9_-]{20,}/.exec(html)![0];
     expect(html).toContain('shown once');
     expect(html).toContain('Read-only database login');
+    expect(html).toContain('Credentials page');
+    expect(html).not.toMatch(/database password.{0,40}cannot be shown again/);
 
     expect((await ingest(slug, apiKey)).status).toBe(202);
 
