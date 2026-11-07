@@ -12,11 +12,7 @@ import type { AdminEnv } from '../index.js';
 import { CodeBlock, DataTable, EmptyState, PageHeader, Section, StatusPill, type StatusVariant } from '../ui/index.js';
 import { Layout } from '../views.js';
 
-// Makes the first cell's link cover the whole row. The shared DataTable can't make a row clickable.
 const CSS = `
-.data-table tbody tr:has(.row-link) { position: relative; }
-.data-table .row-link::after { content: ''; position: absolute; inset: 0; }
-.data-table tbody tr:has(.row-link):hover { cursor: pointer; }
 .adapter-details { display: grid; grid-template-columns: max-content 1fr; gap: 0.35rem 1.25rem; margin: 0; }
 .adapter-details dt { color: var(--muted); }
 .adapter-details dd { margin: 0; overflow-wrap: anywhere; }
@@ -69,6 +65,7 @@ export const adaptersRoute: Handler<AdminEnv> = async (c) => {
         <DataTable
           caption="Adapters, one row per data shape"
           rows={shapes}
+          rowHref={(s) => `${base}/adapters/${s.currentId}`}
           empty={
             <EmptyState
               title="No adapters yet"
@@ -83,7 +80,7 @@ export const adaptersRoute: Handler<AdminEnv> = async (c) => {
             {
               header: 'Source',
               cell: (s) => (
-                <a class="row-link" href={`${base}/adapters/${s.currentId}`}>
+                <a href={`${base}/adapters/${s.currentId}`}>
                   {sourceLabel(s.source)}
                 </a>
               ),
