@@ -33,6 +33,8 @@ export interface FixtureSource {
 export const deliverySources = {
   apiVersion: SHOPIFY_API_VERSION,
   headers: 'https://shopify.dev/docs/apps/build/webhooks/delivery-structure',
+  /** Example header values, including the format of X-Shopify-Triggered-At. */
+  headerExamples: WEBHOOK_REFERENCE,
   deduplicationAndRetries: 'https://shopify.dev/docs/apps/build/webhooks/verify-deliveries',
   inferred: [
     {

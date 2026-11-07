@@ -20,7 +20,7 @@ function fakeHmac(topic: ShopifyTopic): string {
   return btoa(`fake-hmac:${topic}`.padEnd(32, '.'));
 }
 
-/** Shopify's documented format: UTC with six decimals, as in 2025-07-10T16:15:47.000000Z. */
+/** The format of the webhook reference's example: UTC with six decimals, 2025-07-10T16:15:47.000000Z. */
 function triggeredAt(date: Date): string {
   return date.toISOString().replace(/Z$/, '000Z');
 }
@@ -41,10 +41,13 @@ export function deliveryHeaders(
   };
 }
 
-/** A copy of the step as a new delivery: new webhook and event IDs, the same body. */
+/**
+ * A deep copy of the step as a new delivery: new webhook and event IDs, the same data. It's deep so
+ * that a caller editing the copy can't change the data sent under the stable delivery IDs.
+ */
 export function freshDelivery<S extends AnyShopifyStep>(step: S, now: Date = new Date()): S {
   return {
-    ...step,
+    ...structuredClone(step),
     headers: {
       ...step.headers,
       'X-Shopify-Webhook-Id': crypto.randomUUID(),
@@ -54,7 +57,13 @@ export function freshDelivery<S extends AnyShopifyStep>(step: S, now: Date = new
   };
 }
 
-/** A copy of the flow with every step a new delivery. */
+/** A copy of the flow with every step a new delivery, a second apart and ending at `now`. */
 export function freshFlow<F extends ShopifyFlow>(flow: F, now: Date = new Date()): F {
-  return { ...flow, steps: flow.steps.map((step) => freshDelivery(step, now)) };
+  const last = flow.steps.length - 1;
+  return {
+    ...flow,
+    steps: flow.steps.map((step, index) =>
+      freshDelivery(step, new Date(now.getTime() - (last - index) * 1000)),
+    ),
+  };
 }

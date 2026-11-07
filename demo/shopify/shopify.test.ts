@@ -178,6 +178,10 @@ describe('the order flow', () => {
       refund.refund_line_items.map((line) => cents(line.subtotal) + cents(line.total_tax)),
     );
     expect(sum(refund.transactions.map((transaction) => cents(transaction.amount)))).toBe(refunded);
+    for (const transaction of refund.transactions) {
+      // Shopify's IDs grow over time, so the payment refunded has the lower one.
+      expect(transaction.parent_id).toBeLessThan(transaction.id);
+    }
     for (const line of refund.refund_line_items) {
       expect(cents(line.subtotal_set.shop_money.amount)).toBe(cents(line.subtotal));
       expect(cents(line.total_tax_set.shop_money.amount)).toBe(cents(line.total_tax));
@@ -316,6 +320,18 @@ describe('fresh deliveries', () => {
       expect(orderFlow.steps.map((s) => s.headers['X-Shopify-Webhook-Id'])).not.toContain(id);
     }
     expect(fresh.steps[2].body.order_id).toBe(fresh.steps[0].body.id);
+    expect(fresh.steps.map((step) => step.headers['X-Shopify-Triggered-At'])).toEqual([
+      '2026-11-07T11:59:58.000000Z',
+      '2026-11-07T11:59:59.000000Z',
+      '2026-11-07T12:00:00.000000Z',
+    ]);
+  });
+
+  it("can be edited without touching the stable fixture's data", () => {
+    const fresh = freshDelivery(orderCreated, now);
+    const customer = fresh.body.customer;
+    if (customer) customer.first_name = 'Edited';
+    expect(orderCreated.body.customer?.first_name).toBe('Robin');
   });
 });
 
