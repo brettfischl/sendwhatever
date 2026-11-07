@@ -6,7 +6,8 @@ import { HttpError, isConnectionError, type AppDeps, type AppEnv } from './deps.
 import { accountRoutes } from './routes/accounts.js';
 import { ingestRoutes } from './routes/ingest.js';
 
-export const MAX_BODY_BYTES = 25 * 1024 * 1024;
+/** The most the adapter sandbox can reliably process (§13.1). Past about this, runs time out or run out of memory. */
+export const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 /** Builds the app from injected dependencies, so tests call `app.request()` with no port. */
 export function createApp(deps: AppDeps): Hono<AppEnv> {

@@ -82,6 +82,9 @@ function send(
       );
     });
     req.on('error', reject);
+    // After a 413 the server closes the socket while this is still writing. Once the response has
+    // arrived, nothing else listens on the socket, so its EPIPE would fail the whole run.
+    req.on('socket', (socket) => socket.on('error', () => {}));
     req.end(options.body);
   });
 }

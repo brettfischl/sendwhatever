@@ -408,7 +408,7 @@ describe('app-wide behavior', () => {
     }
   });
 
-  it('answers 413 for a body over 25 MB', async () => {
+  it('answers 413 over the body limit', async () => {
     const res = await app.request('/accounts', {
       method: 'POST',
       body: 'x'.repeat(MAX_BODY_BYTES + 1),
