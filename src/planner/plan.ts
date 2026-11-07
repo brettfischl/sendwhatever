@@ -10,7 +10,7 @@ import type {
   TableRow,
   TableRows,
 } from '../contracts/index.js';
-import { parseOpaquePath } from '../fingerprint/index.js';
+import { OpaquePathError, parseOpaquePath } from '../fingerprint/index.js';
 import { uuid5 } from './uuid5.js';
 
 export interface PlanContext {
@@ -117,8 +117,6 @@ interface ParentRow {
   table: string;
   id: string;
   idIsSupplied: boolean;
-  /** The next child position under this row, per child table. */
-  nextPosition: Map<string, number>;
 }
 
 /** Where an object sits in the output. */
@@ -162,13 +160,6 @@ class Planner {
 
     const timestamps = this.parseColumnTypes(columnTypes, table, foreignKey);
 
-    let position = 0;
-    if (positional) {
-      // Two `children` keys can name the same table, and their positions mustn't overlap.
-      position = parent.nextPosition.get(table) ?? 0;
-      parent.nextPosition.set(table, position + rows.length);
-    }
-
     if (rows.length === 0) return;
     const draft = this.draftFor(table);
     if (foreignKey !== undefined) this.addColumn(draft, table, foreignKey, 'string', true);
@@ -179,7 +170,9 @@ class Planner {
 
       const id = this.resolveId(row, table, () =>
         positional
-          ? uuid5(JSON.stringify(['child', parent.table, parent.id, table, position + index]))
+          ? // The key keeps apart two `children` keys that name the same table. Without it, their
+            // positions would overlap, or a longer first list would shift the second.
+            uuid5(JSON.stringify(['child', parent.table, parent.id, table, location.keys.at(-1), index]))
           : uuid5(JSON.stringify(['event', this.context.eventId, table, rowPath])),
       );
 
@@ -278,7 +271,7 @@ class Planner {
     if (children === undefined) return;
     if (!isRecord(children)) throw adapterError(`children must be an object on table ${quote(table)}`);
 
-    const parent: ParentRow = { table, id, idIsSupplied, nextPosition: new Map() };
+    const parent: ParentRow = { table, id, idIsSupplied };
     for (const [key, child] of Object.entries(children)) {
       const hint = isRecord(child) ? child.table : undefined;
       this.planObject(
@@ -297,12 +290,12 @@ class Planner {
     timestamps: Set<string>,
     keys: string[],
   ): LogicalType | null {
-    const where = quote(`${table}.${column}`);
     if (value === null) return null;
+    const where = () => quote(`${table}.${column}`);
 
     if (timestamps.has(column)) {
       if (typeof value !== 'string' || !isValidTimestamp(value)) {
-        throw adapterError(`${where} must be an ISO 8601 string with a timezone`);
+        throw adapterError(`${where()} must be an ISO 8601 string with a timezone`);
       }
       return 'timestamp';
     }
@@ -313,23 +306,24 @@ class Planner {
       case 'boolean':
         return 'boolean';
       case 'number':
-        assertFinite(value, where);
+        if (!Number.isFinite(value)) throw adapterError(`${where()} holds NaN or Infinity`);
         return 'number';
       case 'object':
         if (!this.isOpaque(keys, column)) {
-          throw adapterError(`${where} holds an object or array, but is not at a declared opaque path`);
+          throw adapterError(`${where()} holds an object or array, but is not at a declared opaque path`);
         }
-        assertJson(value, where);
+        if (!isJson(value)) throw adapterError(`${where()} holds a value JSON can't represent exactly`);
         return 'json';
       default:
-        throw adapterError(`${where} holds a ${typeof value}, which is not a column value`);
+        throw adapterError(`${where()} holds a ${typeof value}, which is not a column value`);
     }
   }
 
   /**
    * Opaque paths describe the payload, and an adapter can lift a field out of a wrapper like
-   * `data.object`. So the column's output path must match the end of a declared path, and a column
-   * on one table can't borrow a declaration made for a deeper one.
+   * `data.object`. So the column's output path must match the end of a declared path. That means a
+   * shallower column can use a deeper declaration of the same name, but a deeper column can't use a
+   * shallower one, and a renamed field matches nothing.
    */
   private isOpaque(keys: string[], column: string): boolean {
     const path = [...keys, column];
@@ -384,21 +378,12 @@ class Planner {
   }
 }
 
-function assertFinite(value: number, where: string): void {
-  if (!Number.isFinite(value)) throw adapterError(`${where} holds NaN or Infinity`);
-}
-
-function assertJson(value: unknown, where: string): void {
-  if (Array.isArray(value)) {
-    value.forEach((item) => assertJson(item, where));
-  } else if (typeof value === 'number') {
-    assertFinite(value, where);
-  } else if (typeof value === 'object' && value !== null) {
-    if (!isRecord(value)) throw adapterError(`${where} holds a value JSON can't represent`);
-    Object.values(value).forEach((item) => assertJson(item, where));
-  } else if (typeof value === 'bigint' || typeof value === 'function' || typeof value === 'symbol') {
-    throw adapterError(`${where} holds a value JSON can't represent`);
-  }
+/** Checks a whole json value. `undefined` is out too, since serializing it would change the value. */
+function isJson(value: unknown): boolean {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJson);
+  return isRecord(value) && Object.values(value).every(isJson);
 }
 
 function toPlan(drafts: Map<string, TableDraft>): WritePlan {
@@ -421,8 +406,8 @@ function toPlan(drafts: Map<string, TableDraft>): WritePlan {
 
 /** Turns one event's validated adapter output into schema changes and rows. */
 export function planWrite(output: AdapterResult, context: PlanContext): PlanResult {
-  const planner = new Planner(context);
   try {
+    const planner = new Planner(context);
     const objects: unknown[] = Array.isArray(output) ? output : [output];
     objects.forEach((object, index) => {
       const table = isRecord(object) ? object.table : undefined;
@@ -431,6 +416,9 @@ export function planWrite(output: AdapterResult, context: PlanContext): PlanResu
     return { ok: true, plan: toPlan(planner.drafts) };
   } catch (error) {
     if (error instanceof PlanFailure) return { ok: false, reason: error.reason, detail: error.message };
+    if (error instanceof OpaquePathError) {
+      return { ok: false, reason: 'adapter_error', detail: error.message };
+    }
     // Output that nests too deeply or refers to itself overflows the stack. A retry can't fix that.
     if (error instanceof RangeError) {
       return { ok: false, reason: 'adapter_error', detail: 'Output is nested too deeply' };

@@ -227,6 +227,23 @@ describe('deterministic IDs', () => {
     expect(rows.map((row) => row.city)).toEqual(['A', 'B']);
   });
 
+  it("doesn't shift a child's id when an earlier list naming the same table grows", () => {
+    const output = (homes: unknown[]) => ({
+      table: 'p',
+      rows: [
+        {
+          id: '1',
+          children: {
+            home: { table: 'address', rows: homes },
+            work: { table: 'address', rows: [{ city: 'W' }] },
+          },
+        },
+      ],
+    });
+    const idOfWork = (result: WritePlan) => rowsOf(result, 'address').find((row) => row.city === 'W')!.id;
+    expect(idOfWork(plan(output([{ city: 'A' }, { city: 'B' }])))).toBe(idOfWork(plan(output([{ city: 'A' }]))));
+  });
+
   it('keeps children apart when parents in different tables share an id', () => {
     const result = plan([
       { table: 'user', rows: [{ id: '1', children: { a: { table: 'address', rows: [{ x: 1 }] } } }] },
@@ -404,6 +421,21 @@ describe('a record named twice in one event', () => {
     const merged = (...rows: unknown[]) => onlyRow(plan({ table: 't', rows }), 't');
     expect(merged({ id: '1', _deleted: true }, { id: '1', x: 1 })).not.toHaveProperty('_deleted_at');
     expect(merged({ id: '1', x: 1 }, { id: '1', _deleted: true })._deleted_at).toBe(CONTEXT.receivedAt);
+  });
+});
+
+describe('a parent named twice in one event', () => {
+  it('updates its children by position, as a repeat in a later event would', () => {
+    const repeated = {
+      table: 't',
+      rows: [
+        { id: 'c1', children: { addr: { rows: [{ city: 'A', zip: '1' }] } } },
+        { id: 'c1', children: { addr: { rows: [{ city: 'B' }] } } },
+      ],
+    };
+    expect(rowsOf(plan(repeated), 't_addr')).toEqual([
+      expect.objectContaining({ city: 'B', zip: '1', t_id: 'c1' }),
+    ]);
   });
 });
 
@@ -686,6 +718,16 @@ describe('opaque paths', () => {
     expect(failure(one({ other: {} }), { opaquePaths: ['metadata'] }).reason).toBe('adapter_error');
   });
 
+  it('lets a shallower column use a deeper declaration of the same name', () => {
+    const result = plan(one({ metadata }), { opaquePaths: ['orders[].metadata'] });
+    expect(tableOf(result, 't').columns.metadata).toBe('json');
+  });
+
+  it('fails as adapter_error, not a throw, on an unparseable declared path', () => {
+    const result = failure(one({ x: 1 }), { opaquePaths: ['a..b'] });
+    expect(result.reason).toBe('adapter_error');
+  });
+
   it("doesn't let a child column use a declaration for a shallower field", () => {
     const output = { table: 'p', rows: [{ children: { c: { rows: [{ metadata }] } } }] };
     expect(failure(output, { opaquePaths: ['metadata'] }).reason).toBe('adapter_error');
@@ -697,6 +739,8 @@ describe('opaque paths', () => {
     ['Infinity', { a: { b: Number.POSITIVE_INFINITY } }],
     ['a nested Date', { a: new Date(0) }],
     ['a nested bigint', [1n]],
+    ['a nested undefined', { a: undefined }],
+    ['an undefined array element', [undefined]],
   ])('rejects %s inside a json value', (_name, value) => {
     expect(failure(one({ metadata: value }), { opaquePaths: ['metadata'] }).reason).toBe('adapter_error');
   });
