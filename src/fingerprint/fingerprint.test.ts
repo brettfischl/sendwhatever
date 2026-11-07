@@ -4,8 +4,10 @@ import {
   FINGERPRINT_VERSION,
   FingerprintDepthError,
   MAX_DEPTH,
+  OpaquePathError,
   fingerprint,
   fingerprintOfShape,
+  parseOpaquePath,
   shapeOf,
 } from './index.js';
 
@@ -197,4 +199,89 @@ describe('fingerprint', () => {
       );
     });
   });
+});
+
+describe('opaque paths', () => {
+  const opaque = (json: string, ...opaquePaths: string[]) =>
+    shapeOf(JSON.parse(json), { opaquePaths });
+  const opaqueFp = (json: string, ...opaquePaths: string[]) =>
+    fingerprint(JSON.parse(json), { opaquePaths });
+
+  it('replaces the value at the path with "opaque"', () => {
+    expect(opaque('{"id":"c1","metadata":{"plan":"pro"}}', 'metadata')).toBe(
+      '{"id":"string","metadata":"opaque"}',
+    );
+  });
+
+  it('gives varying keys under the path one fingerprint', () => {
+    const a = '{"id":"c1","metadata":{"plan":"pro"}}';
+    const b = '{"id":"c2","metadata":{"plan":"pro","referrer":"x","n":3}}';
+    expect(fp(a)).not.toBe(fp(b));
+    expect(opaqueFp(a, 'metadata')).toBe(opaqueFp(b, 'metadata'));
+  });
+
+  it('collapses any value type at the path', () => {
+    expect(opaque('{"m":"text"}', 'm')).toBe('{"m":"opaque"}');
+    expect(opaque('{"m":[1,"a"]}', 'm')).toBe('{"m":"opaque"}');
+  });
+
+  it('still skips null at the path, and keeps absent and present apart', () => {
+    expect(opaqueFp('{"id":1,"metadata":null}', 'metadata')).toBe(opaqueFp('{"id":1}', 'metadata'));
+    expect(opaqueFp('{"id":1,"metadata":{}}', 'metadata')).not.toBe(opaqueFp('{"id":1}', 'metadata'));
+  });
+
+  it('matches through arrays with []', () => {
+    expect(
+      opaque('{"orders":[{"sku":"a","metadata":{"x":1}},{"sku":"b","metadata":{"y":"z"}}]}', 'orders[].metadata'),
+    ).toBe('{"orders":[{"metadata":"opaque","sku":"string"}]}');
+  });
+
+  it('can collapse the elements of a named array', () => {
+    expect(opaque('{"tags":[1,"a",{"k":true}]}', 'tags[]')).toBe('{"tags":["opaque"]}');
+  });
+
+  it('addresses fields inside a top-level array with a leading []', () => {
+    expect(opaque('[{"id":1,"metadata":{"a":1}},{"id":2,"metadata":{"b":2}}]', '[].metadata')).toBe(
+      '[{"id":"number","metadata":"opaque"}]',
+    );
+  });
+
+  it('only collapses the exact path', () => {
+    expect(opaque('{"metadata":{"a":1},"other":{"metadata":{"b":2}}}', 'metadata')).toBe(
+      '{"metadata":"opaque","other":{"metadata":{"b":"number"}}}',
+    );
+  });
+
+  it('applies several paths at once', () => {
+    expect(opaque('{"a":{"x":1},"b":[{"c":{"y":2}}]}', 'a', 'b[].c')).toBe(
+      '{"a":"opaque","b":[{"c":"opaque"}]}',
+    );
+  });
+
+  it("doesn't descend into a collapsed value, so depth below it doesn't matter", () => {
+    let deep: unknown = {};
+    for (let i = 0; i < MAX_DEPTH + 10; i++) deep = { a: deep };
+    expect(shapeOf({ metadata: deep }, { opaquePaths: ['metadata'] })).toBe('{"metadata":"opaque"}');
+  });
+
+  it('leaves results unchanged with no paths', () => {
+    const json = '{"email":"a","profile":{"first_name":"b"},"orders":[{"sku":"c"}]}';
+    expect(opaque(json)).toBe(shape(json));
+    expect(fingerprint(JSON.parse(json), { opaquePaths: [] })).toBe(fp(json));
+  });
+
+  it('parses paths into segments', () => {
+    expect(parseOpaquePath('metadata')).toEqual(['metadata']);
+    expect(parseOpaquePath('orders[].metadata')).toEqual(['orders', '[]', 'metadata']);
+    expect(parseOpaquePath('grid[][]')).toEqual(['grid', '[]', '[]']);
+    expect(parseOpaquePath('[].metadata')).toEqual(['[]', 'metadata']);
+  });
+
+  it.each(['', '[]', '[][]', 'a..b', '.a', 'a.', 'a.[]', 'a[b]', 'a[]x', 'a[', 'a]'])(
+    'rejects %j',
+    (path) => {
+      expect(() => parseOpaquePath(path)).toThrow(OpaquePathError);
+      expect(() => shapeOf({}, { opaquePaths: [path] })).toThrow(OpaquePathError);
+    },
+  );
 });
