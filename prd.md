@@ -674,10 +674,9 @@ class StorageError extends Error {
 - `provision` and `applySchema` must be idempotent.
 - `write` receives all rows for one event and must be idempotent on `id`: writing the same row twice leaves one logical row.
 - `write` merges into existing rows, so a store's final state doesn't depend on the order workers ran in or on when a quarantined event is released:
-  - Each column is compared on its own: a write updates an included column only if its `_event_seq` is equal to or higher than that column's entry in `_column_seq`. Columns it doesn't include are left alone.
-  - So two out-of-order partial updates to different columns both land, and a late event never overrides a newer value for the same column.
-  - The row keeps the higher `_event_seq`. Deletes and child-set replacement (§8) follow the same rule, using the row's `_event_seq`.
-  - *MVP option:* skip `_column_seq` and compare only the row's `_event_seq`, with a lower write filling just the columns that are `NULL`. A late event can then miss a column that an older event set, until the next rebuild, which runs in order, corrects it.
+  - Each included column is updated only if the write's `_event_seq` is at least that column's entry in `_column_seq`; other columns are left alone. Out-of-order partial updates therefore all land, and a late event never overrides a newer value.
+  - The row keeps the higher `_event_seq`. Deletes and child-set replacement (§8) compare it.
+  - *MVP option:* skip `_column_seq`, compare only the row's `_event_seq`, and let a lower write fill just the `NULL` columns. A rebuild, which runs in order, corrects anything missed.
 - `provision` must also create read-only credentials limited to that store's namespace, and they must keep working for tables and columns added later.
 - `write` must classify every failure as retryable or permanent through `StorageError`.
 - Backends do not validate identifiers or types, since the platform has already done so, but must quote identifiers and bind values as parameters.
