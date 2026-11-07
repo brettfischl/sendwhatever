@@ -14,8 +14,11 @@ import {
   type AdapterRow,
 } from '../src/adapters/index.js';
 import { loadConfig } from '../src/config.js';
+import type { StorageBackend } from '../src/contracts/index.js';
+import { createApp } from '../src/http/app.js';
 import { fingerprint } from '../src/fingerprint/index.js';
 import { SandboxUnavailableError } from '../src/sandbox/index.js';
+import { generateApiKey, hashApiKey } from '../src/secrets.js';
 
 // These spawn many sandbox processes, so a loaded machine mustn't turn a slow run into a failure.
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
@@ -26,7 +29,14 @@ const pool = new pg.Pool({ connectionString: loadConfig().appDatabaseUrl });
 const accountId = randomUUID();
 const otherAccountId = randomUUID();
 const storeId = randomUUID();
-const app = createInternalRoutes({ pool, gate: GATE });
+const TOKEN = 'internal-test-token';
+const BEARER = `Bearer ${TOKEN}`;
+const routes = createInternalRoutes({ pool, token: TOKEN, gate: GATE });
+/** The routes as an operator calls them. The auth tests below call `routes` directly. */
+const app = {
+  request: (path: string, init: RequestInit = {}) =>
+    routes.request(path, { ...init, headers: { authorization: BEARER, ...(init.headers as Record<string, string>) } }),
+};
 
 const BODY = { id: 5, email: 'ada@example.com' };
 const SHAPE = fingerprint(BODY);
@@ -615,60 +625,184 @@ describe('GET /quarantine', () => {
   });
 });
 
-describe('keeping the routes internal when mounted beside public ones', () => {
-  const service = new Hono();
-  service.all('/ingest/*', (c) => c.json({ status: 'queued' }, 202));
-  service.route('/', createInternalRoutes({ pool, gate: GATE }));
+const config = loadConfig();
+const serverApp = (token: string | undefined, appDb: pg.Pool = pool) =>
+  createApp({ appDb, backend: {} as StorageBackend, config: { ...config, internalApiToken: token } });
 
-  const THROUGH_CADDY = { 'x-forwarded-for': '203.0.113.1', 'x-account-slug': 'acme' };
+describe('the internal token', () => {
+  const ID = randomUUID();
+  const ROUTES: [string, string, string?][] = [
+    ['POST', '/adapters', JSON.stringify({ account_id: accountId, op: 'write', fingerprint: SHAPE, code: V1 })],
+    ['POST', `/adapters/${ID}/test`],
+    ['POST', `/adapters/${ID}/activate`],
+    ['POST', `/adapters/${ID}/replay`],
+    ['GET', `/quarantine?account_id=${accountId}`],
+  ];
 
-  it('serves every route when mounted', async () => {
-    const adapter = await stored(V1);
-    expect((await service.request(`/adapters/${adapter.id}/test`, { method: 'POST' })).status).toBe(200);
-    expect((await service.request(`/quarantine?account_id=${accountId}`)).status).toBe(200);
+  async function expectRefused(target: { request(path: string, init: RequestInit): Response | Promise<Response> }, headers: Record<string, string>, suffix = '') {
+    for (const [method, path, body] of ROUTES) {
+      const url = path + (suffix && (path.includes('?') ? `&${suffix}` : `?${suffix}`));
+      const response = await target.request(url, { method, headers, ...(body ? { body } : {}) });
+      expect([path, response.status]).toEqual([path, 401]);
+      expect(response.headers.get('www-authenticate')).toBe('Bearer');
+    }
+    const created = await pool.query('SELECT 1 FROM adapters WHERE account_id = $1', [accountId]);
+    expect(created.rowCount).toBe(0);
+  }
+
+  it('lets the correct token through on every route', async () => {
+    for (const [method, path, body] of ROUTES) {
+      const response = await routes.request(path, { method, headers: { authorization: BEARER }, ...(body ? { body } : {}) });
+      expect([path, response.status]).toEqual([path, path === '/adapters' ? 201 : path.startsWith('/quarantine') ? 200 : 404]);
+    }
   });
 
-  it.each(Object.keys({ 'x-forwarded-for': 1, 'x-forwarded-host': 1, forwarded: 1, via: 1, 'x-account-slug': 1 }))(
-    'hides the routes from a request with %s',
+  it('accepts any case of the scheme', async () => {
+    const response = await routes.request(`/quarantine?account_id=${accountId}`, { headers: { authorization: `bearer ${TOKEN}` } });
+    expect(response.status).toBe(200);
+  });
+
+  it('refuses a missing token', () => expectRefused(routes, {}));
+
+  it.each([
+    ['a wrong token', `Bearer ${'x'.repeat(TOKEN.length)}`],
+    ['a prefix of the token', `Bearer ${TOKEN.slice(0, -1)}`],
+    ['the token with more added', `Bearer ${TOKEN}x`],
+    ['the wrong scheme', `Basic ${TOKEN}`],
+    ['the token with no scheme', TOKEN],
+    ['an empty bearer', 'Bearer '],
+    ['extra parts', `Bearer ${TOKEN} extra`],
+  ])('refuses %s', (_name, authorization) => expectRefused(routes, { authorization }));
+
+  it('refuses the token in the query string, which only /ingest allows for keys', () =>
+    expectRefused(routes, {}, `key=${TOKEN}`));
+
+  it('refuses a real customer API key', async () => {
+    const key = generateApiKey();
+    await pool.query('INSERT INTO api_keys (account_id, key_hash) VALUES ($1, $2)', [accountId, hashApiKey(key)]);
+    try {
+      await expectRefused(routes, { authorization: `Bearer ${key}` });
+    } finally {
+      await pool.query('DELETE FROM api_keys WHERE account_id = $1', [accountId]);
+    }
+  });
+
+  describe.each([
+    ['unset', undefined],
+    ['empty', ''],
+  ])('when it is %s', (_name, token) => {
+    const closed = createInternalRoutes({ pool, token });
+
+    it.each([
+      ['no header', {}],
+      ['a guess', { authorization: BEARER }],
+      ['the word undefined', { authorization: 'Bearer undefined' }],
+      ['an empty bearer', { authorization: 'Bearer ' }],
+    ])('refuses %s', (_guess, headers: Record<string, string>) => expectRefused(closed, headers));
+
+    it('refuses through the server too', () => expectRefused(serverApp(token), { authorization: BEARER }));
+  });
+
+  it('reads the token from INTERNAL_API_TOKEN, treating empty as unset', () => {
+    vi.stubEnv('INTERNAL_API_TOKEN', 'from-env');
+    expect(loadConfig().internalApiToken).toBe('from-env');
+    vi.stubEnv('INTERNAL_API_TOKEN', '');
+    expect(loadConfig().internalApiToken).toBeUndefined();
+    vi.unstubAllEnvs();
+  });
+});
+
+describe('mounted on the server', () => {
+  const server = serverApp(TOKEN);
+  const operator = { authorization: BEARER };
+
+  it('serves every route', async () => {
+    const adapter = await stored(V1);
+    expect((await server.request(`/adapters/${adapter.id}/test`, { method: 'POST', headers: operator })).status).toBe(200);
+    expect((await server.request(`/quarantine?account_id=${accountId}`, { headers: operator })).status).toBe(200);
+    expect((await server.request(`/adapters/${adapter.id}/replay`, { method: 'POST', headers: operator })).status).toBe(409);
+    const created = await server.request('/adapters', {
+      method: 'POST',
+      headers: operator,
+      body: JSON.stringify({ account_id: accountId, op: 'write', fingerprint: SHAPE, code: V1 }),
+    });
+    expect(created.status).toBe(201);
+  });
+
+  it('requires the token', async () => {
+    expect((await server.request(`/quarantine?account_id=${accountId}`)).status).toBe(401);
+  });
+
+  it('does not put the token on the other routes', async () => {
+    const health = await server.request('/healthz');
+    expect(health.status).toBe(200);
+    const ingest = await server.request('/ingest/users', { method: 'POST', body: '{}' });
+    expect(await ingest.json()).toEqual({ error: 'unknown account' });
+  });
+
+  it('refuses a dot segment that would reach these routes from /ingest', async () => {
+    const response = await server.fetch(
+      new Request('http://x/quarantine'),
+      { incoming: { url: `/ingest/../quarantine?account_id=${accountId}` } } as never,
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it.each(['x-forwarded-for', 'x-forwarded-host', 'forwarded', 'via', 'x-account-slug'])(
+    'hides the routes from a request with %s, even with the token',
     async (header) => {
       const adapter = await stored(V1);
-      const headers = { [header]: 'x' };
-      expect((await service.request(`/quarantine?account_id=${accountId}`, { headers })).status).toBe(404);
-      expect((await service.request('/adapters', { method: 'POST', headers, body: '{}' })).status).toBe(404);
+      const headers = { ...operator, [header]: 'x' };
+      expect((await server.request(`/quarantine?account_id=${accountId}`, { headers })).status).toBe(404);
+      expect((await server.request('/adapters', { method: 'POST', headers, body: '{}' })).status).toBe(404);
       for (const action of ['test', 'activate', 'replay']) {
-        const response = await service.request(`/adapters/${adapter.id}/${action}`, { method: 'POST', headers });
+        const response = await server.request(`/adapters/${adapter.id}/${action}`, { method: 'POST', headers });
         expect(response.status).toBe(404);
       }
     },
   );
 
-  it('does not spread the guard to the public routes', async () => {
-    const response = await service.request('/ingest/users', { method: 'POST', headers: THROUGH_CADDY, body: '{}' });
-    expect(response.status).toBe(202);
+  it('does not spread the proxy check to the public routes', async () => {
+    const response = await server.request('/ingest/users', {
+      method: 'POST',
+      headers: { 'x-forwarded-for': '203.0.113.1', 'x-account-slug': 'no-such-account' },
+      body: '{}',
+    });
+    expect(await response.json()).toEqual({ error: 'unknown account' });
   });
 });
 
 describe('failures', () => {
+  const headers = { authorization: BEARER };
+
   it('returns 503 when the sandbox cannot run, and changes nothing', async () => {
     await quarantined();
     const adapter = await stored(V1);
     const unavailable = createInternalRoutes({
       pool,
+      token: TOKEN,
       gate: { run: async () => { throw new SandboxUnavailableError('down'); } },
     });
     const service = new Hono();
     service.route('/', unavailable);
-    const response = await service.request(`/adapters/${adapter.id}/activate`, { method: 'POST' });
+    const response = await service.request(`/adapters/${adapter.id}/activate`, { method: 'POST', headers });
     expect(response.status).toBe(503);
     expect(await row(adapter.id)).toMatchObject({ active: false, validated_at: null });
   });
 
+  it('reports a database outage the way the server does', async () => {
+    const dead = new pg.Pool({ connectionString: 'postgres://nobody:secret@127.0.0.1:1/none', connectionTimeoutMillis: 200 });
+    const response = await serverApp(TOKEN, dead).request(`/quarantine?account_id=${accountId}`, { headers });
+    await dead.end();
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: 'database unavailable' });
+  });
+
   it('hides internal errors', async () => {
-    const broken = new pg.Pool({ connectionString: 'postgres://nobody:secret@127.0.0.1:1/none', connectionTimeoutMillis: 200 });
+    const failing = { query: async () => { throw new Error('secret detail'); } } as unknown as pg.Pool;
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const response = await createInternalRoutes({ pool: broken }).request(`/quarantine?account_id=${accountId}`);
+    const response = await serverApp(TOKEN, failing).request(`/quarantine?account_id=${accountId}`, { headers });
     log.mockRestore();
-    await broken.end();
     expect(response.status).toBe(500);
     expect(await response.text()).not.toContain('secret');
   });

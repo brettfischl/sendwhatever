@@ -415,3 +415,26 @@ describe('review findings', () => {
     expect(item?.path.length).toBeLessThanOrEqual(203);
   });
 });
+
+describe('inputs that failed correct adapters in the generator spike', () => {
+  const declared = (value: string) => ({ table: 't', column_types: { at: 'timestamp' }, rows: [{ at: value }] });
+
+  it('passes a named zone normalized correctly, and an offset control', () => {
+    for (const at of ['Nov 12, 2026 10:00 PST', 'Nov 12, 2026 10:00 -08:00']) {
+      expect(dropped({ at }, declared(new Date(at).toISOString()))).toEqual([]);
+    }
+  });
+
+  it.each([1794508200.123, 1794508200.1234, 1794508200.5678])('passes the fractional epoch %d', (at) => {
+    expect(dropped({ at }, declared(new Date(at * 1000).toISOString()))).toEqual([]);
+  });
+
+  it('passes the same customer with and without a null field, merged to one row', () => {
+    const data = { orders: [{ customer: { id: 'c1', name: 'Ada', fax: null } }, { customer: { id: 'c1', name: 'Ada' } }] };
+    expect(dropped(data, { table: 'customers', rows: [{ id: 'c1', name: 'Ada' }] })).toEqual([]);
+  });
+
+  it('still fails a dropped field hidden by an equal value', () => {
+    expect(dropped({ a: 'x', b: 'x' }, table({ a: 'x' }))).toEqual(['$.b']);
+  });
+});

@@ -436,3 +436,97 @@ describe('when the earlier version fails on a sample', () => {
     expect(calls.old).toBe(2);
   });
 });
+
+describe('a date-time in a column not declared timestamp', () => {
+  const AT = '2026-01-01T12:00:00Z';
+  const body = { at: AT };
+  const returning = (output: string) => `function adapt(p) { const at = p.data.at; return ${output}; }`;
+  const run = (output: string, input: Partial<GateInput> = {}, data: unknown = body) =>
+    gate(returning(output), { samples: [sample(data)], ...input });
+
+  it.each([
+    ['with a Z', '2026-01-01T12:00:00Z'],
+    ['with an offset', '2026-01-01T12:00:00+05:30'],
+    ['with an hours-only offset', '2026-01-01T12:00:00+05'],
+    ['with fractions', '2026-01-01T12:00:00.123456Z'],
+    ['with no seconds', '2026-01-01T12:00Z'],
+    ['with no zone', '2026-01-01T12:00:00'],
+  ])('rejects one %s, and says how to fix it', async (_name, at) => {
+    const result = await run(`{ table: 't', rows: [{ at }] }`, {}, { at });
+    expect(codes(result)).toEqual(['undeclared_timestamp']);
+    expect(result.failures[0]?.detail).toContain('t.at');
+    expect(result.failures[0]?.detail).toContain('column_types');
+  });
+
+  it('rejects one in a child table', async () => {
+    const result = await run(`{ table: 't', rows: [{ id: 'a', children: { c: { rows: [{ at }] } } }] }`);
+    expect(codes(result)).toEqual(['undeclared_timestamp']);
+    expect(result.failures[0]?.detail).toContain('t_c.at');
+  });
+
+  it('rejects one in a grandchild, or a later top-level table', async () => {
+    const nested = `{ table: 't', rows: [{ id: 'a', children: { c: { rows: [{ id: 'b', children: { d: { rows: [{ at }] } } }] } } }] }`;
+    expect(codes(await run(nested))).toEqual(['undeclared_timestamp']);
+    expect(codes(await run(`[{ table: 'a', rows: [] }, { table: 'b', rows: [{ at }] }]`))).toEqual(['undeclared_timestamp']);
+  });
+
+  it('finds one that only some rows hold', async () => {
+    const output = `{ table: 't', rows: [{ v: 'text' }, { v: at }] }`;
+    expect(codes(await run(output))).toEqual(['undeclared_timestamp']);
+  });
+
+  it('reports a column once, however many rows hold it', async () => {
+    const output = `{ table: 't', rows: [{ at }, { at: '2026-01-02T12:00:00Z' }] }`;
+    expect(codes(await run(output))).toEqual(['undeclared_timestamp']);
+  });
+
+  it('passes one declared in column_types, including on a child', async () => {
+    expect((await run(`{ table: 't', column_types: { at: 'timestamp' }, rows: [{ at }] }`)).ok).toBe(true);
+    const child = `{ table: 't', rows: [{ id: 'a', children: { c: { column_types: { at: 'timestamp' }, rows: [{ at }] } } }] }`;
+    expect((await run(child)).ok).toBe(true);
+  });
+
+  it.each([
+    ['a plain date', '2026-01-01'],
+    ['a year and month', '2026-01'],
+    ['a time alone', '12:00:00'],
+    ['a space instead of T', '2026-01-01 12:00:00'],
+    ['text that mentions one', 'due 2026-01-01T12:00:00Z'],
+    ['text after one', '2026-01-01T12:00:00Z!'],
+    ['ordinary text', 'hello'],
+    ['a number as text', '20260101'],
+  ])('leaves alone %s', async (_name, value) => {
+    expect((await run(`{ table: 't', rows: [{ v: p.data.v }] }`, {}, { v: value })).ok).toBe(true);
+  });
+
+  it('allows a column already registered as string, which could never be declared', async () => {
+    const result = await run(`{ table: 't', rows: [{ at }] }`, { registries: registry('t', { at: 'string' }) });
+    expect(result.ok).toBe(true);
+  });
+
+  it('still rejects a new column beside a registered one', async () => {
+    const result = await run(`{ table: 't', rows: [{ at }] }`, { registries: registry('t', { other: 'string' }) });
+    expect(codes(result)).toEqual(['undeclared_timestamp']);
+  });
+
+  it('does not reject an injected foreign key to a parent whose id is a date-time', async () => {
+    const output = `{ table: 't', rows: [{ id: at, children: { c: { rows: [{ v: 1 }] } } }] }`;
+    expect((await run(output)).ok).toBe(true);
+  });
+
+  it('does not apply to a json column at an opaque path', async () => {
+    const result = await gate(returning(`{ table: 't', rows: [{ metadata: p.data.metadata }] }`), {
+      samples: [sample({ metadata: AT })],
+    }, { opaquePaths: ['metadata'] });
+    expect(result.ok).toBe(true);
+  });
+
+  it('checks the sample it happens on, and caps the quoted value', async () => {
+    const output = `{ table: 't', rows: [{ v: p.data.v }] }`;
+    const result = await gate(returning(output), {
+      samples: [sample({ v: 'text' }, 'e1'), sample({ v: '2026-01-01T12:00:00.' + '1'.repeat(500) + 'Z' }, 'e2')],
+    });
+    expect(result.failures.map(({ code, eventId }) => [code, eventId])).toEqual([['undeclared_timestamp', 'e2']]);
+    expect(result.failures[0]?.detail.length).toBeLessThan(300);
+  });
+});

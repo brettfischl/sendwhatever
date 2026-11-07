@@ -1,6 +1,7 @@
-// The internal adapter and quarantine routes (PRD §13.1), as a Hono app that a service mounts with
-// `app.route('/', createInternalRoutes({ pool }))`. Handlers only translate HTTP; the logic is in
-// store.ts, so the generator can call it directly.
+// The internal adapter and quarantine routes (PRD §13.1), as a Hono app that the server mounts in
+// createApp. Handlers only translate HTTP; the logic is in store.ts, so the generator can call it
+// directly. These routes read payloads and activate adapter code, so they require a token.
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type pg from 'pg';
@@ -31,18 +32,38 @@ const MAX_PAGE_SIZE = 200;
 const PROXY_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'forwarded', 'via', 'x-account-slug'];
 
 /**
- * These routes are internal because Caddy forwards only `/ingest` to this service (§14.2). This guard
- * is the backstop if that routing is ever wrong: a request that came through a proxy gets a 404.
+ * Caddy forwards only `/ingest` to this service (§14.2). If that routing is ever wrong, a request that
+ * came through a proxy gets a 404, so the public internet can't even learn these routes exist.
  */
-const internalOnly: MiddlewareHandler = async (c, next) => {
+const notThroughProxy: MiddlewareHandler = async (c, next) => {
   if (PROXY_HEADERS.some((header) => c.req.header(header) !== undefined)) {
     return c.json({ error: 'not found' }, 404);
   }
   return next();
 };
 
+/** Hashing first gives equal lengths, which timingSafeEqual needs, and hides the token's length. */
+function tokensMatch(given: string, expected: string): boolean {
+  const hash = (text: string) => createHash('sha256').update(text, 'utf8').digest();
+  return timingSafeEqual(hash(given), hash(expected));
+}
+
+/** Fails closed: with no token configured, nothing can match. Customer API keys never get in. */
+function requireToken(token: string | undefined): MiddlewareHandler {
+  return async (c, next) => {
+    const given = /^Bearer\s+(\S+)$/i.exec(c.req.header('authorization')?.trim() ?? '')?.[1];
+    if (!token || given === undefined || !tokensMatch(given, token)) {
+      c.header('WWW-Authenticate', 'Bearer');
+      return c.json({ error: 'invalid or missing internal token' }, 401);
+    }
+    return next();
+  };
+}
+
 export interface InternalRoutesOptions {
   pool: pg.Pool;
+  /** `INTERNAL_API_TOKEN`. If this is unset, every request is refused. */
+  token: string | undefined;
   gate?: SampleOptions;
 }
 
@@ -116,20 +137,21 @@ function presentGate(gate: GateResult) {
   };
 }
 
-export function createInternalRoutes({ pool, gate }: InternalRoutesOptions): Hono {
+export function createInternalRoutes({ pool, token, gate }: InternalRoutesOptions): Hono {
   const app = new Hono();
 
   // Paths are named, not `*`. A mounted app's `*` middleware would also cover the parent's `/ingest`,
   // where every request comes through Caddy.
-  app.use('/adapters/*', internalOnly);
-  app.use('/quarantine', internalOnly);
+  for (const path of ['/adapters/*', '/quarantine']) {
+    app.use(path, notThroughProxy, requireToken(token));
+  }
 
+  // Anything else goes to the parent app, which knows how to report a database outage.
   app.onError((error, c) => {
     if (error instanceof SandboxUnavailableError) {
       return c.json({ error: 'The adapter sandbox is unavailable. Try again.' }, 503);
     }
-    console.error('Internal route failed:', error);
-    return c.json({ error: 'internal error' }, 500);
+    throw error;
   });
 
   app.post(

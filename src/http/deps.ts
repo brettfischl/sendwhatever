@@ -7,7 +7,7 @@ export interface AppDeps {
   /** The application database (sw_app). */
   appDb: pg.Pool;
   backend: StorageBackend;
-  config: Pick<Config, 'postgresPort' | 'dataDbPassword' | 'encryptionKey'>;
+  config: Pick<Config, 'postgresPort' | 'dataDbPassword' | 'encryptionKey' | 'internalApiToken'>;
 }
 
 /**

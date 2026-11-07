@@ -20,6 +20,8 @@ export type GateFailureCode =
   /** Rejected by the write planner: structure, identifiers, reserved names, or timestamps. */
   | 'invalid_output'
   | 'type_conflict'
+  /** A string column holds an ISO 8601 date-time, and isn't declared `timestamp`. */
+  | 'undeclared_timestamp'
   /** `op = delete`, and a top-level row lacks `_deleted: true` or an `id`, or there are no rows. */
   | 'delete_row'
   | 'dropped_field'
@@ -87,6 +89,9 @@ export interface GateResult {
 const PLAN_SEQ = '1';
 const PLAN_RECEIVED_AT = '1970-01-01T00:00:00.000Z';
 const MAX_DROPPED_REPORTED = 20;
+const MAX_QUOTED_VALUE_LENGTH = 40;
+/** A full date-time. It needs the time part, so plain dates and ordinary text never match. */
+const ISO_DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)?$/;
 const RETRIED_FAILURES: ReadonlySet<SandboxFailureKind> = new Set<SandboxFailureKind>(['timeout', 'memory_limit', 'crashed']);
 
 /** Rejects bad syntax and any path that would collapse the root or an array of the root (§7.1). */
@@ -159,6 +164,7 @@ async function checkSample(
 
   const failures: GateFailure[] = [
     ...checkTypes(planned.plan, registries, seenAcrossSamples),
+    ...checkUndeclaredTimestamps(planned.plan, registries),
     ...(adapter.op === 'delete' ? checkDeleteRows(first.output) : []),
     ...checkCarry(sample, planned.plan, adapter.opaquePaths),
   ];
@@ -219,6 +225,43 @@ function checkTypes(
       } else {
         seen.set(column, type);
       }
+    }
+  }
+  return failures;
+}
+
+/**
+ * Catches a date-time written as text, at any depth in the output. A column's type never changes, so
+ * once it registers as `string` the mistake is permanent.
+ *
+ * Two kinds of column are left alone. One already registered as `string` can't be declared `timestamp`
+ * without a type conflict, so rejecting it would leave the shape no way to pass. A value equal to a
+ * row's `id` is a reference, like an injected foreign key, which has to match that `id`.
+ */
+function checkUndeclaredTimestamps(
+  plan: WritePlan,
+  registries: ReadonlyMap<string, RegisteredColumns>,
+): GateFailure[] {
+  const ids = new Set(plan.tables.flatMap(({ rows }) => rows.map((row) => row.id)));
+  const registeredAsString = (table: string, column: string) =>
+    [...registries.values()].some((registered) => registered.get(table)?.get(column) === 'string');
+
+  const failures: GateFailure[] = [];
+  for (const { table, columns, rows } of plan.tables) {
+    for (const [column, type] of Object.entries(columns)) {
+      if (type !== 'string' || registeredAsString(table, column)) continue;
+      const found = rows
+        .map((row) => row[column])
+        .find((value) => typeof value === 'string' && ISO_DATE_TIME.test(value) && !ids.has(value));
+      if (found === undefined) continue;
+      const quoted = JSON.stringify(found).slice(0, MAX_QUOTED_VALUE_LENGTH);
+      failures.push({
+        code: 'undeclared_timestamp',
+        detail:
+          `${table}.${column} holds the date-time ${quoted}, but is not declared as a timestamp. Add ` +
+          `column_types: { ${column}: 'timestamp' } to that table, with values in ISO 8601 with a timezone. ` +
+          "A column's type can never change later.",
+      });
     }
   }
   return failures;
