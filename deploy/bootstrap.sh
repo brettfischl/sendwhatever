@@ -2,7 +2,7 @@
 # Takes a provisioned droplet (deploy/provision.sh) to the live service (PRD §21). Run as root.
 # Safe to re-run, and it never prints values. It adds missing .env variables and re-syncs INGEST_API_KEY with
 # the key `npm run seed` reports, so a hand-set INGEST_API_KEY is replaced. While .demo-seed.json holds an
-# active key, seed reuses it and .env doesn't change. With no seed file, seed mints a new key and the old one
+# active key, seed reuses it and .env isn't rewritten. With no seed file, seed mints a new key and the old one
 # stays active. It stops if seed refuses (for example, the demo account is disabled).
 # BRANCH applies to the first clone only; later runs pull whatever branch is checked out.
 #
@@ -30,10 +30,17 @@ main() {
 
   write_env
   install_postgres_config
-  in_app "npm ci --include=dev --no-audit --no-fund"
+  # Validate the new rules before anything else can fail, so a later error (npm ci, migrate) can't
+  # leave an unchecked pg_hba.conf installed and unreloaded.
   postgres_up
   reload_postgres_config
+  in_app "npm ci --include=dev --no-audit --no-fund"
   in_app "npm run migrate"
+  # main has no seed script, only develop does; without this npm prints an opaque error after Postgres is up.
+  if ! in_app "node -e 'process.exit(require(\"./package.json\").scripts?.seed ? 0 : 1)'"; then
+    echo "This checkout has no 'npm run seed'. It exists on develop: merge develop into the branch, or set BRANCH." >&2
+    exit 1
+  fi
   in_app "npm run seed"
   configure_demo_ingest
 
@@ -92,7 +99,7 @@ write_env() {
 # old line is replaced. INGEST_URL is set only after the key is in place: the demo refuses to start
 # with INGEST_URL and no INGEST_API_KEY, and Restart=always would loop on that.
 configure_demo_ingest() {
-  local env="$APP_DIR/.env" key
+  local env="$APP_DIR/.env" key old
   # Read as sw and never printed. The key reaches .env through a shell builtin, not a command line.
   key="$(as_sw node -e '
     try {
@@ -104,8 +111,13 @@ configure_demo_ingest() {
     echo "npm run seed left no usable apiKey in $APP_DIR/.demo-seed.json. Fix any seed error above, or run 'npm run seed' as sw in $APP_DIR, then re-run bootstrap." >&2
     exit 1
   fi
-  sed -i '/^INGEST_API_KEY=/d' "$env"
-  printf 'INGEST_API_KEY=%s\n' "$key" >> "$env"
+  # Rewritten only when it differs, so a re-run leaves .env byte-for-byte alone. Both values stay in
+  # shell variables: grep -F with the key would put it in a command line.
+  old="$(grep '^INGEST_API_KEY=' "$env" | cut -d= -f2- || true)"
+  if [ "$old" != "$key" ]; then
+    sed -i '/^INGEST_API_KEY=/d' "$env"
+    printf 'INGEST_API_KEY=%s\n' "$key" >> "$env"
+  fi
   # The demo sends through Caddy, so its request log shows the public endpoint.
   ensure_var INGEST_URL "https://app.$DOMAIN/ingest"
 }
