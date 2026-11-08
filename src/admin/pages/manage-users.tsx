@@ -4,7 +4,18 @@ import { HttpError } from '../../http/deps.js';
 import type { AdminEnv } from '../index.js';
 import type { SessionUser } from '../sessions.js';
 import { MIN_PASSWORD_LENGTH, UserError, createUser, disableUser, setPassword } from '../users.js';
+import {
+  Button,
+  Callout,
+  DataTable,
+  EmptyState,
+  LinkButton,
+  PageHeader,
+  Section,
+  StatusPill,
+} from '../ui/index.js';
 import { Form, Layout } from '../views.js';
+import { dateOnly } from './format.js';
 
 type Ctx = Context<AdminEnv>;
 type Status = 200 | 400 | 409;
@@ -36,51 +47,80 @@ const UsersPage: FC<{
   email?: string;
 }> = ({ user, csrf, users, error, email }) => (
   <Layout title="Manage users" user={user} csrf={csrf}>
-    <section class="card">
-      <h1>Manage users</h1>
-      <p class="muted">
-        <a href="/admin/manage/accounts">Accounts</a> | <a href="/admin/manage/users">Users</a>
-      </p>
-      {error && <p class="error">{error}</p>}
-      <ul class="list">
-        {users.map((u) => (
-          <li>
-            <span>
-              {u.email}
-              {u.is_super_admin && <span class="tag">super admin</span>}
-              {u.disabled_at && (
-                <span class="tag">disabled {u.disabled_at.toISOString().slice(0, 10)}</span>
-              )}
-            </span>
-            <span class="muted">
-              {u.account_count} account{u.account_count === 1 ? '' : 's'}
-            </span>
-            {!u.disabled_at && (
-              <Form action={`/admin/manage/users/${u.id}/disable`} csrf={csrf}>
-                <button class="quiet" type="submit">
-                  Disable
-                </button>
-              </Form>
-            )}
-            <Form action={`/admin/manage/users/${u.id}/password`} csrf={csrf}>
-              <input
-                type="password"
-                name="password"
-                placeholder="New password"
-                autocomplete="new-password"
-                required
-              />
-              <button class="quiet" type="submit">
-                Reset password
-              </button>
-            </Form>
-          </li>
-        ))}
-      </ul>
-    </section>
-    <section class="card narrow">
-      <h2>Create a user</h2>
-      <Form action="/admin/manage/users" csrf={csrf} class="form">
+    <PageHeader
+      breadcrumbs={[{ label: 'Manage' }, { label: 'Users' }]}
+      title="Manage users"
+      description="Create users, disable them, and reset passwords."
+      actions={
+        <LinkButton href="#create-user" variant="primary" icon="plus">
+          Create user
+        </LinkButton>
+      }
+    />
+    {error && <Callout variant="danger">{error}</Callout>}
+    <Section title="Users" flush>
+      <DataTable
+        rows={users}
+        caption="Users"
+        empty={<EmptyState icon="users" title="There are no users yet." />}
+        columns={[
+          {
+            header: 'Email',
+            cell: (u) => (
+              <>
+                {u.email}
+                {u.is_super_admin && <span class="tag">super admin</span>}
+              </>
+            ),
+          },
+          {
+            header: 'Status',
+            cell: (u) =>
+              u.disabled_at ? (
+                <StatusPill variant="neutral">disabled {dateOnly(u.disabled_at)}</StatusPill>
+              ) : (
+                <StatusPill variant="success">active</StatusPill>
+              ),
+          },
+          {
+            header: 'Accounts',
+            align: 'right',
+            cell: (u) => `${u.account_count} account${u.account_count === 1 ? '' : 's'}`,
+          },
+          {
+            header: <span class="visually-hidden">Actions</span>,
+            align: 'right',
+            cell: (u) => (
+              <div class="section-actions">
+                {!u.disabled_at && (
+                  <Form action={`/admin/manage/users/${u.id}/disable`} csrf={csrf}>
+                    <Button variant="secondary" size="sm">
+                      Disable
+                    </Button>
+                  </Form>
+                )}
+                <details>
+                  <summary class="btn btn-secondary btn-sm">Reset password</summary>
+                  <Form action={`/admin/manage/users/${u.id}/password`} csrf={csrf} class="form">
+                    <input
+                      type="password"
+                      name="password"
+                      placeholder="New password"
+                      aria-label={`New password for ${u.email}`}
+                      autocomplete="new-password"
+                      required
+                    />
+                    <Button size="sm">Reset password</Button>
+                  </Form>
+                </details>
+              </div>
+            ),
+          },
+        ]}
+      />
+    </Section>
+    <Section title="Create a user" id="create-user">
+      <Form action="/admin/manage/users" csrf={csrf} class="form narrow">
         <label>
           Email
           <input type="email" name="email" value={email ?? ''} required />
@@ -89,9 +129,9 @@ const UsersPage: FC<{
           Initial password (at least {MIN_PASSWORD_LENGTH} characters)
           <input type="password" name="password" autocomplete="new-password" required />
         </label>
-        <button type="submit">Create user</button>
+        <Button>Create user</Button>
       </Form>
-    </section>
+    </Section>
   </Layout>
 );
 

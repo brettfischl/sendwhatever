@@ -173,10 +173,11 @@ beforeAll(async () => {
   await fillStore(b, { secretb: [7, 0] });
 
   // Traffic for A: minute 0 has 3 orders writes and 1 pathless write, minute 1 has 2 writes and 1 delete.
-  for (const s of [5, 20, 40]) await addEvent(a.id, 'orders', 'write', s);
-  await addEvent(a.id, '', 'write', 10);
-  for (const s of [70, 80]) await addEvent(a.id, 'orders', 'write', s);
-  await addEvent(a.id, 'orders', 'delete', 90);
+  // Offsets sit mid-bucket (minute 0 at 1-10s, minute 1 at 62-75s) so a slow run can't cross a boundary.
+  for (const s of [2, 4, 6]) await addEvent(a.id, 'orders', 'write', s);
+  await addEvent(a.id, '', 'write', 8);
+  for (const s of [65, 72]) await addEvent(a.id, 'orders', 'write', s);
+  await addEvent(a.id, 'orders', 'delete', 75);
   await addEvent(a.id, 'orders', 'write', 2 * 3600); // outside the window
 
   // Pipeline for A.
@@ -366,7 +367,16 @@ describe('traffic page', () => {
     expect(html).toContain('1 min ago: 2 writes, 1 deletes');
     expect(html).toContain('(no path)');
     expect(html).toContain('orders');
-    expect(html).toContain('10 in the last hour');
+    expect(html).toContain('<h1>Traffic</h1>');
+    expect(html).toContain('aria-label="Breadcrumb"');
+    expect(html).toContain('<div class="stat-value">10</div>'); // requests
+    expect(html).toContain('<div class="stat-value">9</div>'); // writes
+    expect(html).toContain('<div class="stat-value">1</div>'); // deletes
+    expect(html).toContain('in the last hour');
+    expect(html).toContain('fill:var(--accent)');
+    expect(html).toContain('fill:var(--danger)');
+    expect(html).toContain('stroke:var(--border)');
+    expect(html).not.toMatch(/#2346d8|#d92d3f|#dfe4ea/i); // the chart uses design tokens
     expect(html).not.toContain('othersource');
   });
 });

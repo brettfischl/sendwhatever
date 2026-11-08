@@ -5,7 +5,20 @@ import { HttpError } from '../../http/deps.js';
 import type { AdminEnv } from '../index.js';
 import { publicDbAddress, type PublicDbAddress } from '../public-addresses.js';
 import type { SessionUser } from '../sessions.js';
-import { CopyBlock, Form, Layout } from '../views.js';
+import {
+  accountStatusVariant,
+  Button,
+  Callout,
+  CodeBlock,
+  DataTable,
+  EmptyState,
+  LinkButton,
+  PageHeader,
+  Section,
+  StatusPill,
+} from '../ui/index.js';
+import { Form, Layout } from '../views.js';
+import { dateOnly } from './format.js';
 
 type Ctx = Context<AdminEnv>;
 type Status = 200 | 400 | 404 | 409 | 503;
@@ -47,13 +60,7 @@ interface AccountDetail {
   created_at: Date;
 }
 
-const ManageNav: FC = () => (
-  <p class="muted">
-    <a href="/admin/manage/accounts">Accounts</a> | <a href="/admin/manage/users">Users</a>
-  </p>
-);
-
-const date = (d: Date) => d.toISOString().slice(0, 10);
+const MANAGE_ACCOUNTS = { label: 'Accounts', href: '/admin/manage/accounts' };
 
 const AccountsListPage: FC<{
   user: SessionUser;
@@ -63,36 +70,53 @@ const AccountsListPage: FC<{
   slug?: string;
 }> = ({ user, csrf, accounts, error, slug }) => (
   <Layout title="Manage accounts" user={user} csrf={csrf}>
-    <section class="card">
-      <h1>Manage accounts</h1>
-      <ManageNav />
-      {accounts.length === 0 ? (
-        <p class="muted">There are no accounts yet.</p>
-      ) : (
-        <ul class="list">
-          {accounts.map((a) => (
-            <li>
-              <a href={`/admin/manage/accounts/${a.id}`}>{a.slug}</a>
-              <span class="muted">
-                created {date(a.created_at)}, {a.member_count} member{a.member_count === 1 ? '' : 's'}
-              </span>
-              <span class={`tag ${a.status}`}>{a.status}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-    <section class="card narrow">
-      <h2>Create an account</h2>
-      {error && <p class="error">{error}</p>}
-      <Form action="/admin/manage/accounts" csrf={csrf} class="form">
+    <PageHeader
+      breadcrumbs={[{ label: 'Manage' }, { label: 'Accounts' }]}
+      title="Manage accounts"
+      description="Create accounts, disable them, and choose who is a member."
+      actions={
+        <LinkButton href="#create-account" variant="primary" icon="plus">
+          Create account
+        </LinkButton>
+      }
+    />
+    {error && <Callout variant="danger">{error}</Callout>}
+    <Section title="Accounts" flush>
+      <DataTable
+        rows={accounts}
+        caption="Accounts"
+        empty={
+          <EmptyState
+            icon="building"
+            title="There are no accounts yet."
+            description="Create the first account below."
+          />
+        }
+        columns={[
+          { header: 'Account', cell: (a) => <a href={`/admin/manage/accounts/${a.id}`}>{a.slug}</a> },
+          {
+            header: 'Status',
+            width: '160px',
+            cell: (a) => <StatusPill variant={accountStatusVariant(a.status)}>{a.status}</StatusPill>,
+          },
+          { header: 'Created', cell: (a) => dateOnly(a.created_at) },
+          {
+            header: 'Members',
+            align: 'right',
+            cell: (a) => `${a.member_count} member${a.member_count === 1 ? '' : 's'}`,
+          },
+        ]}
+      />
+    </Section>
+    <Section title="Create an account" id="create-account">
+      <Form action="/admin/manage/accounts" csrf={csrf} class="form narrow">
         <label>
           Slug
           <input type="text" name="slug" value={slug ?? ''} required />
         </label>
-        <button type="submit">Create account</button>
+        <Button>Create account</Button>
       </Form>
-    </section>
+    </Section>
   </Layout>
 );
 
@@ -104,40 +128,43 @@ const AccountCreatedPage: FC<{
   db: PublicDbAddress;
 }> = ({ user, csrf, created, db }) => (
   <Layout title="Account created" user={user} csrf={csrf}>
-    <section class="card">
-      <h1>Account {created.slug} created</h1>
-      <p class="error">
-        The API key is shown once and cannot be shown again, so copy it now. Members of the account can reveal the read-only database login later on its Credentials page.
-      </p>
-      <h2>API key</h2>
-      <CopyBlock value={created.apiKey} label="API key" />
-      <h2>Read-only database login</h2>
-      <ul class="list">
-        <li>
-          Host <code>{db.host}</code>
-        </li>
-        <li>
-          Port <code>{String(db.port)}</code>
-        </li>
-        {db.requireSsl && (
-          <li>
-            SSL mode <code>require</code>
-          </li>
-        )}
-        <li>
-          Database <code>{String(created.database.database)}</code>
-        </li>
-        <li>
-          User <code>{String(created.database.user)}</code>
-        </li>
-        <li>
-          Password <CopyBlock value={String(created.database.password)} label="password" />
-        </li>
-      </ul>
-      <p>
-        <a href={`/admin/manage/accounts/${created.accountId}`}>Go to the account</a>
-      </p>
-    </section>
+    <PageHeader
+      breadcrumbs={[{ label: 'Manage' }, MANAGE_ACCOUNTS, { label: created.slug }]}
+      title={`Account ${created.slug} created`}
+      description="Save the API key before you leave this page."
+      actions={
+        <LinkButton href={`/admin/manage/accounts/${created.accountId}`} icon="chevron-right">
+          Go to the account
+        </LinkButton>
+      }
+    />
+    <Callout variant="warning" title="Copy it now">
+      The API key is shown once and cannot be shown again, so copy it now. Members of the account can reveal the
+      read-only database login later on its Credentials page.
+    </Callout>
+    <Section title="API key">
+      <CodeBlock value={created.apiKey} label="API key" />
+    </Section>
+    <Section title="Read-only database login" flush>
+      <DataTable
+        caption="Login details"
+        rows={[
+          { label: 'Host', value: <code>{db.host}</code> },
+          { label: 'Port', value: <code>{String(db.port)}</code> },
+          ...(db.requireSsl ? [{ label: 'SSL mode', value: <code>require</code> }] : []),
+          { label: 'Database', value: <code>{String(created.database.database)}</code> },
+          { label: 'User', value: <code>{String(created.database.user)}</code> },
+          {
+            label: 'Password',
+            value: <CodeBlock value={String(created.database.password)} label="password" />,
+          },
+        ]}
+        columns={[
+          { header: 'Field', width: '140px', cell: (r) => r.label },
+          { header: 'Value', cell: (r) => r.value },
+        ]}
+      />
+    </Section>
   </Layout>
 );
 
@@ -151,67 +178,75 @@ const AccountDetailPage: FC<{
   const base = `/admin/manage/accounts/${account.id}`;
   return (
     <Layout title={account.slug} user={user} csrf={csrf}>
-      <section class="card">
-        <h1>{account.slug}</h1>
-        <ManageNav />
-        <p>
-          <span class={`tag ${account.status}`}>{account.status}</span>{' '}
-          <span class="muted">created {date(account.created_at)}</span>
-        </p>
-        {error && <p class="error">{error}</p>}
-        {account.status === 'active' && (
-          <Form action={`${base}/disable`} csrf={csrf}>
-            <button class="quiet" type="submit">
-              Disable account
-            </button>
-          </Form>
-        )}
-        {account.status === 'disabled' && (
-          <Form action={`${base}/enable`} csrf={csrf}>
-            <button class="quiet" type="submit">
-              Re-enable account
-            </button>
-          </Form>
-        )}
-        {account.status === 'provisioning' && (
-          <p class="muted">Still provisioning. It cannot be disabled until it is active.</p>
-        )}
-        <p>
-          <a href={`/admin/accounts/${account.id}`}>Open the account's pages</a>
-        </p>
-      </section>
-      <section class="card">
-        <h2>Members</h2>
-        {members.length === 0 ? (
-          <p class="muted">No members.</p>
-        ) : (
-          <ul class="list">
-            {members.map((m) => (
-              <li>
-                <span>
+      <PageHeader
+        breadcrumbs={[{ label: 'Manage' }, MANAGE_ACCOUNTS, { label: account.slug }]}
+        title={
+          <>
+            {account.slug}
+            <StatusPill variant={accountStatusVariant(account.status)}>{account.status}</StatusPill>
+          </>
+        }
+        description={`Created ${dateOnly(account.created_at)}.`}
+        actions={
+          <>
+            <LinkButton href={`/admin/accounts/${account.id}`} icon="external-link">
+              Open the account's pages
+            </LinkButton>
+            {account.status === 'active' && (
+              <Form action={`${base}/disable`} csrf={csrf}>
+                <Button variant="danger">Disable account</Button>
+              </Form>
+            )}
+            {account.status === 'disabled' && (
+              <Form action={`${base}/enable`} csrf={csrf}>
+                <Button variant="secondary">Re-enable account</Button>
+              </Form>
+            )}
+          </>
+        }
+      />
+      {error && <Callout variant="danger">{error}</Callout>}
+      {account.status === 'provisioning' && (
+        <Callout variant="info">Still provisioning. It cannot be disabled until it is active.</Callout>
+      )}
+      <Section title="Members" flush>
+        <DataTable
+          rows={members}
+          caption="Members"
+          empty={<EmptyState icon="users" title="No members." description="Add a member below." />}
+          columns={[
+            {
+              header: 'Email',
+              cell: (m) => (
+                <>
                   {m.email}
-                  {m.disabled_at ? ' (disabled)' : ''}
-                </span>
+                  {m.disabled_at && <StatusPill variant="neutral">disabled</StatusPill>}
+                </>
+              ),
+            },
+            {
+              header: <span class="visually-hidden">Actions</span>,
+              align: 'right',
+              cell: (m) => (
                 <Form action={`${base}/members/${m.id}/remove`} csrf={csrf}>
-                  <button class="quiet" type="submit">
+                  <Button variant="secondary" size="sm">
                     Remove
-                  </button>
+                  </Button>
                 </Form>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-      <section class="card narrow">
-        <h2>Add a member</h2>
-        <Form action={`${base}/members`} csrf={csrf} class="form">
+              ),
+            },
+          ]}
+        />
+      </Section>
+      <Section title="Add a member">
+        <Form action={`${base}/members`} csrf={csrf} class="form narrow">
           <label>
             User email
             <input type="email" name="email" required />
           </label>
-          <button type="submit">Add member</button>
+          <Button>Add member</Button>
         </Form>
-      </section>
+      </Section>
     </Layout>
   );
 };
