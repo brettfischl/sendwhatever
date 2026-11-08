@@ -21,7 +21,9 @@ install_postgres_config() {
   local dir="$STATE_DIR/postgres"
   install -d -m 0750 "$dir"
   if [ ! -f "$dir/server.key" ]; then
+    # The SAN matters because modern clients ignore the CN. Existing certs are left as they are.
     openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=db.$DOMAIN" \
+      -addext "subjectAltName=DNS:db.$DOMAIN" \
       -keyout "$dir/server.key" -out "$dir/server.crt" 2>/dev/null
   fi
   install -m 0640 "$APP_DIR/deploy/pg_hba.conf" "$dir/pg_hba.conf"
