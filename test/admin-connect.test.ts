@@ -126,7 +126,8 @@ describe('connect page', () => {
     expect(html).toContain(`http://localhost:${config.port}/ingest`);
     expect(html).toContain(`X-Account-Slug: ${acct.slug}`);
     expect(html).toContain('Bearer $API_KEY');
-    expect(html).toContain('/ingest/&lt;source&gt;?key=&lt;API_KEY&gt;');
+    expect(html).toContain(`http://localhost:${config.port}/ingest/&lt;source&gt;?key=&lt;API_KEY&gt;`);
+    expect(html).not.toContain('your-api-domain');
     expect(html).toContain(
       `postgres://${acct.database.user}@localhost:${config.postgresPort}/${acct.database.database}`,
     );
