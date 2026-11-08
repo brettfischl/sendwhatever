@@ -20,6 +20,7 @@ main() {
     exit 0
   fi
 
+  require_deploy_branch
   as_sw git -C "$APP_DIR" pull --ff-only
   # Re-source in case the pull changed it.
   # shellcheck source=deploy/lib.sh

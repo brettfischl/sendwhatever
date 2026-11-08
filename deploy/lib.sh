@@ -36,6 +36,19 @@ install_postgres_config() {
   chmod 0600 "$dir/server.key"
 }
 
+# update.sh pulls whatever branch is checked out, so a push-to-main deploy on a box that is still on a
+# feature branch would deploy that branch while the workflow goes green. Fails unless the box is on
+# DEPLOY_BRANCH (default main); a detached HEAD has no branch name and fails too. The box's current
+# update.sh predates this function, so its first run after this lands does not run the guard.
+require_deploy_branch() {
+  local want="${DEPLOY_BRANCH:-main}" have
+  have="$(as_sw git -C "$APP_DIR" branch --show-current)"
+  if [ "$have" != "$want" ]; then
+    echo "The box is on '${have:-detached HEAD}', but deploys follow $want. Set DEPLOY_BRANCH=<branch> to deploy this branch deliberately." >&2
+    exit 1
+  fi
+}
+
 install_units() {
   local unit
   for unit in "${UNITS[@]}"; do
