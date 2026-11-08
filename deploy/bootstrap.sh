@@ -28,12 +28,12 @@ main() {
   in_app "npm ci --include=dev --no-audit --no-fund"
   postgres_up
   in_app "npm run migrate"
-  if has_npm_script seed; then in_app "npm run seed"; fi
+  in_app "npm run seed"
+  configure_demo_ingest
 
   install_units
   systemctl restart sw-server
   wait_for_server
-  ensure_demo_account
   systemctl restart sw-worker sw-generator sw-demo
 
   ensure_demo_basic_auth
@@ -71,8 +71,7 @@ write_env() {
   ensure_var PUBLIC_BASE_URL "https://app.$DOMAIN"
   ensure_var PUBLIC_DB_HOST "db.$DOMAIN"
   ensure_var PUBLIC_DB_PORT 5432
-  # The demo sends through Caddy, so its request log shows the public endpoint.
-  ensure_var INGEST_URL "https://app.$DOMAIN/ingest"
+  # INGEST_URL is set later by configure_demo_ingest, once the API key is in place.
   ensure_var ACCOUNT_SLUG demo
   local app_password
   app_password="$(grep '^SW_APP_DB_PASSWORD=' "$env" | cut -d= -f2-)"
@@ -80,22 +79,28 @@ write_env() {
   # FIREWORKS_API_KEY is added by hand (deploy/README.md). Until then the generator restarts in a loop.
 }
 
-# Until `npm run seed` exists (sw-ddd.7), create the demo account through the internal route.
-# Its API key is shown once, so it goes straight into .env.
-ensure_demo_account() {
-  local env="$APP_DIR/.env" token response key
-  if grep -q '^INGEST_API_KEY=.' "$env"; then return 0; fi
-  token="$(grep '^INTERNAL_API_TOKEN=' "$env" | cut -d= -f2-)"
-  response="$(curl -sS -X POST http://127.0.0.1:3000/accounts \
-    -H "Authorization: Bearer $token" -H 'content-type: application/json' -d '{"slug":"demo"}')"
-  key="$(printf '%s' "$response" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).api_key??"")}catch{}})')"
+# `npm run seed` is the only thing that creates the demo account, because it also writes
+# .demo-seed.json and a second path would leave the two disagreeing. Its API key can't be read back
+# from the database, so it's copied from that file into .env. A rebuilt volume gives a new key, so any
+# old line is replaced. INGEST_URL is set only after the key is in place: the demo refuses to start
+# with INGEST_URL and no INGEST_API_KEY, and Restart=always would loop on that.
+configure_demo_ingest() {
+  local env="$APP_DIR/.env" key
+  # Read as sw and never printed. The key reaches .env through a shell builtin, not a command line.
+  key="$(as_sw node -e '
+    try {
+      const k = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).apiKey;
+      if (typeof k === "string") process.stdout.write(k);
+    } catch {}
+  ' "$APP_DIR/.demo-seed.json")" || key=""
   if [ -z "$key" ]; then
-    echo "Couldn't create the demo account, so the demo site uses its stub. It may already exist without a saved key." >&2
-    return 0
+    echo "npm run seed left no usable apiKey in $APP_DIR/.demo-seed.json. Fix any seed error above, or run 'npm run seed' as sw in $APP_DIR, then re-run bootstrap." >&2
+    exit 1
   fi
   sed -i '/^INGEST_API_KEY=/d' "$env"
   printf 'INGEST_API_KEY=%s\n' "$key" >> "$env"
-  echo "Created the demo account and saved its API key to .env."
+  # The demo sends through Caddy, so its request log shows the public endpoint.
+  ensure_var INGEST_URL "https://app.$DOMAIN/ingest"
 }
 
 # Anyone who reaches the demo can spend LLM credits, so it sits behind basic auth (§21.2).

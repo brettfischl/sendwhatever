@@ -64,7 +64,3 @@ wait_for_server() {
   echo "The server didn't answer /healthz within 60 seconds. See: journalctl -u sw-server" >&2
   return 1
 }
-
-has_npm_script() {
-  in_app "node -e 'process.exit(require(\"./package.json\").scripts?.[process.argv[1]] ? 0 : 1)' $1"
-}

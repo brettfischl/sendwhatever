@@ -17,7 +17,7 @@ One DigitalOcean droplet runs everything (PRD §21). It's disposable, and the lo
 | File | What it does |
 |---|---|
 | `provision.sh` | One-time base setup: swap, Docker, Caddy, Node 22, `psql`, the `sw` user, and ufw (22, 80, 443, 5432) |
-| `bootstrap.sh` | Clones the repo, writes `.env` with new secrets, starts Postgres, migrates, runs `npm run seed` if it exists, installs and starts the services, creates the demo account if `.env` has no `INGEST_API_KEY`, and configures Caddy |
+| `bootstrap.sh` | Clones the repo, writes `.env` with new secrets, starts Postgres, migrates, runs `npm run seed` (which creates the demo account and writes `.demo-seed.json`), copies that key into `.env` as `INGEST_API_KEY` and only then sets `INGEST_URL`, installs and starts the services, and configures Caddy |
 | `update.sh` | Pulls the checked-out branch, `npm ci`, migrates, restarts the services, and re-renders Caddy |
 | `lib.sh` | Shared by both |
 | `systemd/*.service` | `sw-server`, `sw-worker`, `sw-generator`, `sw-demo`: `node --import tsx`, `Restart=always`, run as `sw` |
@@ -86,6 +86,8 @@ If that error names `172.30.0.1` instead of your address, Docker is relaying pub
   systemctl stop sw-server sw-worker sw-generator sw-demo
   cd /opt/sendwhatever/app
   runuser -u sw -- docker compose down -v
-  sed -i '/^INGEST_API_KEY=/d' .env
+  rm -f .demo-seed.json
   bash deploy/bootstrap.sh
   ```
+
+  Bootstrap runs `npm run seed` again, which creates a new demo account and key and replaces `INGEST_API_KEY` in `.env`. If the seed fails, bootstrap stops rather than leave the demo without a key.
