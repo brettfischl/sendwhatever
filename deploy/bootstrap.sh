@@ -2,14 +2,14 @@
 # Takes a provisioned droplet (deploy/provision.sh) to the live service (PRD §21). Run as root.
 # Safe to re-run: it only adds missing .env variables and never changes or prints values.
 #
-#   curl -fsSL https://raw.githubusercontent.com/brettfischl/sendwhatever/develop/deploy/bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/brettfischl/sendwhatever/main/deploy/bootstrap.sh | bash
 #   or: bash /opt/sendwhatever/app/deploy/bootstrap.sh
 #
 # Never runs `npm run setup` or the tests: the suite writes to the live sw_app.
 set -euo pipefail
 
 main() {
-  local branch="${BRANCH:-develop}"
+  local branch="${BRANCH:-main}"
   DOMAIN="${DOMAIN:-sendwhatever.lol}"
   REPO_URL="${REPO_URL:-https://github.com/brettfischl/sendwhatever.git}"
 
