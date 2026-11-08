@@ -1,0 +1,25 @@
+# Rendered to /etc/caddy/Caddyfile by deploy/lib.sh, which fills in the domain and the demo
+# password's bcrypt hash. The hash exists only on the box.
+#
+# No `log` directive, so there are no access logs: webhook URLs can carry ?key= (PRD §21.2).
+
+app.__DOMAIN__ {
+	# Default deny. /accounts, /adapters and /quarantine are internal and never forwarded.
+	@public path /ingest /ingest/* /admin /admin/* /healthz /tables /tables/*
+	handle @public {
+		reverse_proxy 127.0.0.1:3000
+	}
+	handle {
+		respond 404
+	}
+}
+
+demo.__DOMAIN__ {
+	basicauth {
+		demo __DEMO_BASIC_AUTH_HASH__
+	}
+	reverse_proxy 127.0.0.1:3100 {
+		# The tables panel only answers loopback Host headers.
+		header_up Host {upstream_hostport}
+	}
+}

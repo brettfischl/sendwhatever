@@ -1,0 +1,22 @@
+[Unit]
+Description=sendwhatever worker
+After=network-online.target docker.service
+Wants=network-online.target
+# Postgres may still be starting after a reboot. Keep retrying rather than giving up.
+StartLimitIntervalSec=0
+
+[Service]
+User=sw
+Group=sw
+WorkingDirectory=/opt/sendwhatever/app
+# Set here so they win over .env, which the app loads without overriding the environment.
+Environment=PORT=3000 HOST=127.0.0.1
+# Runs node directly rather than through `npm run`, so systemd supervises the node process itself.
+ExecStart=/usr/bin/node --import tsx src/worker/main.ts
+Restart=always
+RestartSec=3
+# Matches the services' own 30-second shutdown limit.
+TimeoutStopSec=40
+
+[Install]
+WantedBy=multi-user.target
