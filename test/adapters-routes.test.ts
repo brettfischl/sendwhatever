@@ -762,7 +762,7 @@ describe('mounted on the server', () => {
     const health = await server.request('/healthz');
     expect(health.status).toBe(200);
     const ingest = await server.request('/ingest/users', { method: 'POST', body: '{}' });
-    expect(await ingest.json()).toEqual({ error: 'unknown account' });
+    expect(await ingest.json()).toEqual({ error: 'invalid or missing API key' });
   });
 
   it('refuses a dot segment that would reach these routes from /ingest', async () => {

@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
 import { isActiveApiKey, type ApiKeyScope } from '../accounts/api-keys.js';
+import { hashApiKey } from '../secrets.js';
 import { HttpError, type AppEnv } from './deps.js';
 
 export type { ApiKeyScope };
@@ -12,8 +13,14 @@ export interface Authenticated {
 
 /**
  * Resolves and authorizes the account for a public route. Throws an `HttpError`, which the app turns
- * into a JSON response. Checks run in this order: unknown slug (404), bad key (401), then account
- * status (403), so a wrong key never reveals whether an account is disabled.
+ * into a JSON response.
+ *
+ * With an `X-Account-Slug` header, checks run in this order: unknown slug (404), bad key (401), then
+ * account status (403), so a wrong key never reveals whether an account is disabled.
+ *
+ * With no header (a webhook sender that can set only a URL), the key alone names the account. Checks
+ * run in this order: missing key (401), no active key of the required scope (401), then account status
+ * (403). This path never answers 404, so it doesn't reveal whether anything exists.
  */
 export async function authenticate(
   c: Context<AppEnv>,
@@ -23,17 +30,29 @@ export async function authenticate(
 
   // Caddy sets this in production from the subdomain.
   const slug = c.req.header('x-account-slug');
-  const account = slug
-    ? (
-        await appDb.query<{ id: string; status: string }>(
-          'SELECT id, status FROM accounts WHERE slug = $1',
-          [slug],
-        )
-      ).rows[0]
-    : undefined;
-  if (!slug || !account) throw new HttpError(404, 'unknown account');
-
   const key = extractKey(c, options.allowQueryKey);
+
+  if (!slug) {
+    if (key === undefined) throw new HttpError(401, 'invalid or missing API key');
+    const { rows } = await appDb.query<{ id: string; slug: string; status: string }>(
+      `SELECT a.id, a.slug, a.status
+         FROM api_keys k JOIN accounts a ON a.id = k.account_id
+        WHERE k.key_hash = $1 AND k.scope = $2 AND k.revoked_at IS NULL`,
+      [hashApiKey(key), options.scope ?? 'ingest'],
+    );
+    const owner = rows[0];
+    if (!owner) throw new HttpError(401, 'invalid or missing API key');
+    if (owner.status !== 'active') throw new HttpError(403, 'account is not active');
+    return { accountId: owner.id, slug: owner.slug };
+  }
+
+  const account = (
+    await appDb.query<{ id: string; status: string }>('SELECT id, status FROM accounts WHERE slug = $1', [
+      slug,
+    ])
+  ).rows[0];
+  if (!account) throw new HttpError(404, 'unknown account');
+
   const valid = key !== undefined && (await isActiveApiKey(appDb, account.id, key, options.scope));
   if (!valid) throw new HttpError(401, 'invalid or missing API key');
 

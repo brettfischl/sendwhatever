@@ -17,7 +17,7 @@ export const connectPage: Handler<AdminEnv> = async (c) => {
     `  -d '{"hello": "world"}'`,
   ].join('\n');
   const credentialsUrl = `/admin/accounts/${account.id}/credentials`;
-  const webhook = `https://${account.slug}.<your-api-domain>/ingest/<source>?key=<API_KEY>`;
+  const webhook = `${endpoint}/<source>?key=<API_KEY>`;
 
   return c.html(
     <Layout title="Connect" user={c.get('user')} csrf={c.get('csrf')}>

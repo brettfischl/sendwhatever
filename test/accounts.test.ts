@@ -388,10 +388,16 @@ describe('authenticate', () => {
     expect(await res.json()).toEqual({ accountId: a.account_id, slug: a.slug });
   });
 
-  it('answers 404 for an unknown or missing slug, before checking the key', async () => {
+  it('answers 404 for an unknown slug, before checking the key', async () => {
     expect((await probe('/probe', 'no-such-account', bearer(a.api_key))).status).toBe(404);
-    expect((await probe('/probe', undefined, bearer(a.api_key))).status).toBe(404);
     expect((await probe('/probe', 'no-such-account')).status).toBe(404);
+  });
+
+  it('finds the account from the key alone when no slug is sent', async () => {
+    const res = await probe('/probe', undefined, bearer(a.api_key));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accountId: a.account_id, slug: a.slug });
+    expect((await probe('/probe', undefined)).status).toBe(401);
   });
 
   it('answers 401 for a missing, bad, revoked or other account key', async () => {

@@ -927,7 +927,7 @@ These routes are internal only and not routed through Caddy, with the same token
 
 ### 13.4 Authentication
 
-Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on any `/ingest` route, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain. Only a hash of each key is stored. User logins and roles apply only to the admin interface (§19).
+Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on any `/ingest` route, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain. With no subdomain or slug header, the key identifies the account. Only a hash of each key is stored. User logins and roles apply only to the admin interface (§19).
 
 A key has one scope. An `ingest` key works only on `/ingest`, and a `read` key works only on `/tables`, only as `Authorization: Bearer <key>`. Ingest keys can be held by webhook providers, so they must never be able to read data.
 

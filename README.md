@@ -86,6 +86,13 @@ curl -X POST localhost:3000/ingest -H 'X-Account-Slug: acme' -H 'Authorization: 
   -H 'content-type: application/json' -d '{"id":"c1","name":"Ada"}'
 ```
 
+Webhook senders that can set only a URL can leave out the header, and the key identifies the account:
+
+```bash
+curl -X POST 'localhost:3000/ingest/stripe?key=YOUR_API_KEY' \
+  -H 'content-type: application/json' -d '{"id":"evt_1","type":"customer.created"}'
+```
+
 The worker processes the event within a second. Nothing writes adapters yet, so a new shape lands in the `quarantine` table with the reason `unknown_fingerprint`. Once an active row in `adapters` matches the shape, its events reach tables in the account's own database.
 
 | Variable | Default | What it does |
