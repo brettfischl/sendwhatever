@@ -62,8 +62,8 @@ postgres_up() {
 # the compose config is unchanged, so a changed rule would otherwise sit unused. Skipped when the
 # container isn't running, because it reads the file when it starts. The in-container
 # `local all all trust` rule is what lets psql in without a password. A file with an error is not
-# reloaded and the old rules stay active (checked against postgres:18), so the change would silently
-# not apply. That fails the deploy so it shows up.
+# reloaded and the old rules stay active, so the change would silently not apply. That fails the
+# deploy so it shows up.
 reload_postgres_config() {
   local bad
   if [ -z "$(in_app "docker compose ps --status running -q postgres")" ]; then return 0; fi

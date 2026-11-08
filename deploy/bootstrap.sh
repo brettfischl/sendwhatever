@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Takes a provisioned droplet (deploy/provision.sh) to the live service (PRD §21). Run as root.
-# Safe to re-run: it only adds missing .env variables and never prints values. The one value it
-# replaces is INGEST_API_KEY, which follows the key `npm run seed` reports (unchanged while that key is active).
+# Safe to re-run, and it never prints values. It adds missing .env variables and re-syncs INGEST_API_KEY with
+# the key `npm run seed` reports, so a hand-set INGEST_API_KEY is replaced. While .demo-seed.json holds an
+# active key, seed reuses it and .env doesn't change. With no seed file, seed mints a new key and the old one
+# stays active. It stops if seed refuses (for example, the demo account is disabled).
+# BRANCH applies to the first clone only; later runs pull whatever branch is checked out.
 #
 #   curl -fsSL https://raw.githubusercontent.com/brettfischl/sendwhatever/main/deploy/bootstrap.sh | bash
 #   or: bash /opt/sendwhatever/app/deploy/bootstrap.sh
