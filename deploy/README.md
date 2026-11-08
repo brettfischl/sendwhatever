@@ -22,7 +22,7 @@ One DigitalOcean droplet runs everything (PRD §21). It's disposable, and the lo
 | `lib.sh` | Shared by both |
 | `systemd/*.service` | `sw-server`, `sw-worker`, `sw-generator`, `sw-demo`: `node --import tsx`, `Restart=always`, run as `sw` |
 | `docker-compose.deploy.yml` | Postgres override: restart policy, public 5432, TLS, `pg_hba.conf`, pinned bridge subnet. The box's `.env` sets `COMPOSE_FILE` so plain `docker compose` uses it. |
-| `pg_hba.conf` | Trusts only the bridge gateway, which the services' connections come from. From outside, `sw_app`, `sw_data`, `postgres` and their databases are refused, and everything else needs TLS. |
+| `pg_hba.conf` | Accepts a password (scram-sha-256) from the bridge gateway, which the services' connections come from, and trusts only connections inside the container. From outside, `sw_app`, `sw_data`, `postgres` and their databases are refused, and everything else needs TLS. |
 | `Caddyfile` | Template. The domain and the demo password's bcrypt hash are filled in on the box. There are no access logs. |
 
 Neither script runs `npm run setup` or the tests on the box: the suite writes to the live `sw_app`.
@@ -54,7 +54,7 @@ These commands read them on the box. Don't paste them anywhere.
 
 `main` is the release branch. Brett merges `develop` into `main`, and `.github/workflows/deploy.yml` SSHes in and runs `update.sh`. It triggers only on `push` to `main`, never on `pull_request`, because the repo is public.
 
-The deploy key's `authorized_keys` entry on the box is `command="/opt/sendwhatever/app/deploy/update.sh",no-pty,no-port-forwarding,...`, so it can only run an update. The repo secrets are `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` and `DEPLOY_HOST`. `update.sh` pulls whichever branch the box has checked out, so the box must be on `main`. To switch it:
+The deploy key's `authorized_keys` entry on the box is `command="/opt/sendwhatever/app/deploy/update.sh",no-pty,no-port-forwarding,...`, so it can only run `update.sh`. That script executes whatever is on the checked-out branch as root, so the key is as trusted as that branch's write access. The repo secrets are `DEPLOY_SSH_KEY`, `DEPLOY_KNOWN_HOSTS` and `DEPLOY_HOST`. `update.sh` pulls whichever branch the box has checked out, so the box must be on `main`. To switch it:
 
 ```bash
 ssh ... root@HOST 'runuser -u sw -- git -C /opt/sendwhatever/app checkout main && bash /opt/sendwhatever/app/deploy/update.sh'
@@ -74,7 +74,7 @@ psql "host=db.sendwhatever.lol user=sw_app dbname=postgres sslmode=require passw
 # pg_hba.conf rejects connection for host "<your public IP>": the real source address, not 172.30.0.1
 ```
 
-If that error names `172.30.0.1` instead of your address, Docker is relaying public connections through the gateway, and `pg_hba.conf`'s trust rule would let platform roles in from outside. Stop Postgres and fix that first.
+If that error names `172.30.0.1` instead of your address, Docker is relaying public connections through the gateway, and `pg_hba.conf`'s gateway rule (scram-sha-256, so a password is still needed) would apply to outside connections, letting platform roles in from anywhere that has their password. Stop Postgres and fix that first.
 
 ## Logs and reset
 

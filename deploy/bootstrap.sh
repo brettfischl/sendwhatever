@@ -13,6 +13,7 @@ main() {
   DOMAIN="${DOMAIN:-sendwhatever.lol}"
   REPO_URL="${REPO_URL:-https://github.com/brettfischl/sendwhatever.git}"
 
+  # Inline rather than require_root: lib.sh isn't on disk until the clone below, which needs root.
   if [ "$(id -u)" -ne 0 ]; then echo "Run this as root." >&2; exit 1; fi
 
   if [ ! -d /opt/sendwhatever/app/.git ]; then
@@ -74,9 +75,10 @@ write_env() {
   ensure_var PUBLIC_DB_PORT 5432
   # INGEST_URL is set later by configure_demo_ingest, once the API key is in place.
   ensure_var ACCOUNT_SLUG demo
-  local app_password
+  local app_password pg_port
   app_password="$(grep '^SW_APP_DB_PASSWORD=' "$env" | cut -d= -f2-)"
-  ensure_var DEMO_APP_DATABASE_URL "postgres://sw_app:$app_password@localhost:5433/sw_app"
+  pg_port="$(grep '^POSTGRES_PORT=' "$env" | cut -d= -f2-)"
+  ensure_var DEMO_APP_DATABASE_URL "postgres://sw_app:$app_password@localhost:$pg_port/sw_app"
   # FIREWORKS_API_KEY is added by hand (deploy/README.md). Until then the generator restarts in a loop.
 }
 
