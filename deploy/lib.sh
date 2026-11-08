@@ -56,6 +56,22 @@ postgres_up() {
   in_app "docker compose up -d --wait postgres"
 }
 
+# Postgres re-reads pg_hba.conf only on SIGHUP, and `compose up -d` doesn't recreate the container when
+# the compose config is unchanged, so a changed rule would otherwise sit unused. Skipped when the
+# container isn't running (first bootstrap): it reads the file when it starts. The in-container
+# `local all all trust` rule is what lets psql in without a password. Postgres skips a rule with an
+# error, which could leave the box more open or closed than intended, so that fails the deploy.
+reload_postgres_config() {
+  local bad
+  if [ -z "$(in_app "docker compose ps --status running -q postgres")" ]; then return 0; fi
+  in_app "docker compose exec -T postgres psql -U postgres -tAc 'select pg_reload_conf()'" >/dev/null
+  bad="$(in_app "docker compose exec -T postgres psql -U postgres -tAc 'select count(*) from pg_hba_file_rules where error is not null'")"
+  if [ "$bad" != 0 ]; then
+    echo "pg_hba.conf has $bad rule(s) Postgres can't use. Check: select * from pg_hba_file_rules where error is not null" >&2
+    return 1
+  fi
+}
+
 wait_for_server() {
   for _ in $(seq 1 60); do
     curl -fsS http://127.0.0.1:3000/healthz >/dev/null 2>&1 && return 0
