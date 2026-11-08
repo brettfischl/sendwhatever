@@ -21,7 +21,7 @@ install_postgres_config() {
   local dir="$STATE_DIR/postgres"
   install -d -m 0750 "$dir"
   if [ ! -f "$dir/server.key" ]; then
-    # The SAN matters because modern clients ignore the CN. Existing certs are left as they are.
+    # Some clients, such as Go's, ignore the CN and need a SAN. libpq accepts either. Existing certs are left as they are.
     openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=db.$DOMAIN" \
       -addext "subjectAltName=DNS:db.$DOMAIN" \
       -keyout "$dir/server.key" -out "$dir/server.crt" 2>/dev/null
@@ -60,7 +60,7 @@ postgres_up() {
 
 # Postgres re-reads pg_hba.conf only on SIGHUP, and `compose up -d` doesn't recreate the container when
 # the compose config is unchanged, so a changed rule would otherwise sit unused. Skipped when the
-# container isn't running (first bootstrap): it reads the file when it starts. The in-container
+# container isn't running, because it reads the file when it starts. The in-container
 # `local all all trust` rule is what lets psql in without a password. A file with an error is not
 # reloaded and the old rules stay active (checked against postgres:18), so the change would silently
 # not apply. That fails the deploy so it shows up.

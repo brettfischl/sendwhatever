@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Takes a provisioned droplet (deploy/provision.sh) to the live service (PRD §21). Run as root.
-# Safe to re-run: it only adds missing .env variables and never changes or prints values.
+# Safe to re-run: it only adds missing .env variables and never prints values. The one value it
+# replaces is INGEST_API_KEY, which follows the key `npm run seed` reports (unchanged while that key is active).
 #
 #   curl -fsSL https://raw.githubusercontent.com/brettfischl/sendwhatever/main/deploy/bootstrap.sh | bash
 #   or: bash /opt/sendwhatever/app/deploy/bootstrap.sh

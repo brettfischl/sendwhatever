@@ -11,7 +11,7 @@ Group=sw
 WorkingDirectory=/opt/sendwhatever/app
 # Set here so they win over .env, which the app loads without overriding the environment.
 Environment=PORT=3000 HOST=127.0.0.1
-# node --import tsx directly, not an npm script, so systemd supervises node itself and signals reach it.
+# Runs node directly rather than through `npm run`, so systemd supervises the node process itself.
 ExecStart=/usr/bin/node --import tsx src/worker/main.ts
 Restart=always
 RestartSec=3
