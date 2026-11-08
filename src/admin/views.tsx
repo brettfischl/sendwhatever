@@ -306,6 +306,7 @@ const OVERVIEW_DESCRIPTIONS: Partial<Record<NavKey, string>> = {
   schema: 'Tables and columns created from the data you send.',
   traffic: 'Requests per minute over the last hour, by source.',
   pipeline: 'Live status of every event, and what needs your attention.',
+  adapters: 'The code the AI wrote for each data shape.',
 };
 
 export interface AccountGlance {

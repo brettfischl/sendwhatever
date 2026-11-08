@@ -16,6 +16,7 @@ import {
   validCsrf,
   type SessionUser,
 } from './sessions.js';
+import { adapterRoute, adaptersRoute } from './pages/adapters.js';
 import { connectPage } from './pages/connect.js';
 import { createKey, credentialsPage, revealLogin, revokeKey } from './pages/credentials.js';
 import { eventPayloadRoute, eventRoute } from './pages/events.js';
@@ -277,6 +278,8 @@ adminRoutes.get('/accounts/:accountId/schema/:table/docs', tableDocsRoute);
 adminRoutes.get('/assets/swagger/:file', swaggerAsset);
 adminRoutes.get('/accounts/:accountId/traffic', trafficRoute);
 adminRoutes.get('/accounts/:accountId/pipeline', pipelineRoute);
+adminRoutes.get('/accounts/:accountId/adapters', adaptersRoute);
+adminRoutes.get('/accounts/:accountId/adapters/:adapterId', adapterRoute);
 adminRoutes.get('/accounts/:accountId/events/:eventId', eventRoute);
 adminRoutes.post('/accounts/:accountId/events/:eventId/payload', eventPayloadRoute);
 adminRoutes.route('/manage/accounts', manageAccountRoutes);
