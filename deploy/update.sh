@@ -29,6 +29,7 @@ main() {
   install_postgres_config
   in_app "npm ci --include=dev --no-audit --no-fund"
   postgres_up
+  reload_postgres_config
   in_app "npm run migrate"
   install_units
   systemctl restart "${UNITS[@]}"

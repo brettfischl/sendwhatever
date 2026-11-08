@@ -20,7 +20,7 @@ services:
     volumes:
       - /etc/sendwhatever/postgres:/etc/sendwhatever:ro
 
-# Pinned, because pg_hba.conf trusts this network's gateway: connections to the 127.0.0.1 port go
+# Pinned, because pg_hba.conf accepts this network's gateway (with a password): connections to the 127.0.0.1 port go
 # through docker-proxy and arrive from it. Connections to the public port keep their real source
 # address. Check both after any Docker change (deploy/README.md).
 networks:

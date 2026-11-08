@@ -10,7 +10,8 @@ User=sw
 Group=sw
 WorkingDirectory=/opt/sendwhatever/app
 # Set here so they win over .env, which the app loads without overriding the environment.
-Environment=PORT=3000 HOST=127.0.0.1 DEMO_PORT=3100 DEMO_HOST=127.0.0.1
+Environment=PORT=3000 HOST=127.0.0.1
+# Runs node directly rather than through `npm run`, so systemd supervises the node process itself.
 ExecStart=/usr/bin/node --import tsx src/http/main.ts
 Restart=always
 RestartSec=3

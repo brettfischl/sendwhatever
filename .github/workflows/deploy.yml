@@ -1,5 +1,5 @@
 # Deploys to the droplet on every push to main (PRD §21). The deploy key's authorized_keys entry
-# forces deploy/update.sh, so this key can do nothing else on the box.
+# forces deploy/update.sh, so this key can only run that script, which executes whatever is on the checked-out branch as root.
 #
 # Only `push` to main: the repo is public, and a pull_request trigger would run untrusted code
 # next to the secret.
