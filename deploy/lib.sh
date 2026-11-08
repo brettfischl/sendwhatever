@@ -26,6 +26,11 @@ install_postgres_config() {
       -addext "subjectAltName=DNS:db.$DOMAIN" \
       -keyout "$dir/server.key" -out "$dir/server.crt" 2>/dev/null
   fi
+  # Kept so reload_postgres_config can put it back if Postgres rejects the new file. A rejected file
+  # left on disk makes the next container restart fail with "could not load pg_hba.conf".
+  if [ -f "$dir/pg_hba.conf" ]; then
+    install -m 0640 "$dir/pg_hba.conf" "$dir/pg_hba.conf.prev"
+  fi
   install -m 0640 "$APP_DIR/deploy/pg_hba.conf" "$dir/pg_hba.conf"
   chown -R 70:70 "$dir"
   chmod 0600 "$dir/server.key"
@@ -59,18 +64,25 @@ postgres_up() {
 }
 
 # Postgres re-reads pg_hba.conf only on SIGHUP, and `compose up -d` doesn't recreate the container when
-# the compose config is unchanged, so a changed rule would otherwise sit unused. Skipped when the
-# container isn't running, because it reads the file when it starts. The in-container
-# `local all all trust` rule is what lets psql in without a password. A file with an error is not
-# reloaded and the old rules stay active, so the change would silently not apply. That fails the
-# deploy so it shows up.
+# the compose config is unchanged, so a changed rule would otherwise sit unused. The skip when the
+# container isn't running is for callers that haven't started Postgres; update.sh and bootstrap.sh both
+# start it first. The in-container `local all all trust` rule is what lets psql in without a password.
+# A file with an error is not reloaded and the old rules stay active, but the bad file would still be
+# on disk for the next container restart to choke on. So on an error the previous file is put back and
+# reloaded, and the deploy fails so it shows up. With no previous file (first install) it only fails.
 reload_postgres_config() {
-  local bad
+  local bad dir="$STATE_DIR/postgres"
   if [ -z "$(in_app "docker compose ps --status running -q postgres")" ]; then return 0; fi
   in_app "docker compose exec -T postgres psql -U postgres -tAc 'select pg_reload_conf()'" >/dev/null
   bad="$(in_app "docker compose exec -T postgres psql -U postgres -tAc 'select count(*) from pg_hba_file_rules where error is not null'")"
   if [ "$bad" != 0 ]; then
     echo "pg_hba.conf has $bad rule(s) Postgres can't use. Check: select * from pg_hba_file_rules where error is not null" >&2
+    if [ -f "$dir/pg_hba.conf.prev" ]; then
+      install -m 0640 "$dir/pg_hba.conf.prev" "$dir/pg_hba.conf"
+      chown 70:70 "$dir/pg_hba.conf"
+      in_app "docker compose exec -T postgres psql -U postgres -tAc 'select pg_reload_conf()'" >/dev/null
+      echo "The previous pg_hba.conf rules were restored and reloaded." >&2
+    fi
     return 1
   fi
 }

@@ -27,9 +27,11 @@ main() {
   echo "Deploying $(as_sw git -C "$APP_DIR" log -1 --format='%h %s')"
 
   install_postgres_config
-  in_app "npm ci --include=dev --no-audit --no-fund"
+  # Validate the new rules before anything else can fail, so a later error (npm ci, migrate) can't
+  # leave an unchecked pg_hba.conf installed and unreloaded.
   postgres_up
   reload_postgres_config
+  in_app "npm ci --include=dev --no-audit --no-fund"
   in_app "npm run migrate"
   install_units
   systemctl restart "${UNITS[@]}"
