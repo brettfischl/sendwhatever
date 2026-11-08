@@ -36,6 +36,11 @@ main() {
   reload_postgres_config
   in_app "npm ci --include=dev --no-audit --no-fund"
   in_app "npm run migrate"
+  # main has no seed script, only develop does; without this npm prints an opaque error after Postgres is up.
+  if ! in_app "node -e 'process.exit(require(\"./package.json\").scripts?.seed ? 0 : 1)'"; then
+    echo "This checkout has no 'npm run seed'. It exists on develop: merge develop into the branch, or set BRANCH." >&2
+    exit 1
+  fi
   in_app "npm run seed"
   configure_demo_ingest
 
