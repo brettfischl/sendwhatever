@@ -21,12 +21,30 @@ export async function createApiKey(
   return key;
 }
 
+/** The scope a key has when none is asked for. */
+const DEFAULT_SCOPE: ApiKeyScope = 'ingest';
+
+/** The account an unrevoked key of this scope belongs to, whatever its status, or undefined if there is none. */
+export async function findActiveKeyOwner(
+  db: Queryable,
+  key: string,
+  scope: ApiKeyScope = DEFAULT_SCOPE,
+): Promise<{ id: string; slug: string; status: string } | undefined> {
+  const { rows } = await db.query<{ id: string; slug: string; status: string }>(
+    `SELECT a.id, a.slug, a.status
+       FROM api_keys k JOIN accounts a ON a.id = k.account_id
+      WHERE k.key_hash = $1 AND k.scope = $2 AND k.revoked_at IS NULL`,
+    [hashApiKey(key), scope],
+  );
+  return rows[0];
+}
+
 /** Whether the key is the account's, unrevoked, and for this job. A read key never passes as an ingest key. */
 export async function isActiveApiKey(
   db: Queryable,
   accountId: string,
   key: string,
-  scope: ApiKeyScope = 'ingest',
+  scope: ApiKeyScope = DEFAULT_SCOPE,
 ): Promise<boolean> {
   const { rowCount } = await db.query(
     `SELECT 1 FROM api_keys

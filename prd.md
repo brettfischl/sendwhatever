@@ -927,7 +927,7 @@ These routes are internal only and not routed through Caddy, with the same token
 
 ### 13.4 Authentication
 
-Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on any `/ingest` route, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain. With no subdomain or slug header, the key identifies the account. Only a hash of each key is stored. User logins and roles apply only to the admin interface (§19).
+Public routes use per-account API keys, sent as `Authorization: Bearer <key>`. Webhook sources that can't set headers may send the key as `?key=` on any `/ingest` route, or authenticate with a provider signature instead (§6.2). A key must belong to the account named by the subdomain, and a slug that is present is authoritative. With no subdomain or slug header, the key identifies the account. Only a hash of each key is stored. User logins and roles apply only to the admin interface (§19).
 
 A key has one scope. An `ingest` key works only on `/ingest`, and a `read` key works only on `/tables`, only as `Authorization: Bearer <key>`. Ingest keys can be held by webhook providers, so they must never be able to read data.
 
@@ -980,7 +980,7 @@ Example Caddyfile:
 }
 ```
 
-`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` and `/tables` routes are forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly.
+`header_up` overwrites any client-supplied value. Internal routes are unreachable from outside because only `/ingest` and `/tables` routes are forwarded to the Ingestion Service. For development, skip Caddy and send `X-Account-Slug` directly, or leave it out and let the API key name the account (§13.4).
 
 ### 14.3 sqld Backend Deployment (Later)
 
@@ -1206,7 +1206,7 @@ Secrets are generated on the box and never copied from a development `.env`. `np
 
 ### 21.2 Routing
 
-Two hostnames, both TLS through Caddy. This replaces the wildcard subdomains in §14.2 for now, because wildcard certificates need a DNS challenge. Clients send `X-Account-Slug` as they do in development.
+Two hostnames, both TLS through Caddy. This replaces the wildcard subdomains in §14.2 for now, because wildcard certificates need a DNS challenge. Clients may send `X-Account-Slug` as they do in development, or leave it out and let the API key name the account (§13.4).
 
 - **`app.<domain>`:** a default-deny allowlist of `/ingest*`, `/admin*`, and the read API and docs routes. `/accounts`, `/adapters`, and `/quarantine` are never forwarded, and everything else returns `404`.
 - **`demo.<domain>`:** the demo site behind Caddy basic auth, because anyone who reaches it can send events that spend LLM credits, and read payloads. Caddy rewrites the upstream `Host` to the loopback address, which satisfies the tables panel's loopback check without changing it. `DEMO_HOST` and `DEMO_APP_DATABASE_URL` stay on loopback.

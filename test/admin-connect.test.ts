@@ -124,7 +124,9 @@ describe('connect page', () => {
     expect(res.headers.get('cache-control')).toBe('no-store');
     const html = await res.text();
     expect(html).toContain(`http://localhost:${config.port}/ingest`);
-    expect(html).toContain(`X-Account-Slug: ${acct.slug}`);
+    expect(html).toContain('The key alone identifies the account.');
+    expect(html).toContain('<code>X-Account-Slug</code> header is optional');
+    expect(html).not.toContain(`X-Account-Slug: ${acct.slug}`);
     expect(html).toContain('Bearer $API_KEY');
     expect(html).toContain(`http://localhost:${config.port}/ingest/&lt;source&gt;?key=&lt;API_KEY&gt;`);
     expect(html).not.toContain('your-api-domain');
@@ -145,6 +147,7 @@ describe('with public addresses set', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('curl -X POST https://app.example.test/ingest');
+    expect(html).toContain('https://app.example.test/ingest/&lt;source&gt;?key=&lt;API_KEY&gt;');
     expect(html).toContain(
       `postgres://${acct.database.user}@db.example.test:5432/${acct.database.database}?sslmode=require`,
     );

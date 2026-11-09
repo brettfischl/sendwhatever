@@ -11,7 +11,6 @@ export const connectPage: Handler<AdminEnv> = async (c) => {
   const endpoint = ingestEndpoint(c.get('deps').config);
   const curl = [
     `curl -X POST ${endpoint} \\`,
-    `  -H 'X-Account-Slug: ${account.slug}' \\`,
     `  -H "Authorization: Bearer $API_KEY" \\`,
     `  -H 'Content-Type: application/json' \\`,
     `  -d '{"hello": "world"}'`,
@@ -39,8 +38,9 @@ export const connectPage: Handler<AdminEnv> = async (c) => {
         title="Send data"
         description={
           <>
-            POST any JSON to <code>{endpoint}</code> with the header <code>X-Account-Slug: {account.slug}</code> and
-            an API key.
+            POST any JSON to <code>{endpoint}</code> with an API key. The key alone identifies the account. The{' '}
+            <code>X-Account-Slug</code> header is optional and, if you send it, it names the account and the key must
+            belong to it.
           </>
         }
       >
