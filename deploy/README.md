@@ -18,8 +18,8 @@ One DigitalOcean droplet runs everything (PRD §21). It's disposable, and the lo
 |---|---|
 | `provision.sh` | One-time base setup: swap, Docker, Caddy, Node 22, `psql`, the `sw` user, and ufw (22, 80, 443, 5432) |
 | `bootstrap.sh` | Clones the repo, writes `.env` with new secrets, starts Postgres, migrates, runs `npm run seed` (which creates the demo account and writes `.demo-seed.json`), copies that key into `.env` as `INGEST_API_KEY` and only then sets `INGEST_URL`, installs and starts the services, and configures Caddy |
-| `update.sh` | Checks the box is on `main` (or `DEPLOY_BRANCH`), pulls it, starts Postgres and reloads `pg_hba.conf` (on errors it restores the previous file and fails), `npm ci`, migrates, restarts the services, and re-renders Caddy |
-| `lib.sh` | Shared by both |
+| `update.sh` | Takes a lock (a second run is refused), checks the box is on `main` (or `DEPLOY_BRANCH`), pulls it, creates the Postgres certificate if `server.key` or `server.crt` is missing and installs `pg_hba.conf`, starts Postgres and reloads `pg_hba.conf`, then `npm ci`, migrates, restarts the services, waits for `/healthz`, re-renders Caddy, and checks the services (see Checks after a deploy) |
+| `lib.sh` | Shared by both. `bootstrap.sh` does the same Postgres steps as `update.sh` but does not run the service check. |
 | `systemd/*.service` | `sw-server`, `sw-worker`, `sw-generator`, `sw-demo`: `node --import tsx`, `Restart=always`, run as `sw` |
 | `docker-compose.deploy.yml` | Postgres override: restart policy, public 5432, TLS, `pg_hba.conf`, pinned bridge subnet. The box's `.env` sets `COMPOSE_FILE` so plain `docker compose` uses it. |
 | `pg_hba.conf` | Accepts a password (scram-sha-256) from the bridge gateway, which the services' connections come from, and trusts only connections inside the container. From outside, `sw_app`, `sw_data`, `postgres` and their databases are refused, and everything else needs TLS. |
@@ -66,9 +66,19 @@ Fetch first: if the box's `origin/main` is stale and has no `deploy/` yet, the c
 
 To deploy another branch by hand, fetch and check it out the same way (with `<branch>` in place of `main`), then run `DEPLOY_BRANCH=<branch> bash /opt/sendwhatever/app/deploy/update.sh` on the box. The deploy key can't set it, so its deploys always require `main`.
 
-To check what's running without changing anything, use the deploy key with the command `status`.
+To check what's running without changing anything, use the deploy key with the command `status`. It prints the checked-out commit and each unit's `systemctl is-active` state, and it works while an update is running because it runs before the lock is taken.
 
 To deploy by hand, run `ssh ... root@HOST bash /opt/sendwhatever/app/deploy/update.sh`.
+
+## Checks after a deploy
+
+`update.sh` ends with `check_services` (in `lib.sh`). After `/healthz` answers, it polls `systemctl is-active` for `sw-server`, `sw-worker` and `sw-demo` for up to 30 seconds each. For each unit that became active it reads `NRestarts` from `systemctl show`, waits 5 seconds, and reads it again; a higher number fails the deploy, as a unit that starts and then crashes in a loop would. On failure it names the units and prints `journalctl -u <unit> -n 20 --no-pager` to run. `sw-generator` is only reported, never a failure, because it restarts in a loop until the Fireworks key is added.
+
+This check cannot detect a unit that is up and not restarting but misbehaving, for example a worker that is stuck or a demo that is generating bad data. It looks only at `is-active` and the restart counter.
+
+Postgres rules: `reload_postgres_config` asks Postgres whether it accepts the installed `pg_hba.conf`. If it does, the file is copied to `pg_hba.conf.last-good` next to it. If it does not, the deploy fails; if a `.last-good` exists, that file is put back and reloaded, otherwise the rejected file stays on disk and the first error message says so. The copy is made only from a file Postgres accepted, so a bad file left by a run that died before the check is never saved as the backup. If Postgres is not running, the reload is skipped.
+
+The certificate in `/etc/sendwhatever/postgres` is generated only when `server.key` or `server.crt` is missing, into `.new` files that are moved into place when `openssl` succeeds. A complete pair is never replaced.
 
 ## Checks after a change
 
