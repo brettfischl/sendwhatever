@@ -1,7 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Context, MiddlewareHandler } from 'hono';
-import { isActiveApiKey, type ApiKeyScope } from '../accounts/api-keys.js';
-import { hashApiKey } from '../secrets.js';
+import { findActiveKeyOwner, isActiveApiKey, type ApiKeyScope } from '../accounts/api-keys.js';
 import { HttpError, type AppEnv } from './deps.js';
 
 export type { ApiKeyScope };
@@ -37,13 +36,7 @@ export async function authenticate(
 
   if (!slug) {
     if (key === undefined) throw new HttpError(401, 'invalid or missing API key');
-    const { rows } = await appDb.query<{ id: string; slug: string; status: string }>(
-      `SELECT a.id, a.slug, a.status
-         FROM api_keys k JOIN accounts a ON a.id = k.account_id
-        WHERE k.key_hash = $1 AND k.scope = $2 AND k.revoked_at IS NULL`,
-      [hashApiKey(key), options.scope ?? 'ingest'],
-    );
-    const owner = rows[0];
+    const owner = await findActiveKeyOwner(appDb, key, options.scope);
     if (!owner) throw new HttpError(401, 'invalid or missing API key');
     if (owner.status !== 'active') throw new HttpError(403, 'account is not active');
     return { accountId: owner.id, slug: owner.slug };
