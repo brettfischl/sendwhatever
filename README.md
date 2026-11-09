@@ -124,7 +124,7 @@ INGEST_URL=http://localhost:3000/ingest INGEST_API_KEY=your-key ACCOUNT_SLUG=you
 | --- | --- | --- |
 | `INGEST_URL` | `.demo-seed.json`, or the built-in stub | The ingest route. It must not contain a query or credentials, because it's shown in the request log. |
 | `INGEST_API_KEY` | `.demo-seed.json`, or none | Sent as `Authorization: Bearer`. Required with `INGEST_URL`. It stays on the server and is masked in the request log. |
-| `ACCOUNT_SLUG` | `.demo-seed.json`, or `demo` | Sent as `X-Account-Slug`, as in development without Caddy. Set it empty to leave the header out when a subdomain names the account. |
+| `ACCOUNT_SLUG` | `.demo-seed.json`, or `demo` | Sent as the optional `X-Account-Slug` header, as in development without Caddy. Set it empty to leave the header out, and the key names the account. |
 | `DEMO_PORT` | `3100` | Port for the site. |
 | `DEMO_HOST` | `127.0.0.1` | Address for the site. It has no login, so think before exposing it. |
 | `DEMO_APP_DATABASE_URL` | `.demo-seed.json`, or none | Turns on the live tables panel against a real service: a `postgres://` URL for `sw_app` on localhost, used read-only for event progress and to find the store. It needs `SW_ENCRYPTION_KEY` to open the store's read-only login, and `DEMO_HOST` must stay on loopback, or the demo won't start. |

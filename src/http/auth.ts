@@ -21,6 +21,9 @@ export interface Authenticated {
  * With no header (a webhook sender that can set only a URL), the key alone names the account. Checks
  * run in this order: missing key (401), no active key of the required scope (401), then account status
  * (403). This path never answers 404, so it doesn't reveal whether anything exists.
+ *
+ * A slug that is present is authoritative: it is never replaced by the account a key belongs to, so a key of
+ * another account is refused rather than used. An empty header counts as absent.
  */
 export async function authenticate(
   c: Context<AppEnv>,
