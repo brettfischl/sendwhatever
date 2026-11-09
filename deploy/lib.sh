@@ -20,11 +20,23 @@ require_root() {
 install_postgres_config() {
   local dir="$STATE_DIR/postgres"
   install -d -m 0750 "$dir"
-  if [ ! -f "$dir/server.key" ]; then
-    # Some clients, such as Go's, ignore the CN and need a SAN. libpq accepts either. Existing certs are left as they are.
-    openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=db.$DOMAIN" \
+  # Both files must exist: a run that died after writing only the key would otherwise never be repaired,
+  # and Postgres would have no certificate to load. Existing complete pairs are left as they are.
+  if [ ! -f "$dir/server.key" ] || [ ! -f "$dir/server.crt" ]; then
+    local out
+    rm -f "$dir/server.key.new" "$dir/server.crt.new"
+    # Generated under temp names and moved into place only when openssl succeeds, so a failure leaves no
+    # half-written pair. Some clients, such as Go's, ignore the CN and need a SAN; libpq accepts either.
+    if ! out="$(openssl req -x509 -newkey rsa:2048 -nodes -days 825 -subj "/CN=db.$DOMAIN" \
       -addext "subjectAltName=DNS:db.$DOMAIN" \
-      -keyout "$dir/server.key" -out "$dir/server.crt" 2>/dev/null
+      -keyout "$dir/server.key.new" -out "$dir/server.crt.new" 2>&1)"; then
+      echo "openssl could not generate the Postgres certificate:" >&2
+      echo "$out" >&2
+      rm -f "$dir/server.key.new" "$dir/server.crt.new"
+      return 1
+    fi
+    mv -f "$dir/server.key.new" "$dir/server.key"
+    mv -f "$dir/server.crt.new" "$dir/server.crt"
   fi
   install -m 0640 "$APP_DIR/deploy/pg_hba.conf" "$dir/pg_hba.conf"
   chown -R 70:70 "$dir"
