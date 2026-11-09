@@ -40,7 +40,7 @@ main() {
   systemctl restart "${UNITS[@]}"
   wait_for_server
   render_caddyfile
-  systemctl --no-pager --lines=0 status "${UNITS[@]}" | grep -E '^\S|Active:'
+  check_services
 }
 
 main "$@"

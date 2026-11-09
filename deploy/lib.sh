@@ -121,3 +121,45 @@ wait_for_server() {
   echo "The server didn't answer /healthz within 60 seconds. See: journalctl -u sw-server" >&2
   return 1
 }
+
+# /healthz only proves sw-server. This checks the other units too, once the restart is done: each of
+# sw-server, sw-worker and sw-demo must reach "active" within 30 seconds, and its NRestarts counter must
+# not have gone up after a few more seconds, which is how a unit that starts and then crashes in a loop
+# shows. It cannot tell whether a unit that stays up is doing its job. sw-generator is only reported:
+# without FIREWORKS_API_KEY (deploy/README.md) it restarts in a loop, and that must not fail a deploy.
+check_services() {
+  local unit state n failed=() checked=() before=() after
+  for unit in sw-server sw-worker sw-demo; do
+    state=""
+    for _ in $(seq 1 30); do
+      state="$(systemctl is-active "$unit" || true)"
+      [ "$state" = active ] && break
+      sleep 1
+    done
+    if [ "$state" != active ]; then
+      echo "$unit is '${state:-unknown}', not active, after 30 seconds." >&2
+      failed+=("$unit")
+      continue
+    fi
+    checked+=("$unit")
+    before+=("$(systemctl show -p NRestarts --value "$unit")")
+  done
+  if [ "${#checked[@]}" -gt 0 ]; then
+    sleep 5
+    for n in "${!checked[@]}"; do
+      unit="${checked[$n]}"
+      after="$(systemctl show -p NRestarts --value "$unit")"
+      if [ "${after:-0}" -gt "${before[$n]:-0}" ]; then
+        echo "$unit restarted ${before[$n]:-0} -> ${after:-0} times within 5 seconds of becoming active." >&2
+        failed+=("$unit")
+      fi
+    done
+  fi
+  echo "sw-generator: $(systemctl is-active sw-generator || true) (reported only)"
+  if [ "${#failed[@]}" -gt 0 ]; then
+    echo "Not healthy: ${failed[*]}" >&2
+    for unit in "${failed[@]}"; do echo "  journalctl -u $unit -n 20 --no-pager" >&2; done
+    return 1
+  fi
+  echo "sw-server sw-worker sw-demo: active, no restarts in the last 5 seconds"
+}
