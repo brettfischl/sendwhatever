@@ -7,19 +7,20 @@
 set -euo pipefail
 
 main() {
-  exec 9>/run/sendwhatever-update.lock
-  flock -n 9 || { echo "Another update is running." >&2; exit 1; }
-
   # shellcheck source=deploy/lib.sh
   source /opt/sendwhatever/app/deploy/lib.sh
   require_root
 
-  # Through the deploy key, `ssh ... status` reports without changing anything.
+  # Through the deploy key, `ssh ... status` reports without changing anything. It is before the lock
+  # so it still answers while an update is running, which is when it is most useful.
   if [ "${SSH_ORIGINAL_COMMAND:-}" = status ]; then
     echo "Running $(as_sw git -C "$APP_DIR" log -1 --format='%h %s')"
     systemctl is-active "${UNITS[@]}" | paste -sd' '
     exit 0
   fi
+
+  exec 9>/run/sendwhatever-update.lock
+  flock -n 9 || { echo "Another update is running." >&2; exit 1; }
 
   require_deploy_branch
   as_sw git -C "$APP_DIR" pull --ff-only
