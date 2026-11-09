@@ -145,6 +145,7 @@ describe('with public addresses set', () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('curl -X POST https://app.example.test/ingest');
+    expect(html).toContain('https://app.example.test/ingest/&lt;source&gt;?key=&lt;API_KEY&gt;');
     expect(html).toContain(
       `postgres://${acct.database.user}@db.example.test:5432/${acct.database.database}?sslmode=require`,
     );
