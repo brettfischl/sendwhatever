@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Pulls the checked-out branch and restarts the services (PRD §21.5). Run as root.
 # Fails unless the box is on main; set DEPLOY_BRANCH=<branch> to deploy another branch by hand.
+# `status` runs before the lock is taken, so it answers during an update. After the restart it checks the
+# services (check_services in lib.sh).
 # The GitHub Actions deploy key can run only this script (deploy/README.md).
 #
 # Everything is inside main(), so bash has read the whole script before `git pull` replaces it.
