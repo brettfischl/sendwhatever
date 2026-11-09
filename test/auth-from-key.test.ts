@@ -7,8 +7,7 @@ import { loadConfig } from '../src/config.js';
 import { createApp } from '../src/http/app.js';
 import { hashApiKey } from '../src/secrets.js';
 import { PostgresBackend } from '../src/storage/postgres/index.js';
-import { readOnlyRoleName } from '../src/storage/postgres/sql.js';
-import { dropDatabase } from './helpers/drop-database.js';
+import { removeAccount } from './helpers/remove-account.js';
 
 vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 });
 
@@ -73,6 +72,12 @@ let b: Acct;
 beforeAll(async () => {
   a = await newAccount('a');
   b = await newAccount('b');
+  // A row in a table the old hand-kept cleanup list missed: removeAccount must still succeed.
+  await appDb.query(
+    `INSERT INTO adapter_attempts (account_id, source, op, fingerprint, status)
+     VALUES ($1, 'stripe', 'write', 'fp', 'failed')`,
+    [b.id],
+  );
 });
 
 afterAll(async () => {
@@ -84,15 +89,7 @@ afterAll(async () => {
     password: config.dataDbPassword,
   });
   await admin.connect();
-  for (const id of accountIds) {
-    const namespace = `acct_${id.replaceAll('-', '')}_1`;
-    await dropDatabase(admin, namespace);
-    await admin.query(`DROP ROLE IF EXISTS ${pg.escapeIdentifier(readOnlyRoleName(namespace))}`);
-    for (const table of ['quarantine', 'queue', 'events', 'api_keys', 'account_stores']) {
-      await appDb.query(`DELETE FROM ${table} WHERE account_id = $1`, [id]);
-    }
-    await appDb.query('DELETE FROM accounts WHERE id = $1', [id]);
-  }
+  for (const id of accountIds) await removeAccount(appDb, admin, id);
   await admin.end();
   await appDb.end();
 });
