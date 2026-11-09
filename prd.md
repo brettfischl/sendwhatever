@@ -1200,7 +1200,7 @@ One VPS runs everything for the hackathon demo. It's disposable: nothing on it n
 
 A DigitalOcean droplet with 2 GB of RAM and 2 GB of swap, running Ubuntu LTS, Node 22, Docker, and Caddy. Measured on the testbed, each Node service idles at about 110-150 MB and Postgres at about 210 MB, so the stack idles near 700 MB before any adapter runs, each of which starts a child process. A 512 MB droplet can't run it, and 1 GB leaves too little room for a demo.
 
-Services run from a git checkout of `develop` with `node --import tsx`, without `--watch`. `tsx` is a dev dependency, so installs include dev dependencies. Each of the server, worker, generator, and demo is a systemd unit with `Restart=always`. Postgres runs in Compose with a restart policy, and stays bound to `127.0.0.1`.
+Services run from a git checkout of `main` with `node --import tsx`, without `--watch`. `tsx` is a dev dependency, so installs include dev dependencies. Each of the server, worker, generator, and demo is a systemd unit with `Restart=always`. Postgres runs in Compose with a restart policy, and stays bound to `127.0.0.1`.
 
 Secrets are generated on the box and never copied from a development `.env`. `npm run setup` isn't used, and tests never run on the VPS, because the suite writes to the live `sw_app` and the worker and generator would process its rows. Bootstrap installs dependencies, starts Postgres, runs `npm run migrate`, and runs `npm run seed`.
 
@@ -1230,7 +1230,7 @@ Publishing the port without these rules would expose `sw_app` to the internet, s
 
 ### 21.5 Known Limits
 
-No ingest rate limit and no login throttling, so the admin password must be long and random, and the Fireworks account needs a low spending cap. No backups beyond an optional droplet snapshot before the demo. Updates are manual: pull, install, migrate, restart, through `deploy/update.sh`.
+No ingest rate limit and no login throttling, so the admin password must be long and random, and the Fireworks account needs a low spending cap. No backups beyond an optional droplet snapshot before the demo. Updates are automatic when `main` changes: a GitHub Actions workflow connects to the droplet with a deploy key that can run only `deploy/update.sh`, which pulls the checked-out branch, installs, migrates, restarts the services, and re-renders Caddy. The script refuses to run unless the checkout is on `main`, so a branch left checked out can't be deployed by accident. Anyone with access to the droplet can run it by hand.
 
 ### 21.6 Done When
 
